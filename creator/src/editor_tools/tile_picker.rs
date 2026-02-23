@@ -112,6 +112,7 @@ impl TilePickerTool {
 
         if let Some(palette_picker) = ui.get_palette_picker("Palette Picker") {
             palette_picker.set_palette(project.palette.clone());
+            palette_picker.set_index(project.palette.current_index as usize);
         }
         if let Some(widget) = ui.get_widget("Palette Color Picker") {
             widget.set_value(TheValue::ColorObject(sampled_color.clone()));

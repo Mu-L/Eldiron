@@ -380,7 +380,7 @@ impl TheWidget for TheTreeIcons {
                             (self.icon_size - 4) as usize,
                             (self.icon_size - 4) as usize,
                         );
-                        ctx.draw.copy_slice(
+                        ctx.draw.blend_slice(
                             buffer.pixels_mut(),
                             icon.pixels(),
                             &content_rect,

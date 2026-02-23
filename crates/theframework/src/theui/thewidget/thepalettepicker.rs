@@ -247,6 +247,7 @@ impl TheWidget for ThePalettePicker {
 pub trait ThePalettePickerTrait {
     fn set_palette(&mut self, palette: ThePalette);
     fn index(&self) -> usize;
+    fn set_index(&mut self, index: usize);
     fn set_color(&mut self, color: TheColor);
     fn set_rows_columns(&mut self, rows: i32, columns: i32);
     fn set_dynamic_layout(&mut self, dynamic_layout: bool);
@@ -261,6 +262,10 @@ impl ThePalettePickerTrait for ThePalettePicker {
     }
     fn index(&self) -> usize {
         self.index
+    }
+    fn set_index(&mut self, index: usize) {
+        self.index = index.min(self.palette.colors.len().saturating_sub(1));
+        self.is_dirty = true;
     }
     fn set_color(&mut self, color: TheColor) {
         self.palette.colors[self.index] = Some(color);

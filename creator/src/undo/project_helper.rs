@@ -480,6 +480,7 @@ pub fn apply_palette(
             item.set_icon_count(256);
             item.set_icons_per_row(17);
             item.set_palette(&project.palette);
+            item.set_selected_index(Some(project.palette.current_index as usize));
 
             palette_node.add_widget(Box::new(item));
         }

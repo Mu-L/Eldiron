@@ -182,7 +182,7 @@ impl Hud {
                 let (tile, has_light) = self.get_icon(i, map, id, icon_size as usize);
                 if let Some(tile) = tile {
                     let texture = tile.textures[0].resized(icon_size as usize, icon_size as usize);
-                    ctx.draw.copy_slice(
+                    ctx.draw.blend_slice(
                         buffer.pixels_mut(),
                         &texture.data,
                         &rect.to_buffer_utuple(),
@@ -288,7 +288,7 @@ impl Hud {
                 let w = texture.width as i32;
                 let h = texture.height as i32;
                 let preview_rect = TheDim::rect(width as i32 - w - 1, height as i32 - h - 1, w, h);
-                ctx.draw.copy_slice(
+                ctx.draw.blend_slice(
                     buffer.pixels_mut(),
                     &texture.data,
                     &preview_rect.to_buffer_utuple(),
@@ -312,7 +312,7 @@ impl Hud {
                                 graph.create_screen_widgets(w as usize, h as usize, assets);
 
                             for i in 0..2 {
-                                ctx.draw.copy_slice(
+                                ctx.draw.blend_slice(
                                     buffer.pixels_mut(),
                                     &textures[i as usize].data,
                                     &self.icon_rects[i as usize].to_buffer_utuple(),

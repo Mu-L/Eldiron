@@ -486,10 +486,19 @@ impl TilesDock {
 
                     self.tile_ids.insert((x, y), tile.id);
                     if !tile.textures.is_empty() {
-                        buffer.copy_into(
-                            x * grid,
-                            y * grid,
-                            &tile.textures[0].to_rgba().scaled(grid, grid),
+                        let tex = &tile.textures[0];
+                        let stride = buffer.stride();
+                        ctx.draw.blend_scale_chunk(
+                            buffer.pixels_mut(),
+                            &(
+                                x as usize * grid as usize,
+                                y as usize * grid as usize,
+                                grid as usize,
+                                grid as usize,
+                            ),
+                            stride,
+                            &tex.data,
+                            &(tex.width, tex.height),
                         );
                     }
                 }
