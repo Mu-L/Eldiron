@@ -1,3 +1,4 @@
+pub mod avatar;
 pub mod deco;
 pub mod game;
 pub mod messages;
@@ -24,6 +25,8 @@ pub struct Widget {
     pub player_camera: Option<PlayerCamera>,
     pub camera_target: Option<String>,
     pub inventory_index: Option<usize>,
+    pub equipped_slot: Option<String>,
+    pub drag_drop: bool,
     pub textures: Vec<Texture>,
     pub entity_cursor_id: Option<Uuid>,
     pub entity_clicked_cursor_id: Option<Uuid>,
@@ -54,6 +57,8 @@ impl Widget {
             player_camera: None,
             camera_target: None,
             inventory_index: None,
+            equipped_slot: None,
+            drag_drop: false,
             textures: vec![],
             entity_cursor_id: None,
             entity_clicked_cursor_id: None,
@@ -94,32 +99,38 @@ impl Widget {
             );
         }
 
-        if let Some(inventory_index) = &self.inventory_index {
-            if let Some(item) = entity.inventory.get(*inventory_index) {
-                if let Some(item) = item {
-                    if let Some(Value::Source(source)) = item.attributes.get("source") {
-                        if let Some(tile) = source.tile_from_tile_list(assets) {
-                            let index = *animation_frame % tile.textures.len();
-                            let rect = self.rect.with_border(4.0);
-                            draw2d.blend_scale_chunk(
-                                buffer.pixels_mut(),
-                                &(
-                                    rect.x as usize,
-                                    rect.y as usize,
-                                    rect.width as usize,
-                                    rect.height as usize,
-                                ),
-                                stride,
-                                &tile.textures[index].data,
-                                &(
-                                    tile.textures[index].width as usize,
-                                    tile.textures[index].height as usize,
-                                ),
-                            );
-                        }
-                    }
-                }
-            }
+        let item_to_draw = if let Some(inventory_index) = &self.inventory_index {
+            entity
+                .inventory
+                .get(*inventory_index)
+                .and_then(|item| item.as_ref())
+        } else if let Some(slot) = &self.equipped_slot {
+            entity.get_equipped_item(slot)
+        } else {
+            None
+        };
+
+        if let Some(item) = item_to_draw
+            && let Some(Value::Source(source)) = item.attributes.get("source")
+            && let Some(tile) = source.tile_from_tile_list(assets)
+        {
+            let index = *animation_frame % tile.textures.len();
+            let rect = self.rect.with_border(4.0);
+            draw2d.blend_scale_chunk(
+                buffer.pixels_mut(),
+                &(
+                    rect.x as usize,
+                    rect.y as usize,
+                    rect.width as usize,
+                    rect.height as usize,
+                ),
+                stride,
+                &tile.textures[index].data,
+                &(
+                    tile.textures[index].width as usize,
+                    tile.textures[index].height as usize,
+                ),
+            );
         }
 
         if self.border_size > 0 {

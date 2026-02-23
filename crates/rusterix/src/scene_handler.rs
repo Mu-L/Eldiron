@@ -658,14 +658,18 @@ impl SceneHandler {
             if entity.attributes.get_bool_default("visible", false) {
                 let geo_id = GeoId::Character(entity.id);
                 if let Some(avatar) = AvatarRuntimeBuilder::find_avatar_for_entity(entity, assets) {
-                    if self.avatar_builder.ensure_entity_avatar_uploaded(
-                        &mut self.vm,
-                        entity,
-                        avatar,
-                        assets,
-                        animation_frame,
-                        geo_id,
-                    ) {
+                    if self
+                        .avatar_builder
+                        .ensure_entity_avatar_uploaded_with_direction(
+                            &mut self.vm,
+                            entity,
+                            avatar,
+                            assets,
+                            animation_frame,
+                            geo_id,
+                            Some(crate::AvatarDirection::Front),
+                        )
+                    {
                         active_avatar_geo.insert(geo_id);
                         let dynamic = DynamicObject::billboard_avatar_2d(geo_id, pos, 1.0, 1.0);
                         self.vm.execute(Atom::AddDynamic { object: dynamic });
@@ -839,15 +843,34 @@ impl SceneHandler {
                         if item.attributes.get_bool_default("visible", false) {
                             let size = 1.0;
                             if let Some(tile) = source.tile_from_tile_list(assets) {
-                                let center3 =
-                                    Vec3::new(item.position.x, size * 0.5, item.position.z);
+                                let alignment = item
+                                    .attributes
+                                    .get_str_default("billboard_alignment", "upright".into())
+                                    .to_ascii_lowercase();
+                                let floor_aligned =
+                                    matches!(alignment.as_str(), "floor" | "ground" | "flat");
+                                let (center3, view_right, view_up) = if floor_aligned {
+                                    // Ground-aligned billboard for items that should lie on the floor.
+                                    (
+                                        Vec3::new(item.position.x, 0.01, item.position.z),
+                                        Vec3::unit_x(),
+                                        Vec3::unit_z(),
+                                    )
+                                } else {
+                                    // Default: camera-facing upright billboard.
+                                    (
+                                        Vec3::new(item.position.x, size * 0.5, item.position.z),
+                                        basis.1,
+                                        basis.2,
+                                    )
+                                };
 
                                 let dynamic = DynamicObject::billboard_tile(
                                     GeoId::Item(item.id),
                                     tile.id,
                                     center3,
-                                    basis.1,
-                                    basis.2,
+                                    view_right,
+                                    view_up,
                                     size,
                                     size,
                                 );

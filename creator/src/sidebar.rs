@@ -1723,6 +1723,49 @@ impl Sidebar {
                     ));
                 }
             }
+            TheEvent::KeyCodeDown(TheValue::KeyCode(code)) => {
+                if *code == TheKeyCode::Delete
+                    && let Some(focus_id) = &ctx.ui.focus
+                    && (focus_id.name == "Palette Picker" || focus_id.name == "Palette Item")
+                {
+                    let index = project.palette.current_index as usize;
+                    if index < project.palette.colors.len() && project.palette[index].is_some() {
+                        let prev = project.palette.clone();
+                        project.palette[index] = None;
+
+                        let undo = ProjectUndoAtom::PaletteEdit(prev, project.palette.clone());
+                        UNDOMANAGER.write().unwrap().add_undo(undo, ctx);
+
+                        apply_palette(ui, ctx, server_ctx, project);
+
+                        if let Some(palette_picker) = ui.get_palette_picker("Palette Picker") {
+                            palette_picker.set_palette(project.palette.clone());
+                        }
+                        if let Some(widget) = ui.get_widget("Palette Color Picker")
+                            && let Some(color) = project.palette[index].clone()
+                        {
+                            widget.set_value(TheValue::ColorObject(color));
+                        }
+                        if let Some(widget) = ui.get_widget("Palette Hex Edit") {
+                            if let Some(color) = project.palette[index].clone() {
+                                widget.set_value(TheValue::Text(color.to_hex()));
+                            } else {
+                                widget.set_value(TheValue::Text(String::new()));
+                            }
+                        }
+
+                        *PALETTE.write().unwrap() = project.palette.clone();
+                        RUSTERIX.write().unwrap().assets.palette = project.palette.clone();
+
+                        ctx.ui.send(TheEvent::Custom(
+                            TheId::named("Soft Update Minimap"),
+                            TheValue::Empty,
+                        ));
+
+                        redraw = true;
+                    }
+                }
+            }
             TheEvent::StateChanged(id, state) => {
                 if id.name == "Action Auto" {
                     server_ctx.auto_action = *state == TheWidgetState::Selected;

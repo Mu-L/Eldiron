@@ -15,8 +15,8 @@ use crate::{
     SceneHandler, ShapeFXGraph, Surface, Tracer, Value,
     client::action::ClientAction,
     client::widget::{
-        Widget, deco::DecoWidget, game::GameWidget, messages::MessagesWidget, screen::ScreenWidget,
-        text::TextWidget,
+        Widget, avatar::AvatarWidget, deco::DecoWidget, game::GameWidget, messages::MessagesWidget,
+        screen::ScreenWidget, text::TextWidget,
     },
 };
 use draw2d::Draw2D;
@@ -82,6 +82,7 @@ pub struct Client {
     // The widgets
     game_widgets: FxHashMap<Uuid, GameWidget>,
     button_widgets: FxHashMap<u32, Widget>,
+    avatar_widgets: FxHashMap<Uuid, AvatarWidget>,
     text_widgets: FxHashMap<Uuid, TextWidget>,
     deco_widgets: FxHashMap<Uuid, DecoWidget>,
     screen_widget: Option<ScreenWidget>,
@@ -140,6 +141,12 @@ pub struct Client {
 
     // Hover distance
     hover_distance: f32,
+
+    // Dragged inventory/equipped item id
+    dragging_item_id: Option<u32>,
+    dragging_source_widget_id: Option<u32>,
+    dragging_started: bool,
+    drag_start_pos: Vec2<i32>,
 }
 
 impl Default for Client {
@@ -238,6 +245,7 @@ impl Client {
 
             game_widgets: FxHashMap::default(),
             button_widgets: FxHashMap::default(),
+            avatar_widgets: FxHashMap::default(),
             text_widgets: FxHashMap::default(),
             deco_widgets: FxHashMap::default(),
             screen_widget: None,
@@ -269,6 +277,10 @@ impl Client {
             hovered_item_id: None,
 
             hover_distance: f32::MAX,
+            dragging_item_id: None,
+            dragging_source_widget_id: None,
+            dragging_started: false,
+            drag_start_pos: Vec2::zero(),
         }
     }
 
@@ -1057,6 +1069,22 @@ impl Client {
             }
         }
 
+        // Draw avatar preview widgets on top of text and below buttons.
+        for widget in self.avatar_widgets.values_mut() {
+            let hide = self.widgets_to_hide.iter().any(|pattern| {
+                if pattern.ends_with('*') {
+                    let prefix = &pattern[..pattern.len() - 1];
+                    widget.name.starts_with(prefix)
+                } else {
+                    widget.name == *pattern
+                }
+            });
+
+            if !hide {
+                widget.update_draw(&mut self.target, assets, &player_entity, &self.draw2d);
+            }
+        }
+
         // Draw the button widgets which support inventory / gear on top
         for widget in self.button_widgets.values_mut() {
             let hide = self.widgets_to_hide.iter().any(|pattern| {
@@ -1081,6 +1109,42 @@ impl Client {
                     } else {
                         0
                     },
+                );
+            }
+        }
+
+        // Drag preview icon for inventory/equipped drag & drop.
+        if self.dragging_started
+            && let Some(item_id) = self.dragging_item_id
+        {
+            let dragged_item = player_entity.get_item(item_id).or_else(|| {
+                player_entity
+                    .equipped
+                    .values()
+                    .find(|item| item.id == item_id)
+            });
+            if let Some(item) = dragged_item
+                && let Some(Value::Source(source)) = item.attributes.get("source")
+                && let Some(tile) = source.tile_from_tile_list(assets)
+            {
+                let index = self.animation_frame % tile.textures.len();
+                let texture = &tile.textures[index];
+                let preview_size = 28usize;
+                let x = self.cursor_pos.x as usize;
+                let y = self.cursor_pos.y as usize;
+                let half = preview_size / 2;
+                let stride = self.target.stride();
+                self.draw2d.blend_scale_chunk(
+                    self.target.pixels_mut(),
+                    &(
+                        x.saturating_sub(half),
+                        y.saturating_sub(half),
+                        preview_size,
+                        preview_size,
+                    ),
+                    stride,
+                    &texture.data,
+                    &(texture.width, texture.height),
                 );
             }
         }
@@ -1299,12 +1363,22 @@ impl Client {
     ) {
         let p = self.screen_to_viewport(coord);
         self.cursor_pos = p;
+        if self.dragging_item_id.is_some() && !self.dragging_started {
+            let d = (p - self.drag_start_pos).map(|v| v as f32).magnitude();
+            if d >= 6.0 {
+                self.dragging_started = true;
+            }
+        }
     }
 
     ///Hover event, used to adjust the screen cursor based on the widget or game object under the mouse
     pub fn touch_hover(&mut self, coord: Vec2<i32>, map: &Map, scene_handler: &mut SceneHandler) {
         let p = self.screen_to_viewport(coord);
         self.cursor_pos = p;
+        let drop_intent_active = self
+            .get_current_intent()
+            .map(|i| i.eq_ignore_ascii_case("drop"))
+            .unwrap_or(false);
 
         // Temporary, we have to make this widget dependent
         self.curr_cursor = self.default_cursor;
@@ -1313,6 +1387,42 @@ impl Client {
         self.curr_intent_cursor = None;
         self.curr_clicked_intent_cursor = None;
         self.hover_distance = f32::MAX;
+
+        // Drop intent targets inventory/equipped widgets, not world billboards/items.
+        if drop_intent_active {
+            for (_, widget) in self.button_widgets.iter() {
+                if !widget.rect.contains(Vec2::new(p.x as f32, p.y as f32)) {
+                    continue;
+                }
+
+                let mut has_item = false;
+                if let Some(player) = map.entities.iter().find(|e| e.is_player()) {
+                    if let Some(inventory_index) = widget.inventory_index {
+                        has_item = player
+                            .inventory
+                            .get(inventory_index)
+                            .and_then(|item| item.as_ref())
+                            .is_some();
+                    } else if let Some(slot) = &widget.equipped_slot {
+                        has_item = player.get_equipped_item(slot).is_some();
+                    }
+                }
+
+                if has_item {
+                    // Cursor style comes from the active intent button(s), same as world hover.
+                    for button_id in &self.activated_widgets {
+                        if let Some(active_widget) = self.button_widgets.get(button_id) {
+                            self.curr_intent_cursor = active_widget.item_cursor_id;
+                            self.curr_clicked_intent_cursor = active_widget.item_clicked_cursor_id;
+                            if let Some(cursor_id) = active_widget.item_cursor_id {
+                                self.curr_cursor = Some(cursor_id);
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
 
         for (_, widget) in self.game_widgets.iter() {
             if widget.rect.contains(Vec2::new(p.x as f32, p.y as f32)) {
@@ -1330,6 +1440,25 @@ impl Client {
                         true,
                     ) {
                         match geoid {
+                            GeoId::Character(entity_id) => {
+                                self.hovered_entity_id = Some(entity_id);
+                                for button_id in &self.activated_widgets {
+                                    if let Some(widget) = self.button_widgets.get(button_id) {
+                                        self.curr_intent_cursor =
+                                            widget.entity_cursor_id.or(widget.item_cursor_id);
+                                        self.curr_clicked_intent_cursor = widget
+                                            .entity_clicked_cursor_id
+                                            .or(widget.item_clicked_cursor_id);
+                                        self.hover_distance = distance;
+
+                                        if let Some(cursor_id) =
+                                            widget.entity_cursor_id.or(widget.item_cursor_id)
+                                        {
+                                            self.curr_cursor = Some(cursor_id);
+                                        }
+                                    }
+                                }
+                            }
                             GeoId::Hole(sector_id, hole_id) => {
                                 if let Some(item) = SceneHandler::find_item_by_profile_attrs(
                                     map,
@@ -1360,23 +1489,18 @@ impl Client {
                             }
                             GeoId::Item(item_id) => {
                                 self.hovered_item_id = Some(item_id);
+                                for button_id in &self.activated_widgets {
+                                    if let Some(widget) = self.button_widgets.get(button_id) {
+                                        self.curr_intent_cursor = widget.item_cursor_id;
+                                        self.curr_clicked_intent_cursor =
+                                            widget.item_clicked_cursor_id;
+                                        self.hover_distance = distance;
 
-                                /*
-                                for item in &map.items {
-                                    if item.id == item_id {
-                                        if let Some(cursor_id_str) =
-                                            item.get_attr_string("cursor_id")
-                                        {
-                                            if !cursor_id_str.is_empty() {
-                                                if let Ok(uuid) = Uuid::parse_str(&cursor_id_str) {
-                                                    self.curr_cursor = Some(uuid);
-                                                }
-                                            }
+                                        if let Some(cursor_id) = widget.item_cursor_id {
+                                            self.curr_cursor = Some(cursor_id);
                                         }
-                                        self.hovered_item_id = Some(item.id);
-                                        break;
                                     }
-                                }*/
+                                }
                             }
                             _ => {}
                         }
@@ -1391,12 +1515,25 @@ impl Client {
         let mut action = None;
         let mut camera_action = None;
         let mut render_camera_switches: Vec<(Option<String>, PlayerCamera)> = Vec::new();
+        let active_intent = self.get_current_intent();
+        self.dragging_item_id = None;
+        self.dragging_source_widget_id = None;
+        self.dragging_started = false;
 
         // Adjust cursor
         if self.curr_clicked_intent_cursor.is_some() {
             self.curr_cursor = self.curr_clicked_intent_cursor;
         } else {
             self.curr_cursor = self.default_cursor;
+        }
+
+        // If we hovered over an item in 3D, send an explicit ItemClicked intent
+        if let Some(entity_id) = self.hovered_entity_id {
+            return Some(EntityAction::EntityClicked(
+                entity_id,
+                self.hover_distance,
+                self.get_current_intent(),
+            ));
         }
 
         // If we hovered over an item in 3D, send an explicit ItemClicked intent
@@ -1414,6 +1551,33 @@ impl Client {
         for (id, widget) in self.button_widgets.iter() {
             if widget.rect.contains(Vec2::new(p.x as f32, p.y as f32)) {
                 self.activated_widgets.push(*id);
+
+                if widget.drag_drop {
+                    for entity in map.entities.iter() {
+                        if !entity.is_player() {
+                            continue;
+                        }
+                        if let Some(inventory_index) = &widget.inventory_index
+                            && let Some(item) = entity
+                                .inventory
+                                .get(*inventory_index)
+                                .and_then(|item| item.as_ref())
+                        {
+                            self.dragging_item_id = Some(item.id);
+                            self.dragging_source_widget_id = Some(*id);
+                            self.drag_start_pos = p;
+                            return None;
+                        }
+                        if let Some(slot) = &widget.equipped_slot
+                            && let Some(item) = entity.get_equipped_item(slot)
+                        {
+                            self.dragging_item_id = Some(item.id);
+                            self.dragging_source_widget_id = Some(*id);
+                            self.drag_start_pos = p;
+                            return None;
+                        }
+                    }
+                }
 
                 // Action buttons should work in both 2D and 3D. Intent (if present) sets
                 // the active intent state and only becomes a one-shot action in 2D when no
@@ -1440,16 +1604,32 @@ impl Client {
                         self.widgets_to_hide.retain(|x| x != s);
                     }
                 }
-                if let Some(inventory_index) = &widget.inventory_index {
-                    for entity in map.entities.iter() {
-                        if entity.is_player() {
-                            if let Some(item) = entity.inventory.get(*inventory_index) {
-                                if let Some(item) = item {
-                                    action = Some(EntityAction::ItemClicked(item.id, 0.0, None));
-                                    break;
-                                }
-                            }
-                        }
+                for entity in map.entities.iter() {
+                    if !entity.is_player() {
+                        continue;
+                    }
+                    if let Some(inventory_index) = &widget.inventory_index
+                        && let Some(item) = entity
+                            .inventory
+                            .get(*inventory_index)
+                            .and_then(|item| item.as_ref())
+                    {
+                        action = Some(EntityAction::ItemClicked(
+                            item.id,
+                            0.0,
+                            active_intent.clone(),
+                        ));
+                        break;
+                    }
+                    if let Some(slot) = &widget.equipped_slot
+                        && let Some(item) = entity.get_equipped_item(slot)
+                    {
+                        action = Some(EntityAction::ItemClicked(
+                            item.id,
+                            0.0,
+                            active_intent.clone(),
+                        ));
+                        break;
                     }
                 }
 
@@ -1520,7 +1700,11 @@ impl Client {
                             let p = entity.get_pos_xz();
                             if pos.floor() == p.floor() {
                                 let distance = player_pos.distance(p);
-                                return Some(EntityAction::EntityClicked(entity.id, distance));
+                                return Some(EntityAction::EntityClicked(
+                                    entity.id,
+                                    distance,
+                                    self.get_current_intent(),
+                                ));
                             }
                         }
 
@@ -1537,7 +1721,11 @@ impl Client {
                             let p = entity.get_pos_xz();
                             if pos.floor() == p.floor() {
                                 let distance = player_pos.distance(p);
-                                return Some(EntityAction::EntityClicked(entity.id, distance));
+                                return Some(EntityAction::EntityClicked(
+                                    entity.id,
+                                    distance,
+                                    self.get_current_intent(),
+                                ));
                             }
                         }
 
@@ -1551,7 +1739,54 @@ impl Client {
     }
 
     /// Click / touch up event
-    pub fn touch_up(&mut self, _coord: Vec2<i32>, _map: &Map) {
+    pub fn touch_up(&mut self, coord: Vec2<i32>, _map: &Map) -> Option<EntityAction> {
+        let mut action = None;
+        let dragged_item_id = self.dragging_item_id;
+        let dragged_source_widget_id = self.dragging_source_widget_id;
+        let dragging_started = self.dragging_started;
+        let p = self.screen_to_viewport(coord);
+
+        if let Some(item_id) = dragged_item_id {
+            if !dragging_started {
+                if let Some(source_id) = dragged_source_widget_id
+                    && let Some(widget) = self.button_widgets.get(&source_id)
+                    && widget.rect.contains(Vec2::new(p.x as f32, p.y as f32))
+                {
+                    action = Some(EntityAction::ItemClicked(
+                        item_id,
+                        0.0,
+                        self.get_current_intent(),
+                    ));
+                }
+            } else {
+                for (_, widget) in self.button_widgets.iter() {
+                    if !widget.drag_drop || !widget.rect.contains(Vec2::new(p.x as f32, p.y as f32))
+                    {
+                        continue;
+                    }
+                    if let Some(target_index) = widget.inventory_index {
+                        action = Some(EntityAction::MoveItem {
+                            item_id,
+                            to_inventory_index: Some(target_index),
+                            to_equipped_slot: None,
+                        });
+                        break;
+                    }
+                    if let Some(target_slot) = &widget.equipped_slot {
+                        action = Some(EntityAction::MoveItem {
+                            item_id,
+                            to_inventory_index: None,
+                            to_equipped_slot: Some(target_slot.clone()),
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+        self.dragging_item_id = None;
+        self.dragging_source_widget_id = None;
+        self.dragging_started = false;
+
         self.activated_widgets = self.permanently_activated_widgets.clone();
 
         // Adjust cursor
@@ -1564,6 +1799,7 @@ impl Client {
         for widget in self.messages_widget.iter_mut() {
             widget.touch_up();
         }
+        action
     }
 
     pub fn user_event(&mut self, event: String, value: Value) -> EntityAction {
@@ -1630,6 +1866,7 @@ impl Client {
     ) {
         self.game_widgets.clear();
         self.button_widgets.clear();
+        self.avatar_widgets.clear();
         self.text_widgets.clear();
         self.deco_widgets.clear();
         self.messages_widget = None;
@@ -1723,6 +1960,8 @@ impl Client {
                             let mut player_camera: Option<PlayerCamera> = None;
                             let mut camera_target: Option<String> = None;
                             let mut inventory_index: Option<usize> = None;
+                            let mut equipped_slot: Option<String> = None;
+                            let mut drag_drop = false;
 
                             let mut entity_cursor_id = None;
                             let mut entity_clicked_cursor_id = None;
@@ -1830,6 +2069,19 @@ impl Client {
                                         inventory_index = Some(v as usize);
                                     }
                                 }
+                                if let Some(value) = ui.get("equipped_slot")
+                                    && let Some(v) = value.as_str()
+                                {
+                                    let slot = v.trim();
+                                    if !slot.is_empty() {
+                                        equipped_slot = Some(slot.to_string());
+                                    }
+                                }
+                                if let Some(value) = ui.get("drag_drop")
+                                    && let Some(v) = value.as_bool()
+                                {
+                                    drag_drop = v;
+                                }
 
                                 // Check for the entity / item cursor ids
                                 entity_cursor_id = Self::get_uuid(ui, "entity_cursor_id");
@@ -1865,6 +2117,8 @@ impl Client {
                                 player_camera,
                                 camera_target,
                                 inventory_index,
+                                equipped_slot,
+                                drag_drop,
                                 textures,
                                 entity_cursor_id,
                                 entity_clicked_cursor_id,
@@ -1888,6 +2142,19 @@ impl Client {
                             };
                             widget.init(assets);
                             self.messages_widget = Some(widget);
+                        } else if role == "avatar" {
+                            let mut avatar_widget = AvatarWidget {
+                                name: widget.name.clone(),
+                                rect: Rect::new(x, y, width, height),
+                                toml_str: data.clone(),
+                                buffer: TheRGBABuffer::new(TheDim::sized(
+                                    width as i32,
+                                    height as i32,
+                                )),
+                                ..Default::default()
+                            };
+                            avatar_widget.init();
+                            self.avatar_widgets.insert(widget.creator_id, avatar_widget);
                         } else if role == "text" {
                             let mut text_widget = TextWidget {
                                 name: widget.name.clone(),

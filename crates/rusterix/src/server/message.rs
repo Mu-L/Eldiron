@@ -53,8 +53,8 @@ pub enum EntityAction {
     Backward,
     // Item clicked, item id, click distance and optional explicit intent
     ItemClicked(u32, f32, Option<String>),
-    // Entity clicked, entity id and click distance
-    EntityClicked(u32, f32),
+    // Entity clicked, entity id, click distance and optional explicit intent
+    EntityClicked(u32, f32, Option<String>),
     // Terrain clicked
     TerrainClicked(Vec2<f32>),
     /// Sleep until the given tick and switch back to the given action
@@ -71,6 +71,12 @@ pub enum EntityAction {
     CloseIn(u32, f32, f32),
     /// Set how player input is mapped to movement
     SetPlayerCamera(PlayerCamera),
+    /// Move an item (inventory/equipped drag & drop).
+    MoveItem {
+        item_id: u32,
+        to_inventory_index: Option<usize>,
+        to_equipped_slot: Option<String>,
+    },
     /// A multiple choice item was selected by the user
     Choice(Choice),
 }

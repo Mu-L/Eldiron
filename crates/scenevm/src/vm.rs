@@ -6011,6 +6011,66 @@ impl VM {
                 let v = (au * aa - ar * ab) / denom_uv;
 
                 if u.abs() <= 1.0 + 1e-4 && v.abs() <= 1.0 + 1e-4 {
+                    // Reject transparent texels so billboard holes don't capture hover/click.
+                    let mut tex_u = (u * 0.5 + 0.5).clamp(0.0, 0.9999);
+                    let mut tex_v = (1.0 - (v * 0.5 + 0.5)).clamp(0.0, 0.9999);
+                    if matches!(obj.repeat_mode, crate::dynamic::RepeatMode::Repeat) {
+                        tex_u = (tex_u * obj.width).fract();
+                        tex_v = (tex_v * obj.height).fract();
+                        if tex_u < 0.0 {
+                            tex_u += 1.0;
+                        }
+                        if tex_v < 0.0 {
+                            tex_v += 1.0;
+                        }
+                    }
+
+                    let mut alpha_ok = true;
+                    match obj.kind {
+                        DynamicKind::BillboardAvatar => {
+                            if let Some(avatar) = self.dynamic_avatar_data.get(&obj.id) {
+                                if avatar.size > 0 {
+                                    let size = avatar.size as usize;
+                                    let x = (tex_u * avatar.size as f32).floor() as usize;
+                                    let y = (tex_v * avatar.size as f32).floor() as usize;
+                                    let x = x.min(size.saturating_sub(1));
+                                    let y = y.min(size.saturating_sub(1));
+                                    let idx = (y * size + x) * 4 + 3;
+                                    alpha_ok = avatar.rgba.get(idx).copied().unwrap_or(0) > 0;
+                                }
+                            }
+                        }
+                        DynamicKind::BillboardTile => {
+                            if let Some(tile_id) = obj.tile_id {
+                                let mut alpha = self
+                                    .shared_atlas
+                                    .sample_tile_alpha(
+                                        &tile_id,
+                                        self.animation_counter as u32,
+                                        [tex_u, tex_v],
+                                    )
+                                    .unwrap_or(255);
+                                if matches!(obj.alpha_mode, crate::dynamic::AlphaMode::ChromaKey)
+                                    && self
+                                        .shared_atlas
+                                        .tile_pixel_matches_topleft_rgb(
+                                            &tile_id,
+                                            self.animation_counter as u32,
+                                            [tex_u, tex_v],
+                                        )
+                                        .unwrap_or(false)
+                                {
+                                    alpha = 0;
+                                }
+                                alpha_ok = alpha > 0;
+                            }
+                        }
+                    }
+
+                    if !alpha_ok {
+                        continue;
+                    }
+
                     best_t = t;
                     best_geo = Some(obj.id);
                     best_pos = hit;

@@ -147,6 +147,74 @@ monetary = true
 
 ---
 
+## `on_look`
+
+*General attribute (applies to both characters and items).*
+
+Shortcut for the `look` intent.
+
+If set and the player uses `look` on the character or item, this text is sent as a system message directly, without requiring script code.
+
+```toml
+on_look = "You see a sword."
+```
+
+---
+
+## `on_pickup`
+
+*Item-only attribute.*
+
+Shortcut for pickup/take behavior on items.
+`on_take` is supported as an alias.
+
+If set and the player uses `pickup`/`take` on the item:
+- `"pickup"` (or `"take"`) performs default pickup logic (same as calling `take`).
+- Any other text is sent as a system message.
+
+```toml
+on_pickup = "pickup"
+# alias:
+# on_take = "pickup"
+# or:
+# on_pickup = "It's stuck in the stone."
+```
+
+---
+
+## `on_use`
+
+*Item-only attribute.*
+
+Shortcut for the `use` intent on items.
+
+If set and the player uses `use` on the item, this text is sent as a system message directly, without requiring item script code.
+
+```toml
+on_use = "You cannot use that."
+```
+
+---
+
+## `on_drop`
+
+*Item-only attribute.*
+
+Shortcut for the `drop` intent on items.
+
+If set and the player uses `drop` on the item (including inventory/equipped item clicks):
+- If empty or `"drop"`, default drop logic runs (drops item to the ground).
+- `"You cannot drop that"` sends that message and prevents dropping.
+- Any other text sends the message and still drops the item.
+
+```toml
+on_drop = "You dropped a sword."
+# or:
+# on_drop = "You cannot drop that."
+```
+
+---
+
 ## `name`
 
 *General attribute (applies to both characters and items).*
@@ -180,6 +248,24 @@ Default is `2.0` if no size attribute is set.
 
 ```toml
 size = 2.0
+```
+
+---
+
+## `billboard_alignment`
+
+*Item-only attribute.*
+
+Controls how item sprites are aligned in 3D when rendered as billboards.
+
+Supported values:
+- `"upright"` (default): camera-facing upright billboard
+- `"floor"`: ground-aligned billboard (lies flat on the floor)
+
+Aliases accepted for floor alignment: `"ground"`, `"flat"`.
+
+```toml
+billboard_alignment = "floor"
 ```
 
 ---

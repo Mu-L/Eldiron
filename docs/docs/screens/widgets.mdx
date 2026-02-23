@@ -80,6 +80,8 @@ In the HUD you can select between two icons per sector:
 - **action** - Trigger a game action (mutually exclusive with **intent**).
 - **intent** - Send an intent such as **"use"**; empty string means walking intent.
 - **inventory_index** - Draw and interact with the inventory item at that slot using the intent.
+- **equipped_slot** - Draw and interact with the equipped item in that slot (for example `main_hand`, `off_hand`) using the intent.
+- **drag_drop** - Enable drag-and-drop interaction for this inventory/equipped slot button.
 - **show / hide** - Toggle specific widgets when clicked.
 - **deactivate** - Turn off other buttons when clicked.
 - **active** - Set this button’s state to active by default.
@@ -97,6 +99,31 @@ The following attributes are valid for 3D scenes only. They enable `intent` butt
 
 ---
 
+### Drag And Drop Slots
+
+Set `drag_drop = true` on buttons that represent `inventory_index` or `equipped_slot` to enable slot drag-and-drop.
+
+- Click/release on the same slot still triggers normal intent handling (for example `look`).
+- Dragging an item and releasing on another slot moves or swaps items.
+- Dropping onto an equipped slot is validated against the item's `slot` attribute.
+- Incompatible equipment drops are ignored (for example `main_hand` item into `off_hand` slot).
+
+```toml
+[ui]
+role = "button"
+inventory_index = 0
+drag_drop = true
+```
+
+```toml
+[ui]
+role = "button"
+equipped_slot = "main_hand"
+drag_drop = true
+```
+
+---
+
 ### Example #1
 
 In this example, clicking the button causes the player to **move forward**.
@@ -109,6 +136,7 @@ role = "button"
 action = "forward"
 # intent = "talk"
 # inventory_index = 0
+# equipped_slot = "main_hand"
 # border_size = 1
 # border_color = "#888888"
 ```
@@ -144,6 +172,34 @@ role = "button"
 camera = "firstp"
 player_camera = "firstp"
 # camera_target = "Game View"
+```
+
+---
+
+## Avatar Widgets
+
+Use a widget with **role = "avatar"** to render an avatar preview in the UI.
+
+This uses the same avatar colorization pipeline as runtime avatars and can optionally include equipped weapons.
+
+### UI Section
+
+- **avatar** - Avatar name to preview (for example `"Human"`). If omitted, the player avatar is used.
+- **animation** - Optional animation name (for example `"Idle"`). If omitted, the current avatar animation is used.
+- **frame_index** - Frame index to render (defaults to `0`).
+- **perspective** - Optional direction: `front`, `back`, `left`, `right` (defaults to `front`).
+- **show_weapons** - Include equipped weapon overlays (`true` by default).
+
+### Example
+
+```toml
+[ui]
+role = "avatar"
+avatar = "Human"
+animation = "Idle"
+frame_index = 0
+# perspective = "front"
+# show_weapons = true
 ```
 
 ---

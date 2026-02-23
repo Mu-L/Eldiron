@@ -380,13 +380,24 @@ pub fn draw_shader_into(module: &Module, buffer: &mut TheRGBABuffer) {
 
 /// Renders the current map in the scenemanager depending on the current viewmode.
 pub fn scenemanager_render_map(project: &Project, server_ctx: &ServerContext) {
+    // Screens should not trigger SceneManager SetMap updates.
+    if server_ctx.get_map_context() == MapContext::Screen {
+        return;
+    }
+
     if server_ctx.editor_view_mode == EditorViewMode::D2 {
-        // In 2D we render the current map, profile or base
+        // In 2D we render the current map (region/profile/character/item), but never screens.
         if let Some(map) = project.get_map(server_ctx) {
             SCENEMANAGER.write().unwrap().set_map(map.clone());
         }
     } else {
-        // In 3D we always only render the base map
+        // In 3D, SceneManager builds region geometry. This includes profile/surface editing
+        // contexts, but excludes non-region contexts.
+        if server_ctx.get_map_context() != MapContext::Region {
+            return;
+        }
+
+        // In 3D region mode (including profiles), render the region map.
         if let Some(id) = server_ctx.pc.id() {
             if let Some(region) = project.get_region(&id) {
                 SCENEMANAGER.write().unwrap().set_map(region.map.clone());

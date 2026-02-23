@@ -1179,125 +1179,235 @@ impl RegionInstance {
                             }
                         });
                     }
-                    EntityClicked(clicked_entity_id, distance) => {
+                    EntityClicked(clicked_entity_id, distance, explicit_intent) => {
                         with_regionctx(self.id, |ctx: &mut RegionCtx| {
-                            if let Some(entity) = get_entity_mut(&mut ctx.map, entity_id) {
-                                if let Some(_class_name) = ctx.entity_classes.get(&entity.id) {
-                                    // Send "intent" event for the entity
-                                    // let mut cont = ValueContainer::default();
-                                    // cont.set("distance", Value::Float(distance));
-                                    // cont.set("entity_id", Value::UInt(entity_id));
-                                    // cont.set("target_id", Value::UInt(clicked_entity_id));
+                            if ctx.entity_classes.get(&entity_id).is_none() {
+                                return;
+                            }
 
-                                    let intent =
-                                        entity.attributes.get_str_default("intent", "".into());
-                                    // cont.set("intent", Value::Str(intent.clone()));
+                            let intent_raw = if let Some(int) = explicit_intent {
+                                int
+                            } else {
+                                ctx.map
+                                    .entities
+                                    .iter()
+                                    .find(|e| e.id == entity_id)
+                                    .map(|e| e.attributes.get_str_default("intent", "".into()))
+                                    .unwrap_or_default()
+                            };
+                            let intent = intent_raw.trim().to_string();
+                            let intent_lower = intent.to_ascii_lowercase();
+                            let mut handled_shortcut = false;
 
-                                    // let event_name = format!("intent: {}", intent);
+                            // Optional character-level shortcuts for common intents.
+                            if intent_lower == "look"
+                                && let Some(target) =
+                                    ctx.map.entities.iter().find(|e| e.id == clicked_entity_id)
+                                && let Some(msg) = target.attributes.get_str("on_look")
+                            {
+                                let msg = msg.trim();
+                                if !msg.is_empty() {
+                                    send_message(ctx, entity_id, msg.to_string(), "system");
+                                    handled_shortcut = true;
+                                }
+                            }
 
-                                    // let cmd = format!(
-                                    //     "{}.event('intent', {})",
-                                    //     class_name,
-                                    //     cont.to_python_dict_string()
-                                    // );
+                            if !handled_shortcut {
+                                // Send default script-driven intent events.
+                                ctx.to_execute_entity.push((
+                                    entity_id,
+                                    "intent".to_string(),
+                                    VMValue::new_with_string(
+                                        clicked_entity_id as f32,
+                                        distance as f32,
+                                        0.0,
+                                        &intent,
+                                    ),
+                                ));
+
+                                if ctx.entity_classes.get(&clicked_entity_id).is_some() {
                                     ctx.to_execute_entity.push((
-                                        entity.id,
+                                        clicked_entity_id,
                                         "intent".to_string(),
                                         VMValue::new_with_string(
-                                            clicked_entity_id as f32,
+                                            entity_id as f32,
                                             distance as f32,
                                             0.0,
-                                            &intent,
+                                            intent,
                                         ),
                                     ));
-
-                                    // Send for the target
-                                    // let mut cont = ValueContainer::default();
-                                    // cont.set("distance", Value::Float(distance));
-                                    // cont.set("entity_id", Value::UInt(entity_id));
-                                    // cont.set("intent", Value::Str(intent));
-                                    if let Some(_class_name) =
-                                        ctx.entity_classes.get(&clicked_entity_id)
-                                    {
-                                        // let cmd = format!(
-                                        //     "{}.event('intent', {})",
-                                        //     class_name,
-                                        //     cont.to_python_dict_string()
-                                        // );
-                                        ctx.to_execute_entity.push((
-                                            clicked_entity_id,
-                                            "intent".to_string(),
-                                            VMValue::new_with_string(
-                                                entity_id as f32,
-                                                distance as f32,
-                                                0.0,
-                                                intent,
-                                            ),
-                                        ));
-                                    }
-
-                                    entity.set_attribute("intent", Value::Str(String::new()));
                                 }
+                            }
+
+                            if let Some(entity) = get_entity_mut(&mut ctx.map, entity_id) {
+                                entity.set_attribute("intent", Value::Str(String::new()));
                             }
                         });
                     }
                     ItemClicked(clicked_item_id, distance, explicit_intent) => {
                         with_regionctx(self.id, |ctx: &mut RegionCtx| {
-                            if let Some(entity) = get_entity_mut(&mut ctx.map, entity_id) {
-                                if let Some(_class_name) = ctx.entity_classes.get(&entity.id) {
-                                    // Send "intent" event for the entity
-                                    // let mut cont = ValueContainer::default();
-                                    // cont.set("distance", Value::Float(distance));
-                                    // cont.set("item_id", Value::UInt(clicked_item_id));
-                                    // cont.set("entity_id", Value::UInt(entity.id));
+                            if ctx.entity_classes.get(&entity_id).is_none() {
+                                return;
+                            }
 
-                                    let intent = if let Some(int) = explicit_intent {
-                                        int
+                            let intent_raw = if let Some(int) = explicit_intent {
+                                int
+                            } else {
+                                ctx.map
+                                    .entities
+                                    .iter()
+                                    .find(|e| e.id == entity_id)
+                                    .map(|e| e.attributes.get_str_default("intent", "".into()))
+                                    .unwrap_or_default()
+                            };
+                            let intent = intent_raw.trim().to_string();
+                            let intent_lower = intent.to_ascii_lowercase();
+                            let mut handled_shortcut = false;
+
+                            // Optional item-level shortcuts for common intents.
+                            let item_attrs = ctx
+                                .map
+                                .items
+                                .iter()
+                                .find(|i| i.id == clicked_item_id)
+                                .map(|i| &i.attributes)
+                                .or_else(|| {
+                                    ctx.map
+                                        .entities
+                                        .iter()
+                                        .find(|e| e.id == entity_id)
+                                        .and_then(|e| e.get_item(clicked_item_id))
+                                        .map(|i| &i.attributes)
+                                })
+                                .or_else(|| {
+                                    ctx.map
+                                        .entities
+                                        .iter()
+                                        .find(|e| e.id == entity_id)
+                                        .and_then(|e| {
+                                            e.equipped
+                                                .values()
+                                                .find(|item| item.id == clicked_item_id)
+                                        })
+                                        .map(|i| &i.attributes)
+                                });
+                            if intent_lower == "drop" {
+                                if let Some(attrs) = item_attrs {
+                                    if let Some(action) = attrs.get_str("on_drop") {
+                                        let action = action.trim();
+                                        if action.is_empty() || action.eq_ignore_ascii_case("drop")
+                                        {
+                                            handled_shortcut = drop_item_for_entity(
+                                                ctx,
+                                                entity_id,
+                                                clicked_item_id,
+                                            );
+                                        } else if action
+                                            .eq_ignore_ascii_case("you cannot drop that")
+                                        {
+                                            send_message(
+                                                ctx,
+                                                entity_id,
+                                                action.to_string(),
+                                                "system",
+                                            );
+                                            handled_shortcut = true;
+                                        } else {
+                                            send_message(
+                                                ctx,
+                                                entity_id,
+                                                action.to_string(),
+                                                "system",
+                                            );
+                                            handled_shortcut = drop_item_for_entity(
+                                                ctx,
+                                                entity_id,
+                                                clicked_item_id,
+                                            );
+                                        }
                                     } else {
-                                        entity.attributes.get_str_default("intent", "".into())
-                                    };
+                                        handled_shortcut =
+                                            drop_item_for_entity(ctx, entity_id, clicked_item_id);
+                                    }
+                                } else {
+                                    handled_shortcut =
+                                        drop_item_for_entity(ctx, entity_id, clicked_item_id);
+                                }
+                            } else if let Some(attrs) = item_attrs {
+                                if intent_lower == "look" {
+                                    if let Some(msg) = attrs.get_str("on_look") {
+                                        let msg = msg.trim();
+                                        if !msg.is_empty() {
+                                            send_message(ctx, entity_id, msg.to_string(), "system");
+                                            handled_shortcut = true;
+                                        }
+                                    }
+                                } else if intent_lower == "use" {
+                                    if let Some(msg) = attrs.get_str("on_use") {
+                                        let msg = msg.trim();
+                                        if !msg.is_empty() {
+                                            send_message(ctx, entity_id, msg.to_string(), "system");
+                                            handled_shortcut = true;
+                                        }
+                                    }
+                                } else if intent_lower == "pickup" || intent_lower == "take" {
+                                    if let Some(action) = attrs
+                                        .get_str("on_pickup")
+                                        .or_else(|| attrs.get_str("on_take"))
+                                    {
+                                        let action = action.trim();
+                                        if !action.is_empty() {
+                                            if action.eq_ignore_ascii_case("pickup")
+                                                || action.eq_ignore_ascii_case("take")
+                                            {
+                                                take_item_for_entity(
+                                                    ctx,
+                                                    entity_id,
+                                                    clicked_item_id,
+                                                );
+                                            } else {
+                                                send_message(
+                                                    ctx,
+                                                    entity_id,
+                                                    action.to_string(),
+                                                    "system",
+                                                );
+                                            }
+                                            handled_shortcut = true;
+                                        }
+                                    }
+                                }
+                            }
 
-                                    // let event_name = format!("intent: {}", intent);
+                            if !handled_shortcut {
+                                // Send default script-driven intent events.
+                                ctx.to_execute_entity.push((
+                                    entity_id,
+                                    "intent".to_string(),
+                                    VMValue::new_with_string(
+                                        clicked_item_id as f32,
+                                        distance as f32,
+                                        0.0,
+                                        &intent,
+                                    ),
+                                ));
 
-                                    // cont.set("intent", Value::Str(intent));
-                                    // let cmd = format!(
-                                    //     "{}.event('intent', {})",
-                                    //     class_name,
-                                    //     cont.to_python_dict_string()
-                                    // );
-                                    ctx.to_execute_entity.push((
-                                        entity.id,
+                                if ctx.item_classes.get(&clicked_item_id).is_some() {
+                                    ctx.to_execute_item.push((
+                                        clicked_item_id,
                                         "intent".to_string(),
                                         VMValue::new_with_string(
-                                            clicked_item_id as f32,
+                                            entity_id as f32,
                                             distance as f32,
                                             0.0,
-                                            &intent,
+                                            intent,
                                         ),
                                     ));
-
-                                    if let Some(_class_name) =
-                                        ctx.item_classes.get(&clicked_item_id)
-                                    {
-                                        // let cmd = format!(
-                                        //     "{}.event('intent', {})",
-                                        //     class_name,
-                                        //     cont.to_python_dict_string()
-                                        // );
-                                        ctx.to_execute_item.push((
-                                            clicked_item_id,
-                                            "intent".to_string(),
-                                            VMValue::new_with_string(
-                                                entity.id as f32,
-                                                distance as f32,
-                                                0.0,
-                                                intent,
-                                            ),
-                                        ));
-                                    }
-
-                                    entity.set_attribute("intent", Value::Str(String::new()));
                                 }
+                            }
+
+                            if let Some(entity) = get_entity_mut(&mut ctx.map, entity_id) {
+                                entity.set_attribute("intent", Value::Str(String::new()));
                             }
                         });
                     }
@@ -1314,6 +1424,21 @@ impl RegionInstance {
                                     Value::PlayerCamera(player_camera),
                                 );
                             }
+                        });
+                    }
+                    MoveItem {
+                        item_id,
+                        to_inventory_index,
+                        to_equipped_slot,
+                    } => {
+                        with_regionctx(self.id, |ctx: &mut RegionCtx| {
+                            _ = move_item_for_entity(
+                                ctx,
+                                entity_id,
+                                item_id,
+                                to_inventory_index,
+                                to_equipped_slot,
+                            );
                         });
                     }
                     Choice(choice) => match &choice {
@@ -2814,96 +2939,99 @@ pub fn set_rig_sequence(
     Ok(())
 }
 
+fn take_item_for_entity(ctx: &mut RegionCtx, entity_id: u32, item_id: u32) -> bool {
+    let mut rc = true;
+
+    if let Some(pos) = ctx
+        .map
+        .items
+        .iter()
+        .position(|item| item.id == item_id && !item.attributes.get_bool_default("static", false))
+    {
+        let item = ctx.map.items.remove(pos);
+
+        if let Some(entity) = ctx
+            .map
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == entity_id)
+        {
+            let mut item_name = "Unknown".to_string();
+            if let Some(name) = item.attributes.get_str("name") {
+                item_name = name.to_string();
+            }
+
+            fn article_for(item_name: &str) -> (&'static str, String) {
+                let name = item_name.to_ascii_lowercase();
+
+                let pair_items = ["trousers", "pants", "gloves", "boots", "scissors"];
+                let mass_items = ["armor", "cloth", "water", "meat"];
+
+                if pair_items.contains(&name.as_str()) {
+                    ("a pair of", item_name.to_string())
+                } else if mass_items.contains(&name.as_str()) {
+                    ("some", item_name.to_string())
+                } else {
+                    let first = name.chars().next().unwrap_or('x');
+                    let article = match first {
+                        'a' | 'e' | 'i' | 'o' | 'u' => "an",
+                        _ => "a",
+                    };
+                    (article, item_name.to_string())
+                }
+            }
+
+            let mut message = format!(
+                "You take {} {}",
+                article_for(&item_name.to_lowercase()).0,
+                item_name.to_lowercase()
+            );
+
+            if item.attributes.get_bool_default("monetary", false) {
+                // This is not a standalone item but money
+                let amount = item.attributes.get_int_default("worth", 0);
+                if amount > 0 {
+                    message = format!("You take {} gold.", amount);
+                    _ = entity.add_base_currency(amount as i64, &ctx.currencies);
+                }
+            } else if entity.add_item(item).is_err() {
+                println!("Take: Too many items");
+                if ctx.debug_mode {
+                    add_debug_value(ctx, TheValue::Text("Inventory Full".into()), true);
+                }
+                rc = false;
+            }
+
+            if ctx.debug_mode && rc {
+                add_debug_value(ctx, TheValue::Text("Ok".into()), false);
+            }
+
+            ctx.from_sender
+                .get()
+                .unwrap()
+                .send(RegionMessage::RemoveItem(ctx.region_id, item_id))
+                .unwrap();
+
+            let msg = RegionMessage::Message(
+                ctx.region_id,
+                Some(entity_id),
+                None,
+                entity_id,
+                message,
+                "system".into(),
+            );
+            ctx.from_sender.get().unwrap().send(msg).unwrap();
+        }
+    } else if ctx.debug_mode {
+        add_debug_value(ctx, TheValue::Text("Unknown Item".into()), true);
+    }
+    rc
+}
+
 /// Take the given item.
 fn take(item_id: u32, vm: &VirtualMachine) -> bool {
     with_regionctx(get_region_id(vm).unwrap(), |ctx: &mut RegionCtx| {
-        let entity_id = ctx.curr_entity_id;
-        let mut rc = true;
-
-        if let Some(pos) = ctx.map.items.iter().position(|item| {
-            item.id == item_id && !item.attributes.get_bool_default("static", false)
-        }) {
-            let item = ctx.map.items.remove(pos);
-
-            if let Some(entity) = ctx
-                .map
-                .entities
-                .iter_mut()
-                .find(|entity| entity.id == entity_id)
-            {
-                let mut item_name = "Unknown".to_string();
-                if let Some(name) = item.attributes.get_str("name") {
-                    item_name = name.to_string();
-                }
-
-                fn article_for(item_name: &str) -> (&'static str, String) {
-                    let name = item_name.to_ascii_lowercase();
-
-                    let pair_items = ["trousers", "pants", "gloves", "boots", "scissors"];
-                    let mass_items = ["armor", "cloth", "water", "meat"];
-
-                    if pair_items.contains(&name.as_str()) {
-                        ("a pair of", item_name.to_string())
-                    } else if mass_items.contains(&name.as_str()) {
-                        ("some", item_name.to_string())
-                    } else {
-                        let first = name.chars().next().unwrap_or('x');
-                        let article = match first {
-                            'a' | 'e' | 'i' | 'o' | 'u' => "an",
-                            _ => "a",
-                        };
-                        (article, item_name.to_string())
-                    }
-                }
-
-                let mut message = format!(
-                    "You take {} {}",
-                    article_for(&item_name.to_lowercase()).0,
-                    item_name.to_lowercase()
-                );
-
-                if item.attributes.get_bool_default("monetary", false) {
-                    // This is not a standalone item but money
-                    let amount = item.attributes.get_int_default("worth", 0);
-                    if amount > 0 {
-                        message = format!("You take {} gold.", amount);
-                        _ = entity.add_base_currency(amount as i64, &ctx.currencies);
-                    }
-                } else if entity.add_item(item).is_err() {
-                    // TODO: Send message.
-                    println!("Take: Too many items");
-                    if ctx.debug_mode {
-                        add_debug_value(ctx, TheValue::Text("Inventory Full".into()), true);
-                    }
-                    rc = false;
-                }
-
-                if ctx.debug_mode && rc {
-                    add_debug_value(ctx, TheValue::Text("Ok".into()), false);
-                }
-
-                ctx.from_sender
-                    .get()
-                    .unwrap()
-                    .send(RegionMessage::RemoveItem(ctx.region_id, item_id))
-                    .unwrap();
-
-                let msg = RegionMessage::Message(
-                    ctx.region_id,
-                    Some(entity_id),
-                    None,
-                    entity_id,
-                    message,
-                    "system".into(),
-                );
-                ctx.from_sender.get().unwrap().send(msg).unwrap();
-            }
-        } else {
-            if ctx.debug_mode {
-                add_debug_value(ctx, TheValue::Text("Unknown Item".into()), true);
-            }
-        }
-        rc
+        take_item_for_entity(ctx, ctx.curr_entity_id, item_id)
     })
     .unwrap()
 }
@@ -2986,6 +3114,254 @@ fn deal_damage(id: u32, dict: PyObjectRef, vm: &VirtualMachine) {
 fn send_message(ctx: &RegionCtx, id: u32, message: String, role: &str) {
     let msg = RegionMessage::Message(ctx.region_id, Some(id), None, id, message, role.to_string());
     ctx.from_sender.get().unwrap().send(msg).unwrap();
+}
+
+fn drop_item_for_entity(ctx: &mut RegionCtx, entity_id: u32, item_id: u32) -> bool {
+    if let Some(entity) = get_entity_mut(&mut ctx.map, entity_id) {
+        // Drop from inventory.
+        if let Some(slot) = entity.get_item_slot(item_id)
+            && let Some(mut item) = entity.remove_item_from_slot(slot)
+        {
+            item.position = entity.position;
+            item.mark_all_dirty();
+            ctx.map.items.push(item);
+            return true;
+        }
+
+        // Drop from equipped slots.
+        let equipped_slot = entity.equipped.iter().find_map(|(slot, item)| {
+            if item.id == item_id {
+                Some(slot.clone())
+            } else {
+                None
+            }
+        });
+        if let Some(slot) = equipped_slot
+            && let Ok(mut item) = entity.unequip_item(&slot)
+        {
+            item.position = entity.position;
+            item.mark_all_dirty();
+            ctx.map.items.push(item);
+            return true;
+        }
+    }
+    false
+}
+
+fn move_item_for_entity(
+    ctx: &mut RegionCtx,
+    entity_id: u32,
+    item_id: u32,
+    to_inventory_index: Option<usize>,
+    to_equipped_slot: Option<String>,
+) -> bool {
+    enum Source {
+        Inventory(usize),
+        Equipped(String),
+    }
+
+    let Some(entity) = get_entity_mut(&mut ctx.map, entity_id) else {
+        return false;
+    };
+
+    let source = if let Some(slot) = entity.get_item_slot(item_id) {
+        Source::Inventory(slot)
+    } else if let Some(slot) = entity.equipped.iter().find_map(|(slot, item)| {
+        if item.id == item_id {
+            Some(slot.clone())
+        } else {
+            None
+        }
+    }) {
+        Source::Equipped(slot)
+    } else {
+        return false;
+    };
+
+    let moving_item_slot = match &source {
+        Source::Inventory(source_index) => entity
+            .inventory
+            .get(*source_index)
+            .and_then(|item| item.as_ref())
+            .and_then(|item| item.attributes.get_str("slot"))
+            .map(|slot| slot.trim().to_ascii_lowercase()),
+        Source::Equipped(source_slot) => entity
+            .equipped
+            .get(source_slot)
+            .and_then(|item| item.attributes.get_str("slot"))
+            .map(|slot| slot.trim().to_ascii_lowercase()),
+    };
+
+    if let Some(target_index) = to_inventory_index {
+        if target_index >= entity.inventory.len() {
+            return false;
+        }
+        if let Source::Inventory(source_index) = source
+            && source_index == target_index
+        {
+            return true;
+        }
+
+        let moving = match &source {
+            Source::Inventory(source_index) => entity.remove_item_from_slot(*source_index),
+            Source::Equipped(source_slot) => entity.unequip_item(source_slot).ok(),
+        };
+        let Some(moving) = moving else {
+            return false;
+        };
+
+        let displaced = entity.remove_item_from_slot(target_index);
+        entity.inventory[target_index] = Some(moving.clone());
+        entity.inventory_additions.insert(target_index, moving);
+        entity.inventory_removals.remove(&target_index);
+        entity.dirty_flags |= 0b1000;
+
+        if let Some(displaced) = displaced {
+            match source {
+                Source::Inventory(source_index) => {
+                    entity.inventory[source_index] = Some(displaced.clone());
+                    entity.inventory_additions.insert(source_index, displaced);
+                    entity.inventory_removals.remove(&source_index);
+                    entity.dirty_flags |= 0b1000;
+                }
+                Source::Equipped(source_slot) => {
+                    entity.equipped.insert(source_slot, displaced);
+                    entity.dirty_flags |= 0b10000;
+                }
+            }
+        }
+        return true;
+    }
+
+    if let Some(target_slot) = to_equipped_slot {
+        if moving_item_slot.as_deref() != Some(target_slot.trim().to_ascii_lowercase().as_str()) {
+            return false;
+        }
+
+        if let Source::Equipped(source_slot) = &source
+            && source_slot == &target_slot
+        {
+            return true;
+        }
+
+        let moving = match &source {
+            Source::Inventory(source_index) => entity.remove_item_from_slot(*source_index),
+            Source::Equipped(source_slot) => entity.unequip_item(source_slot).ok(),
+        };
+        let Some(moving) = moving else {
+            return false;
+        };
+
+        let displaced = entity.unequip_item(&target_slot).ok();
+        entity.equipped.insert(target_slot, moving);
+        entity.dirty_flags |= 0b10000;
+
+        if let Some(displaced) = displaced {
+            match source {
+                Source::Inventory(source_index) => {
+                    entity.inventory[source_index] = Some(displaced.clone());
+                    entity.inventory_additions.insert(source_index, displaced);
+                    entity.inventory_removals.remove(&source_index);
+                    entity.dirty_flags |= 0b1000;
+                }
+                Source::Equipped(source_slot) => {
+                    entity.equipped.insert(source_slot, displaced);
+                    entity.dirty_flags |= 0b10000;
+                }
+            }
+        }
+        return true;
+    }
+
+    false
+}
+
+fn take_item_for_entity(ctx: &mut RegionCtx, entity_id: u32, item_id: u32) -> bool {
+    let mut rc = true;
+
+    if let Some(pos) =
+        ctx.map.items.iter().position(|item| {
+            item.id == item_id && !item.attributes.get_bool_default("static", false)
+        })
+    {
+        let item = ctx.map.items.remove(pos);
+
+        if let Some(entity) = ctx
+            .map
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == entity_id)
+        {
+            let item_name = item
+                .attributes
+                .get_str("name")
+                .map(str::to_string)
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            fn article_for(item_name: &str) -> (&'static str, String) {
+                let name = item_name.to_ascii_lowercase();
+
+                let pair_items = ["trousers", "pants", "gloves", "boots", "scissors"];
+                let mass_items = ["armor", "cloth", "water", "meat"];
+
+                if pair_items.contains(&name.as_str()) {
+                    ("a pair of", item_name.to_string())
+                } else if mass_items.contains(&name.as_str()) {
+                    ("some", item_name.to_string())
+                } else {
+                    let first = name.chars().next().unwrap_or('x');
+                    let article = match first {
+                        'a' | 'e' | 'i' | 'o' | 'u' => "an",
+                        _ => "a",
+                    };
+                    (article, item_name.to_string())
+                }
+            }
+
+            let mut message = format!(
+                "You take {} {}",
+                article_for(&item_name.to_lowercase()).0,
+                item_name.to_lowercase()
+            );
+
+            if item.attributes.get_bool_default("monetary", false) {
+                let amount = item.attributes.get_int_default("worth", 0);
+                if amount > 0 {
+                    message = format!("You take {} gold.", amount);
+                    _ = entity.add_base_currency(amount as i64, &ctx.currencies);
+                }
+            } else if entity.add_item(item).is_err() {
+                println!("Take: Too many items");
+                if ctx.debug_mode {
+                    add_debug_value(ctx, TheValue::Text("Inventory Full".into()), true);
+                }
+                rc = false;
+            }
+
+            if ctx.debug_mode && rc {
+                add_debug_value(ctx, TheValue::Text("Ok".into()), false);
+            }
+
+            ctx.from_sender
+                .get()
+                .unwrap()
+                .send(RegionMessage::RemoveItem(ctx.region_id, item_id))
+                .unwrap();
+
+            let msg = RegionMessage::Message(
+                ctx.region_id,
+                Some(entity_id),
+                None,
+                entity_id,
+                message,
+                "system".into(),
+            );
+            ctx.from_sender.get().unwrap().send(msg).unwrap();
+        }
+    } else if ctx.debug_mode {
+        add_debug_value(ctx, TheValue::Text("Unknown Item".into()), true);
+    }
+    rc
 }
 
 /*

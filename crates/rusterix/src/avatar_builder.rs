@@ -37,6 +37,28 @@ impl AvatarRuntimeBuilder {
         frame_index: usize,
         shading: AvatarShadingOptions,
     ) -> Option<AvatarBuildOutput> {
+        Self::build_preview_for_entity_with_weapons(
+            entity,
+            avatar,
+            assets,
+            animation_name,
+            direction,
+            frame_index,
+            shading,
+            true,
+        )
+    }
+
+    pub fn build_preview_for_entity_with_weapons(
+        entity: &Entity,
+        avatar: &Avatar,
+        assets: &Assets,
+        animation_name: Option<&str>,
+        direction: AvatarDirection,
+        frame_index: usize,
+        shading: AvatarShadingOptions,
+        include_weapons: bool,
+    ) -> Option<AvatarBuildOutput> {
         let markers = Self::marker_colors_for_entity(entity, assets);
         let anim_name = animation_name.or_else(|| entity.attributes.get_str("avatar_animation"));
         let Some((resolved_anim, resolved_dir)) =
@@ -52,6 +74,9 @@ impl AvatarRuntimeBuilder {
             marker_colors: markers,
             shading,
         })?;
+        if !include_weapons {
+            return Some(out);
+        }
         let (main_anchor, off_anchor) =
             Self::frame_anchors(avatar, resolved_anim, resolved_dir, frame_index);
         let hand_mask = Self::frame_hand_mask(
@@ -803,6 +828,27 @@ impl AvatarRuntimeBuilder {
         frame_index: usize,
         geo_id: GeoId,
     ) -> bool {
+        self.ensure_entity_avatar_uploaded_with_direction(
+            vm,
+            entity,
+            avatar,
+            assets,
+            frame_index,
+            geo_id,
+            None,
+        )
+    }
+
+    pub fn ensure_entity_avatar_uploaded_with_direction(
+        &mut self,
+        vm: &mut SceneVM,
+        entity: &Entity,
+        avatar: &Avatar,
+        assets: &Assets,
+        frame_index: usize,
+        geo_id: GeoId,
+        direction_override: Option<AvatarDirection>,
+    ) -> bool {
         let update_avatar = entity.attributes.get_bool_default("update_avatar", false);
         let needs_rebuild_edge = if update_avatar {
             self.avatar_rebuild_latch.insert(geo_id)
@@ -818,7 +864,8 @@ impl AvatarRuntimeBuilder {
             return false;
         }
 
-        let direction = Self::avatar_direction_from_entity(entity);
+        let direction =
+            direction_override.unwrap_or_else(|| Self::avatar_direction_from_entity(entity));
         let animation_name = entity.attributes.get_str("avatar_animation");
         let Some((anim_name, persp_dir)) =
             Self::resolve_avatar_selection(avatar, animation_name, direction)

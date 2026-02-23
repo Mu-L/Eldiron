@@ -119,6 +119,46 @@ impl SharedAtlas {
         })
     }
 
+    /// Sample a tile frame alpha at normalized UV (0..1).
+    pub fn sample_tile_alpha(&self, id: &Uuid, anim_frame: u32, uv: [f32; 2]) -> Option<u8> {
+        let guard = self.inner.lock().unwrap();
+        let tile = guard.tiles_map.get(id)?;
+        let frame_count = tile.frames.len();
+        if tile.w == 0 || tile.h == 0 || frame_count == 0 {
+            return None;
+        }
+        let frame = &tile.frames[(anim_frame as usize) % frame_count];
+        let x = ((uv[0].clamp(0.0, 0.9999)) * tile.w as f32).floor() as usize;
+        let y = ((uv[1].clamp(0.0, 0.9999)) * tile.h as f32).floor() as usize;
+        let idx = (y * tile.w as usize + x) * 4;
+        frame.get(idx + 3).copied()
+    }
+
+    /// Returns true if a tile frame pixel matches the frame's top-left color (RGB only).
+    pub fn tile_pixel_matches_topleft_rgb(
+        &self,
+        id: &Uuid,
+        anim_frame: u32,
+        uv: [f32; 2],
+    ) -> Option<bool> {
+        let guard = self.inner.lock().unwrap();
+        let tile = guard.tiles_map.get(id)?;
+        let frame_count = tile.frames.len();
+        if tile.w == 0 || tile.h == 0 || frame_count == 0 {
+            return None;
+        }
+        let frame = &tile.frames[(anim_frame as usize) % frame_count];
+        if frame.len() < 4 {
+            return None;
+        }
+        let x = ((uv[0].clamp(0.0, 0.9999)) * tile.w as f32).floor() as usize;
+        let y = ((uv[1].clamp(0.0, 0.9999)) * tile.h as f32).floor() as usize;
+        let idx = (y * tile.w as usize + x) * 4;
+        let px = frame.get(idx..idx + 3)?;
+        let key = &frame[0..3];
+        Some(px == key)
+    }
+
     pub fn gpu_tile_tables(&self) -> AtlasGpuTables {
         let guard = self.inner.lock().unwrap();
         let mut metas: Vec<AtlasTileMeta> = Vec::new();
