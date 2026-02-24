@@ -114,6 +114,22 @@ impl Tool for LinedefTool {
     ) -> Option<ProjectUndoAtom> {
         let mut undo_atom: Option<ProjectUndoAtom> = None;
 
+        fn vertex_is_in_rect_sector(map: &Map, vertex_id: u32) -> bool {
+            for sector in &map.sectors {
+                if !sector.properties.get_bool_default("rect", false) {
+                    continue;
+                }
+                for &linedef_id in &sector.linedefs {
+                    if let Some(linedef) = map.find_linedef(linedef_id)
+                        && (linedef.start_vertex == vertex_id || linedef.end_vertex == vertex_id)
+                    {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+
         match map_event {
             MapKey(c) => {
                 match c {
@@ -138,7 +154,9 @@ impl Tool for LinedefTool {
                 // over linedef selection. This allows extending existing chains by clicking endpoints.
                 let mut over_vertex = false;
                 if let Some(grid) = &server_ctx.hover_cursor {
-                    if map.find_vertex_at(grid.x, grid.y).is_some() {
+                    if let Some(vertex_id) = map.find_vertex_at(grid.x, grid.y)
+                        && !vertex_is_in_rect_sector(map, vertex_id)
+                    {
                         over_vertex = true;
                     }
                 }

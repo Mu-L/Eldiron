@@ -392,6 +392,10 @@ impl GameWidget {
 
         scene_handler.settings.apply_hour(hour);
         scene_handler.settings.apply_2d(&mut scene_handler.vm);
+        // 2D should always render against black, independent of project sky color/simulation.
+        scene_handler
+            .vm
+            .execute(scenevm::Atom::SetGP0(Vec4::zero()));
 
         scene_handler
             .vm

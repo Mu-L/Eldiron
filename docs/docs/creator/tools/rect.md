@@ -11,7 +11,8 @@ Unlike other map-based tools, the **Rect Tool does not edit geometry**—instead
 
 - The **Rect Tool automatically creates the geometry** for a **sector** and **assigns the selected tile**.
 - Click on the map to **draw**.
-- **Shift + Click** to **delete content**.
+- Hold **Shift** while drawing to **erase content**.
+- Hold **Cmd/Ctrl** while drawing to paint **straight lines** (axis-constrained from the start cell).
 
 ## When to Use the Rect Tool
 

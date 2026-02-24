@@ -622,6 +622,10 @@ impl Client {
 
         scene_handler.settings.apply_hour(hour);
         scene_handler.settings.apply_2d(&mut scene_handler.vm);
+        // Editor 2D should always render on black, independent of project sky color/simulation.
+        scene_handler
+            .vm
+            .execute(scenevm::Atom::SetGP0(Vec4::zero()));
 
         scene_handler
             .vm

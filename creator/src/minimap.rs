@@ -314,6 +314,10 @@ pub fn draw_minimap(
                 .execute(scenevm::Atom::SetRenderMode(scenevm_mode_2d));
             scene_handler.settings.apply_hour(hour);
             scene_handler.settings.apply_2d(&mut scene_handler.vm);
+            // Minimap 2D background should stay black regardless of project sky settings.
+            scene_handler
+                .vm
+                .execute(scenevm::Atom::SetGP0(Vec4::zero()));
             scene_handler
                 .vm
                 .execute(scenevm::Atom::SetTransform2D(transform));

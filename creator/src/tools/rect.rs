@@ -20,6 +20,8 @@ pub struct RectTool {
     stroke_prev_map: Option<Map>,
     stroke_work_map: Option<Map>,
     last_2d_cell: Option<Vec2<i32>>,
+    line_start_2d_cell: Option<Vec2<i32>>,
+    line_axis_horizontal: Option<bool>,
 }
 
 impl Tool for RectTool {
@@ -41,6 +43,8 @@ impl Tool for RectTool {
             stroke_prev_map: None,
             stroke_work_map: None,
             last_2d_cell: None,
+            line_start_2d_cell: None,
+            line_axis_horizontal: None,
         }
     }
 
@@ -275,9 +279,9 @@ impl Tool for RectTool {
                     Vec2::new(dim.width as f32, dim.height as f32),
                     Vec2::new(coord.x as f32, coord.y as f32),
                     map,
-                    map.subdivisions,
+                    1.0,
                 );
-                let step = 1.0 / map.subdivisions.max(1.0);
+                let step = 1.0;
                 map.curr_rectangle = Some((cp, cp + step));
                 hovered_vertices = Some([
                     cp,
@@ -297,14 +301,7 @@ impl Tool for RectTool {
         }
 
         match map_event {
-            MapKey(c) => {
-                match c {
-                    '1'..='9' => map.subdivisions = (c as u8 - b'0') as f32,
-                    '0' => map.subdivisions = 10.0,
-                    _ => {}
-                }
-                crate::editor::RUSTERIX.write().unwrap().set_dirty();
-            }
+            MapKey(_c) => {}
             MapClicked(coord) => {
                 if self.hud.clicked(coord.x, coord.y, map, ui, ctx, server_ctx) {
                     crate::editor::RUSTERIX.write().unwrap().set_dirty();
@@ -317,23 +314,22 @@ impl Tool for RectTool {
                         map.properties.get_bool_default("terrain_enabled", false);
                     if let Some(cp) = server_ctx.hover_cursor {
                         self.begin_stroke_if_needed(map);
-                        let sub = map.subdivisions.max(1.0);
                         let k = if use_terrain_paint {
                             Vec2::new(cp.x.floor() as i32, cp.y.floor() as i32)
                         } else {
-                            Vec2::new((cp.x * sub).floor() as i32, (cp.y * sub).floor() as i32)
+                            Vec2::new(cp.x.floor() as i32, cp.y.floor() as i32)
                         };
-                        eprintln!(
-                            "[rect][d2-click] mouse=({}, {}) cp=({:.3}, {:.3}) sub={:.3} key=({}, {})",
-                            coord.x, coord.y, cp.x, cp.y, sub, k.x, k.y
-                        );
+                        if ui.ctrl && !use_terrain_paint {
+                            self.line_start_2d_cell = Some(k);
+                            self.line_axis_horizontal = None;
+                        }
                         if let Some(work_map) = self.stroke_work_map.as_mut() {
                             let changed = if use_terrain_paint {
                                 server_ctx.rect_terrain_id = Some((k.x, k.y));
                                 Self::apply_3d_paint_at_current_target(work_map, ui, server_ctx)
                                     .is_some()
                             } else {
-                                let step = 1.0 / sub;
+                                let step = 1.0;
                                 let x = k.x as f32 * step;
                                 let y = k.y as f32 * step;
                                 let verts = Some([
@@ -346,24 +342,9 @@ impl Tool for RectTool {
                             };
                             if changed {
                                 self.stroke_changed = true;
-                                eprintln!(
-                                    "[rect][d2-click] changed=true processed_before={}",
-                                    self.processed.len()
-                                );
-                            } else {
-                                eprintln!(
-                                    "[rect][d2-click] changed=false processed_before={}",
-                                    self.processed.len()
-                                );
                             }
                             self.processed.insert(k);
                             self.last_2d_cell = Some(k);
-                            eprintln!(
-                                "[rect][d2-click] processed_after={} last=({}, {})",
-                                self.processed.len(),
-                                k.x,
-                                k.y
-                            );
                         }
                     }
                 } else {
@@ -390,23 +371,36 @@ impl Tool for RectTool {
                     self.hovered_vertices = apply_hover(coord, ui, ctx, map, server_ctx);
                     if let Some(cp) = server_ctx.hover_cursor {
                         self.begin_stroke_if_needed(map);
-                        let sub = map.subdivisions.max(1.0);
                         let k = if use_terrain_paint {
                             Vec2::new(cp.x.floor() as i32, cp.y.floor() as i32)
                         } else {
-                            Vec2::new((cp.x * sub).floor() as i32, (cp.y * sub).floor() as i32)
+                            Vec2::new(cp.x.floor() as i32, cp.y.floor() as i32)
                         };
                         if let Some(work_map) = self.stroke_work_map.as_mut() {
-                            let from = self.last_2d_cell.unwrap_or(k);
-                            let step = 1.0 / sub;
-                            let between = Self::cells_between(from, k);
-                            let mut attempted = 0usize;
-                            let mut skipped = 0usize;
-                            let mut changed_count = 0usize;
+                            let line_anchor = self.line_start_2d_cell.unwrap_or(k);
+                            let mut to = k;
+                            if ui.ctrl && !use_terrain_paint {
+                                if self.line_axis_horizontal.is_none() {
+                                    let dx = (to.x - line_anchor.x).abs();
+                                    let dy = (to.y - line_anchor.y).abs();
+                                    if dx > 0 || dy > 0 {
+                                        self.line_axis_horizontal = Some(dx >= dy);
+                                    }
+                                }
+                                if let Some(horizontal) = self.line_axis_horizontal {
+                                    if horizontal {
+                                        to.y = line_anchor.y;
+                                    } else {
+                                        to.x = line_anchor.x;
+                                    }
+                                }
+                            }
+
+                            let from = self.last_2d_cell.unwrap_or(to);
+                            let step = 1.0;
+                            let between = Self::cells_between(from, to);
                             for cell in between.iter().copied() {
-                                attempted += 1;
                                 if self.processed.contains(&cell) {
-                                    skipped += 1;
                                     continue;
                                 }
                                 let changed = if use_terrain_paint {
@@ -427,28 +421,10 @@ impl Tool for RectTool {
                                 };
                                 if changed {
                                     self.stroke_changed = true;
-                                    changed_count += 1;
                                 }
                                 self.processed.insert(cell);
                             }
-                            eprintln!(
-                                "[rect][d2-drag] mouse=({}, {}) cp=({:.3}, {:.3}) sub={:.3} from=({}, {}) to=({}, {}) between={} attempted={} skipped={} changed={} processed={}",
-                                coord.x,
-                                coord.y,
-                                cp.x,
-                                cp.y,
-                                sub,
-                                from.x,
-                                from.y,
-                                k.x,
-                                k.y,
-                                between.len(),
-                                attempted,
-                                skipped,
-                                changed_count,
-                                self.processed.len()
-                            );
-                            self.last_2d_cell = Some(k);
+                            self.last_2d_cell = Some(to);
                         }
                     }
                 } else {
@@ -466,13 +442,6 @@ impl Tool for RectTool {
             }
             MapUp(_) => {
                 if self.stroke_active {
-                    eprintln!(
-                        "[rect][stroke-up] changed={} processed={} has_prev={} has_work={}",
-                        self.stroke_changed,
-                        self.processed.len(),
-                        self.stroke_prev_map.is_some(),
-                        self.stroke_work_map.is_some()
-                    );
                     if self.stroke_changed
                         && let (Some(prev), Some(new_map)) =
                             (self.stroke_prev_map.take(), self.stroke_work_map.take())
@@ -607,18 +576,6 @@ impl RectTool {
             self.stroke_prev_map = Some(map.clone());
             self.stroke_work_map = Some(map.clone());
             self.processed.clear();
-            eprintln!(
-                "[rect][stroke-begin] sub={:.3} tiles={} blend_tiles={}",
-                map.subdivisions,
-                match map.properties.get("tiles") {
-                    Some(Value::TileOverrides(m)) => m.len(),
-                    _ => 0,
-                },
-                match map.properties.get("blend_tiles") {
-                    Some(Value::BlendOverrides(m)) => m.len(),
-                    _ => 0,
-                }
-            );
         }
     }
 
@@ -628,6 +585,8 @@ impl RectTool {
         self.stroke_prev_map = None;
         self.stroke_work_map = None;
         self.last_2d_cell = None;
+        self.line_start_2d_cell = None;
+        self.line_axis_horizontal = None;
         self.processed.clear();
     }
 

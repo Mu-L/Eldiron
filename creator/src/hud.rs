@@ -221,6 +221,7 @@ impl Hud {
         // Show Subdivs
         if (map.camera == MapCamera::TwoD || server_ctx.get_map_context() == MapContext::Screen)
             && self.mode != HudMode::Terrain
+            && self.mode != HudMode::Rect
         {
             let x = 150;
 
@@ -589,10 +590,12 @@ impl Hud {
                 return true;
             }
         }
-        for (i, rect) in self.subdiv_rects.iter().enumerate() {
-            if rect.contains(Vec2::new(x, y)) {
-                map.subdivisions = (i + 1) as f32;
-                return true;
+        if self.mode != HudMode::Rect {
+            for (i, rect) in self.subdiv_rects.iter().enumerate() {
+                if rect.contains(Vec2::new(x, y)) {
+                    map.subdivisions = (i + 1) as f32;
+                    return true;
+                }
             }
         }
 
