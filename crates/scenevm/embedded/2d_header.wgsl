@@ -29,7 +29,9 @@ struct Vert {
   pos: vec2<f32>,
   uv: vec2<f32>,
   tile_index: u32,
-  _pad_tile: u32,
+  tile_index2: u32,
+  blend_factor: f32,
+  _pad0: u32,
 };
 struct Verts { data: array<Vert> };
 struct Indices { data: array<u32> };
@@ -330,12 +332,12 @@ fn sv_tile_frame(tile_index: u32) -> TileFrame {
   return tile_frames.data[frame_idx];
 }
 
-fn sv_tri_atlas_uv(i0: u32, i1: u32, i2: u32, w: vec3<f32>) -> vec2<f32> {
+fn sv_tri_atlas_uv_for_tile(i0: u32, i1: u32, i2: u32, w: vec3<f32>, tile_index: u32) -> vec2<f32> {
   let uv0 = verts.data[i0].uv;
   let uv1 = verts.data[i1].uv;
   let uv2 = verts.data[i2].uv;
   let uv_obj = uv0 * w.x + uv1 * w.y + uv2 * w.z;
-  let frame = sv_tile_frame(verts.data[i0].tile_index);
+  let frame = sv_tile_frame(tile_index);
   let uv_wrapped = fract(uv_obj);
   return frame.ofs + uv_wrapped * frame.scale;
 }
@@ -348,8 +350,29 @@ fn sv_tri_color(p: vec2<f32>, i0: u32, i1: u32, i2: u32) -> ColorHit {
   if (!bh.hit) { return ColorHit(false, 0u, 0u, 0u, vec4<f32>(0.0), 0u, 0u, vec2<f32>(0.0), 0u, 0u); }
 
   let w = bh.w;
-  let uv = sv_tri_atlas_uv(i0, i1, i2, w);
-  var col = sv_sample(uv);
+  let tile0 = verts.data[i0].tile_index;
+  let uv = sv_tri_atlas_uv_for_tile(i0, i1, i2, w, tile0);
+  let col0 = sv_sample(uv);
+  let blend = clamp(
+    verts.data[i0].blend_factor * w.x +
+    verts.data[i1].blend_factor * w.y +
+    verts.data[i2].blend_factor * w.z,
+    0.0,
+    1.0
+  );
+
+  var col = col0;
+  let tile1 = verts.data[i0].tile_index2;
+  if (tile1 != tile0 && blend > 0.0) {
+    let uv2 = sv_tri_atlas_uv_for_tile(i0, i1, i2, w, tile1);
+    let col1 = sv_sample(uv2);
+    // Alpha-aware overlay to avoid dark/black artifacts when the secondary tile
+    // contains transparent pixels (e.g. road caps/edges).
+    let overlay_a = clamp(blend * col1.a, 0.0, 1.0);
+    let out_rgb = mix(col0.rgb, col1.rgb, overlay_a);
+    let out_a = max(col0.a, overlay_a);
+    col = vec4<f32>(out_rgb, out_a);
+  }
   if (col.a < 0.01) { return ColorHit(false, 0u, 0u, 0u, vec4<f32>(0.0), 0u, 0u, vec2<f32>(0.0), 0u, 0u); }
 
   // --- Analytic edge AA ---

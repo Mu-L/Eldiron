@@ -749,7 +749,7 @@ impl Rasterizer {
                                             }
                                             PixelSource::Terrain => {
                                                 if let Some(chunk) = chunk {
-                                                    chunk.sample_terrain_texture(world, Vec2::one())
+                                                    chunk.sample_terrain_texture(world)
                                                 } else {
                                                     [0, 0, 0, 0]
                                                 }
@@ -1188,8 +1188,8 @@ impl Rasterizer {
                                         }
                                         PixelSource::Terrain => {
                                             if let Some(chunk) = chunk {
-                                                let mut texel = chunk
-                                                    .sample_terrain_texture(world_2d, Vec2::one());
+                                                let mut texel =
+                                                    chunk.sample_terrain_texture(world_2d);
                                                 if let Some(brush_preview) = &self.brush_preview {
                                                     let dist = (world - brush_preview.position)
                                                         .magnitude();
@@ -1596,8 +1596,8 @@ impl Rasterizer {
                                         }
                                         PixelSource::Terrain => {
                                             if let Some(chunk) = chunk {
-                                                let mut texel = chunk
-                                                    .sample_terrain_texture(world_2d, Vec2::one());
+                                                let mut texel =
+                                                    chunk.sample_terrain_texture(world_2d);
                                                 if let Some(brush_preview) = &self.brush_preview {
                                                     let dist = (world - brush_preview.position)
                                                         .magnitude();

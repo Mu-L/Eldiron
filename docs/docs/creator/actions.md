@@ -39,7 +39,12 @@ Jump into a first-person preview of the region. This also clears any active surf
 
 ### Editing Slice
 
-Offsets the slice plane (-5..5) when in 2D editing without an active surface, letting you peek through layered geometry.
+Offsets the slice plane when in 2D editing without an active surface, letting you peek through layered geometry.
+
+The slice position is not fixed to a small range (useful for tall maps / mountains).
+
+It also defines the **slice height/thickness** (`1..10`, default `2`).  
+A higher value includes more geometry around the slice for both preview and selection.
 
 ---
 

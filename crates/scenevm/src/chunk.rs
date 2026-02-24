@@ -24,6 +24,22 @@ pub struct Chunk {
 }
 
 impl Chunk {
+    fn insert_poly2d_allow_terrain_dupes(&mut self, poly: Poly2D) {
+        if self.polys_map.contains_key(&poly.id)
+            && let GeoId::Terrain(tx, tz) = poly.id
+            && let Some(mut existing) = self.polys_map.remove(&poly.id)
+        {
+            let salt = self.polys_map.len() as u32;
+            let h = ((tx as u32).wrapping_mul(73856093))
+                ^ ((tz as u32).wrapping_mul(19349663))
+                ^ salt
+                ^ (existing.tile_id.as_u128() as u32);
+            existing.id = GeoId::Unknown(0x7000_0000u32 ^ h);
+            self.polys_map.insert(existing.id, existing);
+        }
+        self.polys_map.insert(poly.id, poly);
+    }
+
     pub fn new(origin: Vec2<i32>, size: i32) -> Self {
         let bbox = BBox2D::from_pos_size(origin.map(|v| v as f32), Vec2::broadcast(size as f32));
         Self {
@@ -35,7 +51,7 @@ impl Chunk {
     }
 
     pub fn add(&mut self, poly: Poly2D) {
-        self.polys_map.insert(poly.id, poly);
+        self.insert_poly2d_allow_terrain_dupes(poly);
     }
 
     pub fn add_3d(&mut self, poly: Poly3D) {
@@ -56,6 +72,8 @@ impl Chunk {
         let poly = Poly2D {
             id,
             tile_id,
+            tile_id2: None,
+            blend_weights: Vec::new(),
             vertices,
             uvs,
             indices,
@@ -63,7 +81,7 @@ impl Chunk {
             layer,
             visible,
         };
-        self.polys_map.insert(id, poly);
+        self.insert_poly2d_allow_terrain_dupes(poly);
     }
 
     /// Add a 2D line strip tessellated into thick quads (no caps/joins) as one poly.
@@ -119,6 +137,8 @@ impl Chunk {
         let poly = Poly2D {
             id,
             tile_id,
+            tile_id2: None,
+            blend_weights: Vec::new(),
             vertices,
             uvs,
             indices,
@@ -126,7 +146,7 @@ impl Chunk {
             layer,
             visible: true,
         };
-        self.polys_map.insert(id, poly);
+        self.insert_poly2d_allow_terrain_dupes(poly);
     }
 
     /// Add a 2D line strip rendered with a constant pixel width (screen-space).
@@ -186,6 +206,8 @@ impl Chunk {
         let poly = Poly2D {
             id,
             tile_id,
+            tile_id2: None,
+            blend_weights: Vec::new(),
             vertices,
             uvs,
             indices,
@@ -193,7 +215,7 @@ impl Chunk {
             layer,
             visible,
         };
-        self.polys_map.insert(id, poly);
+        self.insert_poly2d_allow_terrain_dupes(poly);
     }
 
     /// Add a 3D polygon
@@ -219,6 +241,34 @@ impl Chunk {
             tile_id2: None,
             blend_weights: Vec::new(),
         });
+    }
+
+    /// Add a 2D polygon with texture blending.
+    pub fn add_poly_2d_blended(
+        &mut self,
+        id: GeoId,
+        tile_id: Uuid,
+        tile_id2: Uuid,
+        vertices: Vec<[f32; 2]>,
+        uvs: Vec<[f32; 2]>,
+        blend_weights: Vec<f32>,
+        indices: Vec<(usize, usize, usize)>,
+        layer: i32,
+        visible: bool,
+    ) {
+        let poly = Poly2D {
+            id,
+            tile_id,
+            tile_id2: Some(tile_id2),
+            blend_weights,
+            vertices,
+            uvs,
+            indices,
+            transform: Mat3::identity(),
+            layer,
+            visible,
+        };
+        self.insert_poly2d_allow_terrain_dupes(poly);
     }
 
     /// Add a 3D polygon with texture blending

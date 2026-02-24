@@ -120,7 +120,7 @@ impl DynamicObject {
             tile_id,
             Vec3::new(pos.x, pos.y, 0.0),
             Vec3::unit_x(),
-            Vec3::unit_y(),
+            Vec3::new(0.0, -1.0, 0.0),
             width,
             height,
         )
@@ -157,7 +157,7 @@ impl DynamicObject {
             id,
             Vec3::new(pos.x, pos.y, 0.0),
             Vec3::unit_x(),
-            Vec3::unit_y(),
+            Vec3::new(0.0, -1.0, 0.0),
             width,
             height,
         )

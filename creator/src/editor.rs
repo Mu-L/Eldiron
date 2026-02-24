@@ -3,6 +3,7 @@ use crate::prelude::*;
 #[cfg(all(not(target_arch = "wasm32"), feature = "self-update"))]
 use crate::self_update::{SelfUpdateEvent, SelfUpdater};
 use codegridfx::Module;
+use rusterix::render_settings::RendererBackend;
 use rusterix::{
     PlayerCamera, Rusterix, SceneManager, SceneManagerResult, Texture, Value, ValueContainer,
 };
@@ -881,7 +882,6 @@ impl TheTrait for Editor {
 
                     let rusterix = &mut RUSTERIX.write().unwrap();
                     let is_running = rusterix.server.state == rusterix::ServerState::Running;
-                    let b = &mut rusterix.client.builder_d2;
 
                     if is_running && self.server_ctx.game_mode {
                         for r in &mut self.project.regions {
@@ -956,19 +956,25 @@ impl TheTrait for Editor {
                             if let Some(region) =
                                 self.project.get_region(&self.server_ctx.curr_region)
                             {
-                                b.set_clip_rect(None);
-                                b.set_map_tool_type(self.server_ctx.curr_map_tool_type);
+                                rusterix.client.builder_d2.set_clip_rect(None);
+                                rusterix
+                                    .client
+                                    .builder_d2
+                                    .set_map_tool_type(self.server_ctx.curr_map_tool_type);
                                 if let Some(hover_cursor) = self.server_ctx.hover_cursor {
-                                    b.set_map_hover_info(
+                                    rusterix.client.builder_d2.set_map_hover_info(
                                         self.server_ctx.hover,
                                         Some(vek::Vec2::new(hover_cursor.x, hover_cursor.y)),
                                     );
                                 } else {
-                                    b.set_map_hover_info(self.server_ctx.hover, None);
+                                    rusterix
+                                        .client
+                                        .builder_d2
+                                        .set_map_hover_info(self.server_ctx.hover, None);
                                 }
 
                                 if let Some(camera_pos) = region.map.camera_xz {
-                                    b.set_camera_info(
+                                    rusterix.client.builder_d2.set_camera_info(
                                         Some(Vec3::new(camera_pos.x, 0.0, camera_pos.y)),
                                         None,
                                     );
@@ -1023,6 +1029,25 @@ impl TheTrait for Editor {
                             }
 
                             if let Some(map) = self.project.get_map_mut(&self.server_ctx) {
+                                if self.server_ctx.editor_view_mode == EditorViewMode::D2 {
+                                    rusterix.scene_handler.settings.backend_2d =
+                                        RendererBackend::Raster;
+                                    rusterix.set_d2();
+                                }
+                                if is_running
+                                    && self.server_ctx.editor_view_mode == EditorViewMode::D2
+                                {
+                                    let animation_frame = rusterix.client.animation_frame;
+                                    rusterix.build_dynamics_2d(map, animation_frame);
+                                }
+                                if self.server_ctx.editor_view_mode == EditorViewMode::D2
+                                    && rusterix.scene_handler.vm.vm_layer_count() > 1
+                                {
+                                    rusterix.scene_handler.vm.set_layer_enabled(
+                                        1,
+                                        self.server_ctx.show_editing_geometry,
+                                    );
+                                }
                                 rusterix.draw_scene(
                                     map,
                                     render_view.render_buffer_mut().pixels_mut(),
@@ -1033,15 +1058,25 @@ impl TheTrait for Editor {
                         } else if self.server_ctx.get_map_context() == MapContext::Region
                             && self.server_ctx.editing_surface.is_some()
                         {
-                            b.set_map_tool_type(self.server_ctx.curr_map_tool_type);
+                            rusterix
+                                .client
+                                .builder_d2
+                                .set_map_tool_type(self.server_ctx.curr_map_tool_type);
                             if let Some(profile) = self.project.get_map_mut(&self.server_ctx) {
+                                if rusterix.scene_handler.vm.vm_layer_count() > 1 {
+                                    // Profile editor relies on 2D overlay guides.
+                                    rusterix.scene_handler.vm.set_layer_enabled(1, true);
+                                }
                                 if let Some(hover_cursor) = self.server_ctx.hover_cursor {
-                                    b.set_map_hover_info(
+                                    rusterix.client.builder_d2.set_map_hover_info(
                                         self.server_ctx.hover,
                                         Some(vek::Vec2::new(hover_cursor.x, hover_cursor.y)),
                                     );
                                 } else {
-                                    b.set_map_hover_info(self.server_ctx.hover, None);
+                                    rusterix
+                                        .client
+                                        .builder_d2
+                                        .set_map_hover_info(self.server_ctx.hover, None);
                                 }
 
                                 if let Some(clipboard) = &self.server_ctx.paste_clipboard {
@@ -1086,35 +1121,52 @@ impl TheTrait for Editor {
                             || self.server_ctx.get_map_context() == MapContext::Item
                             || self.server_ctx.get_map_context() == MapContext::Screen
                         {
-                            b.set_map_tool_type(self.server_ctx.curr_map_tool_type);
+                            rusterix
+                                .client
+                                .builder_d2
+                                .set_map_tool_type(self.server_ctx.curr_map_tool_type);
                             if let Some(map) = self.project.get_map_mut(&self.server_ctx) {
+                                if rusterix.scene_handler.vm.vm_layer_count() > 1 {
+                                    // Screen/character/item overlays should respect toggle.
+                                    rusterix.scene_handler.vm.set_layer_enabled(
+                                        1,
+                                        self.server_ctx.show_editing_geometry,
+                                    );
+                                }
                                 if let Some(hover_cursor) = self.server_ctx.hover_cursor {
-                                    b.set_map_hover_info(
+                                    rusterix.client.builder_d2.set_map_hover_info(
                                         self.server_ctx.hover,
                                         Some(vek::Vec2::new(hover_cursor.x, hover_cursor.y)),
                                     );
                                 } else {
-                                    b.set_map_hover_info(self.server_ctx.hover, None);
+                                    rusterix
+                                        .client
+                                        .builder_d2
+                                        .set_map_hover_info(self.server_ctx.hover, None);
                                 }
 
                                 if self.server_ctx.get_map_context() != MapContext::Screen {
-                                    b.set_clip_rect(Some(rusterix::Rect {
-                                        x: -5.0,
-                                        y: -5.0,
-                                        width: 10.0,
-                                        height: 10.0,
-                                    }));
+                                    rusterix.client.builder_d2.set_clip_rect(Some(
+                                        rusterix::Rect {
+                                            x: -5.0,
+                                            y: -5.0,
+                                            width: 10.0,
+                                            height: 10.0,
+                                        },
+                                    ));
                                 } else {
                                     let viewport = CONFIGEDITOR.read().unwrap().viewport;
                                     let grid_size = CONFIGEDITOR.read().unwrap().grid_size as f32;
                                     let w = viewport.x as f32 / grid_size;
                                     let h = viewport.y as f32 / grid_size;
-                                    b.set_clip_rect(Some(rusterix::Rect {
-                                        x: -w / 2.0,
-                                        y: -h / 2.0,
-                                        width: w,
-                                        height: h,
-                                    }));
+                                    rusterix.client.builder_d2.set_clip_rect(Some(
+                                        rusterix::Rect {
+                                            x: -w / 2.0,
+                                            y: -h / 2.0,
+                                            width: w,
+                                            height: h,
+                                        },
+                                    ));
                                 }
 
                                 if let Some(clipboard) = &self.server_ctx.paste_clipboard {
@@ -1291,6 +1343,10 @@ impl TheTrait for Editor {
                         self.build_values.set(
                             "editing_slice",
                             rusterix::Value::Float(self.server_ctx.editing_slice),
+                        );
+                        self.build_values.set(
+                            "editing_slice_height",
+                            rusterix::Value::Float(self.server_ctx.editing_slice_height),
                         );
                         rusterix
                             .client

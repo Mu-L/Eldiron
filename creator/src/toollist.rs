@@ -1,7 +1,8 @@
-use crate::editor::{DOCKMANAGER, RUSTERIX, UNDOMANAGER};
+use crate::editor::{DOCKMANAGER, RUSTERIX, SCENEMANAGER, UNDOMANAGER};
 use crate::prelude::*;
 pub use crate::tools::rect::RectTool;
 use rusterix::Assets;
+use rusterix::PixelSource;
 use rusterix::chunkbuilder::terrain_generator::{TerrainConfig, TerrainGenerator};
 use scenevm::GeoId;
 
@@ -25,6 +26,53 @@ impl Default for ToolList {
 }
 
 impl ToolList {
+    fn collect_terrain_tile_overrides(map: &Map) -> FxHashMap<(i32, i32), PixelSource> {
+        match map.properties.get("tiles") {
+            Some(Value::TileOverrides(tiles)) => tiles.clone(),
+            _ => FxHashMap::default(),
+        }
+    }
+
+    fn collect_terrain_blend_overrides(
+        map: &Map,
+    ) -> FxHashMap<(i32, i32), (VertexBlendPreset, PixelSource)> {
+        match map.properties.get("blend_tiles") {
+            Some(Value::BlendOverrides(tiles)) => tiles.clone(),
+            _ => FxHashMap::default(),
+        }
+    }
+
+    fn changed_terrain_override_keys(old_map: &Map, new_map: &Map) -> FxHashSet<(i32, i32)> {
+        let old_tiles = Self::collect_terrain_tile_overrides(old_map);
+        let new_tiles = Self::collect_terrain_tile_overrides(new_map);
+        let old_blends = Self::collect_terrain_blend_overrides(old_map);
+        let new_blends = Self::collect_terrain_blend_overrides(new_map);
+
+        let mut keys = FxHashSet::default();
+        for k in old_tiles.keys() {
+            keys.insert(*k);
+        }
+        for k in new_tiles.keys() {
+            keys.insert(*k);
+        }
+        for k in old_blends.keys() {
+            keys.insert(*k);
+        }
+        for k in new_blends.keys() {
+            keys.insert(*k);
+        }
+
+        let mut changed = FxHashSet::default();
+        for key in keys {
+            if old_tiles.get(&key) != new_tiles.get(&key)
+                || old_blends.get(&key) != new_blends.get(&key)
+            {
+                changed.insert(key);
+            }
+        }
+        changed
+    }
+
     fn apply_editor_rgba_mode(&mut self, ui: &mut TheUI, ctx: &mut TheContext) {
         if !self.editor_mode || self.curr_editor_tool >= self.editor_tools.len() {
             return;
@@ -161,7 +209,32 @@ impl ToolList {
                     } else {
                         self.update_geometry_overlay_3d(project, server_ctx);
                     }
-                    crate::utils::scenemanager_render_map(project, server_ctx);
+                    let mut used_incremental_terrain_update = false;
+                    if server_ctx.curr_map_tool_type == MapToolType::Rect
+                        && server_ctx.editor_view_mode != EditorViewMode::D2
+                        && let ProjectUndoAtom::MapEdit(_, old_map, new_map) = &undo_atom
+                    {
+                        let changed_keys = Self::changed_terrain_override_keys(old_map, new_map);
+
+                        if !changed_keys.is_empty() {
+                            let chunk_size = new_map.terrain.chunk_size.max(1);
+                            let mut dirty_chunks: FxHashSet<(i32, i32)> = FxHashSet::default();
+                            for (x, z) in changed_keys {
+                                let cx = x.div_euclid(chunk_size) * chunk_size;
+                                let cz = z.div_euclid(chunk_size) * chunk_size;
+                                dirty_chunks.insert((cx, cz));
+                            }
+
+                            let mut sm = SCENEMANAGER.write().unwrap();
+                            sm.update_map((**new_map).clone());
+                            sm.add_dirty(dirty_chunks.into_iter().collect());
+                            used_incremental_terrain_update = true;
+                        }
+                    }
+
+                    if !used_incremental_terrain_update {
+                        crate::utils::scenemanager_render_map(project, server_ctx);
+                    }
                     crate::editor::RUSTERIX.write().unwrap().set_dirty();
                 }
             }

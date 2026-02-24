@@ -376,8 +376,8 @@ impl Default for RenderSettings {
 impl RenderSettings {
     pub fn scenevm_mode_2d(&self) -> SceneVmRenderMode {
         match self.backend_2d {
-            // Raster backend scaffold: keep compute path until raster VM mode lands.
-            RendererBackend::Compute | RendererBackend::Raster => SceneVmRenderMode::Compute2D,
+            RendererBackend::Compute => SceneVmRenderMode::Compute2D,
+            RendererBackend::Raster => SceneVmRenderMode::Raster2D,
         }
     }
 
@@ -753,13 +753,51 @@ impl RenderSettings {
     /// Apply these render settings to a SceneVM instance
     pub fn apply_2d(&mut self, vm: &mut SceneVM) {
         self.update_transitions();
+        let to_linear = |c: f32| c.powf(2.2);
 
-        // gp1: Sky color (RGB) + unused w
-        vm.execute(Atom::SetGP1(Vec4::new(
-            self.sky_color[0],
-            self.sky_color[1],
-            self.sky_color[2],
+        // gp0: Sky color (RGB, linear) + unused w
+        vm.execute(Atom::SetGP0(Vec4::new(
+            to_linear(self.sky_color[0]),
+            to_linear(self.sky_color[1]),
+            to_linear(self.sky_color[2]),
             0.0,
+        )));
+
+        // gp1: Sun color (RGB, linear) + sun intensity (w)
+        vm.execute(Atom::SetGP1(Vec4::new(
+            to_linear(self.sun_color[0]),
+            to_linear(self.sun_color[1]),
+            to_linear(self.sun_color[2]),
+            self.sun_intensity,
+        )));
+        // gp2: Sun direction + enabled flag.
+        let sun_dir = vek::Vec3::from(self.sun_direction).normalized();
+        vm.execute(Atom::SetGP2(Vec4::new(
+            sun_dir.x,
+            sun_dir.y,
+            sun_dir.z,
+            if self.sun_enabled { 1.0 } else { 0.0 },
+        )));
+        // gp3: Ambient color + strength.
+        vm.execute(Atom::SetGP3(Vec4::new(
+            to_linear(self.ambient_color[0]),
+            to_linear(self.ambient_color[1]),
+            to_linear(self.ambient_color[2]),
+            self.ambient_strength,
+        )));
+
+        // Keep post-processing controls in sync with 3D so 2D/3D color response matches.
+        vm.execute(Atom::SetGP8(Vec4::new(
+            self.fade_mode.as_code() as f32,
+            self.lighting_model.as_code() as f32,
+            self.post_saturation.max(0.0),
+            self.post_luminance.max(0.0),
+        )));
+        vm.execute(Atom::SetGP9(Vec4::new(
+            if self.post_enabled { 1.0 } else { 0.0 },
+            self.post_tone_mapper.as_code() as f32,
+            self.post_exposure.max(0.0),
+            self.post_gamma.max(0.001),
         )));
     }
 

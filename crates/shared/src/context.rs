@@ -449,6 +449,8 @@ pub struct ServerContext {
 
     /// Position of the 2D editing slice.
     pub editing_slice: f32,
+    /// Height/thickness of the 2D editing slice.
+    pub editing_slice_height: f32,
 
     /// The current plane for 3D movement
     pub gizmo_mode: GizmoMode,
@@ -569,6 +571,7 @@ impl ServerContext {
             gizmo_mode: GizmoMode::XZ,
 
             editing_slice: 0.0,
+            editing_slice_height: 2.0,
             rect_sector_id_3d: None,
             rect_tile_id_3d: (0, 0),
             rect_terrain_id: None,
@@ -746,7 +749,7 @@ impl ServerContext {
 
         // Check the vertices
         for vertex in &map.vertices {
-            if vertex.intersects_vertical_slice(self.editing_slice, 1.0) {
+            if vertex.intersects_vertical_slice(self.editing_slice, self.editing_slice_height) {
                 if let Some(vertex_pos) = map.get_vertex(vertex.id) {
                     let vertex_pos = Self::map_grid_to_local(screen_size, vertex_pos, map);
                     if (screen_pos - vertex_pos).magnitude() <= hover_threshold {
@@ -759,7 +762,8 @@ impl ServerContext {
 
         // Check the lines
         for linedef in &map.linedefs {
-            if linedef.intersects_vertical_slice(map, self.editing_slice, 1.0) {
+            if linedef.intersects_vertical_slice(map, self.editing_slice, self.editing_slice_height)
+            {
                 if self.no_rect_geo_on_map && map.is_linedef_in_rect(linedef.id) {
                     continue;
                 }
@@ -815,7 +819,8 @@ impl ServerContext {
         // Reverse on sorted sectors by area (to allow to pick small sectors first)
         let ordered = map.sorted_sectors_by_area();
         for sector in ordered.iter().rev() {
-            if sector.intersects_vertical_slice(map, self.editing_slice, 1.0) {
+            if sector.intersects_vertical_slice(map, self.editing_slice, self.editing_slice_height)
+            {
                 if self.no_rect_geo_on_map
                     && sector.properties.contains("rect")
                     && sector.name.is_empty()
@@ -927,7 +932,7 @@ impl ServerContext {
 
         // Check vertices
         for vertex in &map.vertices {
-            if vertex.intersects_vertical_slice(self.editing_slice, 1.0) {
+            if vertex.intersects_vertical_slice(self.editing_slice, self.editing_slice_height) {
                 if let Some(vertex_pos) = map.get_vertex(vertex.id) {
                     if point_in_rectangle(vertex_pos, top_left, bottom_right) {
                         selection.0.push(vertex.id);
@@ -938,7 +943,8 @@ impl ServerContext {
 
         // Check linedefs
         for linedef in &map.linedefs {
-            if linedef.intersects_vertical_slice(map, self.editing_slice, 1.0) {
+            if linedef.intersects_vertical_slice(map, self.editing_slice, self.editing_slice_height)
+            {
                 let start_vertex = map.get_vertex(linedef.start_vertex);
                 let end_vertex = map.get_vertex(linedef.end_vertex);
 
@@ -977,7 +983,8 @@ impl ServerContext {
         // }
 
         for sector in &map.sectors {
-            if sector.intersects_vertical_slice(map, self.editing_slice, 1.0) {
+            if sector.intersects_vertical_slice(map, self.editing_slice, self.editing_slice_height)
+            {
                 let mut vertices = Vec::new();
                 for &linedef_id in &sector.linedefs {
                     if let Some(linedef) = map.find_linedef(linedef_id) {

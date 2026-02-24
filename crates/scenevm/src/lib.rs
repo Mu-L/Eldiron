@@ -794,6 +794,11 @@ impl SceneVM {
         }
     }
 
+    /// Returns whether a VM layer is enabled.
+    pub fn is_layer_enabled(&self, index: usize) -> Option<bool> {
+        self.vm_ref_by_index(index).map(|vm| vm.is_enabled())
+    }
+
     /// Toggle verbose per-layer logging for uploads/atlas/grid events.
     pub fn set_layer_activity_logging(&mut self, enabled: bool) {
         self.log_layer_activity = enabled;

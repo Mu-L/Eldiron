@@ -577,15 +577,14 @@ impl SceneHandler {
 
     /// Build dynamic elements of the 2D Map: Entities, Items, Lights ...
     pub fn build_dynamics_2d(&mut self, map: &Map, animation_frame: usize, assets: &Assets) {
+        // Dynamics must always be built into base layer 0.
+        self.vm.set_active_vm(0);
         self.avatar_builder
             .set_shading_options(AvatarShadingOptions {
                 enabled: self.settings.avatar_shading_enabled,
                 skin_enabled: self.settings.avatar_skin_shading_enabled,
             });
         let current_hash = self.dynamics_hash_2d(map, animation_frame);
-        if self.dynamics_ready_2d && self.last_dynamics_hash_2d == Some(current_hash) {
-            return;
-        }
         self.last_dynamics_hash_2d = Some(current_hash);
 
         self.vm.execute(Atom::ClearDynamics);
@@ -658,7 +657,7 @@ impl SceneHandler {
             if entity.attributes.get_bool_default("visible", false) {
                 let geo_id = GeoId::Character(entity.id);
                 if let Some(avatar) = AvatarRuntimeBuilder::find_avatar_for_entity(entity, assets) {
-                    if self
+                    let uploaded = self
                         .avatar_builder
                         .ensure_entity_avatar_uploaded_with_direction(
                             &mut self.vm,
@@ -669,7 +668,15 @@ impl SceneHandler {
                             geo_id,
                             Some(crate::AvatarDirection::Front),
                         )
-                    {
+                        || self.avatar_builder.ensure_entity_avatar_uploaded(
+                            &mut self.vm,
+                            entity,
+                            avatar,
+                            assets,
+                            animation_frame,
+                            geo_id,
+                        );
+                    if uploaded {
                         active_avatar_geo.insert(geo_id);
                         let dynamic = DynamicObject::billboard_avatar_2d(geo_id, pos, 1.0, 1.0);
                         self.vm.execute(Atom::AddDynamic { object: dynamic });
@@ -699,6 +706,8 @@ impl SceneHandler {
         animation_frame: usize,
         assets: &Assets,
     ) {
+        // Dynamics must always be built into base layer 0.
+        self.vm.set_active_vm(0);
         self.avatar_builder
             .set_shading_options(AvatarShadingOptions {
                 enabled: self.settings.avatar_shading_enabled,

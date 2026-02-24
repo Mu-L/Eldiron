@@ -5,7 +5,7 @@ use rayon::prelude::*;
 use theframework::prelude::*;
 use vek::Vec2;
 
-const CHUNKSIZE: i32 = 16;
+const CHUNKSIZE: i32 = 32;
 
 #[derive(Clone, Debug)]
 pub struct TerrainHit {

@@ -23,13 +23,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     if (px >= U.fb_size.x || py >= U.fb_size.y) { return; }
 
-    // Draw background if enabled via GP2.x
+    // Optional overlay background fill via GP2.x
     if (U.gp2.x > 0.0) {
         sv_write(px, py, U.background);
     }
 
-    // Draw grid if enabled
-    if (U.gp0.x > 0.0 && U.gp2.x > 0.0) {
+    // Draw grid if enabled (transparent overlay, not full-screen opaque cover)
+    if (U.gp0.x > 0.0) {
         // Grid parameters encoded in U.gp0:
         // x = grid_size (pixels), y = subdivisions, z = offset.x, w = offset.y
         let grid_size_px   = U.gp0.x;
@@ -58,9 +58,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let dist = abs(rel_p - closest_mul_main);
 
         // Colors (match Eldiron defaults)
-        let bg_color       = vec4<f32>(0.05, 0.05, 0.05, 1.0);
-        let line_color     = vec4<f32>(0.15, 0.15, 0.15, 1.0);
-        let sub_line_color = vec4<f32>(0.11, 0.11, 0.11, 1.0);
+        // Keep background transparent so base 2D scene remains visible.
+        let bg_color       = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        let line_color     = vec4<f32>(1.0, 1.0, 1.0, 0.22);
+        let sub_line_color = vec4<f32>(1.0, 1.0, 1.0, 0.12);
 
         // Thickness in pixels (use 1px for both major and minor)
         let th  = 1.0;
@@ -107,7 +108,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
         }
 
-        // Draw grid as background; scene shading that follows will overwrite this pixel.
+        // Draw translucent grid over the base scene.
         sv_write(px, py, grid_col);
     }
 
@@ -135,7 +136,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let p0 = vec2<f32>(f32(px) + 0.5, f32(py) + 0.5);
         let out = sv_shade_one(px, py, p0);
         if (out.hit != 0u) {
-            // sv_write(px, py, out.color);
+            sv_write(px, py, out.color);
         }
     }
 }

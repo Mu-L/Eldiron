@@ -34,6 +34,7 @@ pub struct Chunk {
     pub terrain_batch2d: Option<Batch2D>,
     pub terrain_batch3d: Option<Batch3D>,
     pub terrain_texture: Option<Texture>,
+    pub terrain_scale: Vec2<f32>,
 
     // Lights
     pub lights: Vec<CompiledLight>,
@@ -70,6 +71,7 @@ impl Chunk {
             terrain_batch2d: None,
             terrain_batch3d: None,
             terrain_texture: None,
+            terrain_scale: Vec2::one(),
             lights: vec![],
             occluded_sectors: vec![],
             collision: ChunkCollision::new(),
@@ -132,9 +134,9 @@ impl Chunk {
     }
 
     /// Sample the baked terrain texture at the given world position
-    pub fn sample_terrain_texture(&self, world_pos: Vec2<f32>, scale: Vec2<f32>) -> Pixel {
-        let local_x = (world_pos.x / scale.x) - self.origin.x as f32;
-        let local_y = (world_pos.y / scale.y) - self.origin.y as f32;
+    pub fn sample_terrain_texture(&self, world_pos: Vec2<f32>) -> Pixel {
+        let local_x = (world_pos.x / self.terrain_scale.x) - self.origin.x as f32;
+        let local_y = (world_pos.y / self.terrain_scale.y) - self.origin.y as f32;
 
         if let Some(texture) = &self.terrain_texture {
             let pixels_per_tile = texture.width as i32 / self.size;

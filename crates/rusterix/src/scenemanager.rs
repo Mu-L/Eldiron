@@ -10,6 +10,7 @@ pub enum SceneManagerCmd {
     SetTileList(Vec<Tile>, FxHashMap<Uuid, u16>),
     SetPalette(ThePalette),
     SetMap(Map),
+    UpdateMap(Map),
     SetBuilder2D(Option<Box<dyn ChunkBuilder>>),
     AddDirty(Vec<(i32, i32)>),
     SetDirtyTerrainChunks(Vec<TerrainChunk>),
@@ -65,7 +66,7 @@ impl SceneManager {
             assets: Assets::default(),
             map: Map::default(),
             terrain_modifiers: true,
-            chunk_size: 16,
+            chunk_size: 32,
 
             dirty: FxHashSet::default(),
             all: FxHashSet::default(),
@@ -119,6 +120,7 @@ impl SceneManager {
                     self.results.push(SceneManagerResult::Clear);
                 }
                 self.map = new_map;
+                self.chunk_size = self.map.terrain.chunk_size.max(1);
                 let mut bbox = self.map.bbox();
                 if let Some(tbbox) = self.map.terrain.compute_bounds() {
                     bbox.expand_bbox(tbbox);
@@ -130,6 +132,14 @@ impl SceneManager {
                 self.dirty = Self::generate_chunk_coords(&bbox, self.chunk_size);
                 self.all = self.dirty.clone();
                 self.total_chunks = self.dirty.len() as i32;
+            }
+            SceneManagerCmd::UpdateMap(mut new_map) => {
+                if !self.apply_preview_filters {
+                    new_map.properties.remove("preview_hide");
+                }
+                // Keep current dirty set; caller controls incremental invalidation via AddDirty.
+                self.map = new_map;
+                self.chunk_size = self.map.terrain.chunk_size.max(1);
             }
             SceneManagerCmd::AddDirty(dirty_chunks) => {
                 for d in dirty_chunks {
@@ -180,6 +190,10 @@ impl SceneManager {
 
     pub fn set_map(&mut self, map: Map) {
         self.send(SceneManagerCmd::SetMap(map));
+    }
+
+    pub fn update_map(&mut self, map: Map) {
+        self.send(SceneManagerCmd::UpdateMap(map));
     }
 
     pub fn set_apply_preview_filters(&mut self, apply: bool) {

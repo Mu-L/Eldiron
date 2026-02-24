@@ -6,6 +6,8 @@ use vek::Mat3;
 pub struct Poly2D {
     pub id: GeoId,
     pub tile_id: Uuid,
+    pub tile_id2: Option<Uuid>,
+    pub blend_weights: Vec<f32>, // Per-vertex blend factor (0.0=primary, 1.0=secondary)
     pub vertices: Vec<[f32; 2]>,
     pub uvs: Vec<[f32; 2]>,
     pub indices: Vec<(usize, usize, usize)>, // triangle list, LOCAL to its chunk
@@ -19,6 +21,8 @@ impl Default for Poly2D {
         Self {
             id: GeoId::Unknown(0),
             tile_id: Uuid::nil(),
+            tile_id2: None,
+            blend_weights: Vec::new(),
             vertices: Vec::new(),
             uvs: Vec::new(),
             indices: Vec::new(),
@@ -40,6 +44,8 @@ impl Poly2D {
         Self {
             id,
             tile_id,
+            tile_id2: None,
+            blend_weights: Vec::new(),
             vertices,
             uvs,
             indices,
@@ -92,6 +98,8 @@ impl Poly2D {
         Self {
             id,
             tile_id,
+            tile_id2: None,
+            blend_weights: Vec::new(),
             vertices,
             uvs,
             indices,
@@ -134,6 +142,8 @@ impl Poly2D {
         Self {
             id,
             tile_id,
+            tile_id2: None,
+            blend_weights: Vec::new(),
             vertices,
             uvs,
             indices,
@@ -149,6 +159,14 @@ impl Poly2D {
     }
     pub fn with_tile_id(mut self, tile_id: Uuid) -> Self {
         self.tile_id = tile_id;
+        self
+    }
+    pub fn with_tile_id2(mut self, tile_id2: Option<Uuid>) -> Self {
+        self.tile_id2 = tile_id2;
+        self
+    }
+    pub fn with_blend_weights(mut self, blend_weights: Vec<f32>) -> Self {
+        self.blend_weights = blend_weights;
         self
     }
     pub fn with_vertices(mut self, vertices: Vec<[f32; 2]>) -> Self {

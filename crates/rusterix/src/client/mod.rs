@@ -6,7 +6,7 @@ pub mod parser;
 pub mod resolver;
 pub mod widget;
 
-use scenevm::{Atom, GeoId};
+use scenevm::GeoId;
 use std::str::FromStr;
 
 use crate::prelude::*;
@@ -330,6 +330,7 @@ impl Client {
             scene_handler,
             draw_sectors,
         );
+        scene_handler.build_dynamics_2d(map, self.animation_frame, assets);
     }
 
     /// Apply the entities to the 2D scene.
@@ -351,6 +352,7 @@ impl Client {
             scene_handler,
             draw_sectors,
         );
+        scene_handler.build_dynamics_2d(map, self.animation_frame, assets);
     }
 
     /// Build the 3D scene from the map.
@@ -454,10 +456,10 @@ impl Client {
         pixels: &mut [u8],
         width: usize,
         height: usize,
-        _assets: &Assets,
+        assets: &Assets,
         scene_handler: &mut SceneHandler,
     ) {
-        self.scene.animation_frame = self.animation_frame;
+        self.scene_d2.animation_frame = self.animation_frame;
         let screen_size = Vec2::new(width as f32, height as f32);
         let translation_matrix = Mat3::<f32>::translation_2d(Vec2::new(
             map.offset.x + screen_size.x / 2.0,
@@ -476,58 +478,70 @@ impl Client {
         );
         let transform = translation_matrix * scale_matrix;
 
-        // let mut rast = Rasterizer::setup(Some(transform), Mat4::identity(), Mat4::identity())
-        //     .render_mode(RenderMode::render_2d());
-        // rast.render_graph = self.global.clone();
-        // rast.hour = self.server_time.to_f32();
-        // rast.mapmini = self.scene.mapmini.clone();
-        // rast.rasterize(&mut self.scene_d2, pixels, width, height, 64, assets);
+        let mut rast = Rasterizer::setup(Some(transform), Mat4::identity(), Mat4::identity())
+            .render_mode(RenderMode::render_2d());
+        rast.render_graph = self.global.clone();
+        rast.hour = self.server_time.to_f32();
+        rast.mapmini = self.scene.mapmini.clone();
+        rast.rasterize(&mut self.scene_d2, pixels, width, height, 64, assets);
 
-        scene_handler.vm.set_active_vm(1);
-        scene_handler.vm.set_layer_enabled(0, false);
-        scene_handler.vm.set_layer_enabled(1, true);
-        // scene_handler.vm.set_layer_activity_logging(true);
-
-        scene_handler.vm.execute(scenevm::Atom::SetRenderMode(
-            scene_handler.settings.scenevm_mode_2d(),
-        ));
-
-        scene_handler.vm.execute(Atom::SetGP0(Vec4::new(
-            map.grid_size,
-            map.subdivisions,
-            map.offset.x,
-            -map.offset.y,
-        )));
-
-        // Ambient
-        scene_handler.vm.execute(Atom::SetGP1(Vec4::one()));
-
-        // Enable background clearing in the overlay shadr
-        scene_handler.vm.execute(Atom::SetGP2(Vec4::one()));
-
-        // Background
-        scene_handler
-            .vm
-            .execute(scenevm::Atom::SetBackground(Vec4::zero()));
-
-        // In 2D mode, keep 3D overlay layer disabled. Raster3D overlay can otherwise
-        // cover the frame when no 3D camera content is expected.
-        if scene_handler.vm.vm_layer_count() > 2 {
+        // Composite SceneVM 2D overlay layer on top so profile/screen editors show lines/handles.
+        if scene_handler.vm.vm_layer_count() > 1
+            && scene_handler.vm.is_layer_enabled(1) == Some(true)
+        {
+            let mut enabled_before: Vec<bool> = (0..scene_handler.vm.vm_layer_count())
+                .map(|i| scene_handler.vm.is_layer_enabled(i).unwrap_or(true))
+                .collect();
+            scene_handler.vm.set_layer_enabled(0, false);
             scene_handler.vm.set_layer_enabled(1, true);
-            scene_handler.vm.set_layer_enabled(2, false);
+            if scene_handler.vm.vm_layer_count() > 2 {
+                scene_handler.vm.set_layer_enabled(2, false);
+            }
+            scene_handler.vm.set_active_vm(1);
+            scene_handler
+                .vm
+                .execute(scenevm::Atom::SetTransform2D(transform));
+            scene_handler.vm.execute(scenevm::Atom::SetGP0(Vec4::new(
+                map.grid_size,
+                map.subdivisions,
+                map.offset.x,
+                -map.offset.y,
+            )));
+            scene_handler
+                .vm
+                .execute(scenevm::Atom::SetGP2(Vec4::zero()));
+            scene_handler
+                .vm
+                .execute(scenevm::Atom::SetRenderMode(scenevm::RenderMode::Compute2D));
+            scene_handler.vm.set_active_vm(0);
+
+            let mut overlay = vec![0_u8; width * height * 4];
+            scene_handler
+                .vm
+                .render_frame(&mut overlay, width as u32, height as u32);
+
+            for (dst, src) in pixels.chunks_exact_mut(4).zip(overlay.chunks_exact(4)) {
+                let sa = src[3] as f32 / 255.0;
+                if sa <= 0.0 {
+                    continue;
+                }
+                let inv = 1.0 - sa;
+                dst[0] = ((src[0] as f32 * sa) + (dst[0] as f32 * inv))
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+                dst[1] = ((src[1] as f32 * sa) + (dst[1] as f32 * inv))
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+                dst[2] = ((src[2] as f32 * sa) + (dst[2] as f32 * inv))
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+                dst[3] = 255;
+            }
+
+            for (i, enabled) in enabled_before.drain(..).enumerate() {
+                scene_handler.vm.set_layer_enabled(i, enabled);
+            }
         }
-
-        // Transform
-        scene_handler.vm.execute(Atom::SetTransform2D(transform));
-
-        // Render
-        scene_handler
-            .vm
-            .render_frame(pixels, width as u32, height as u32);
-
-        scene_handler.vm.execute(Atom::SetGP2(Vec4::zero()));
-        scene_handler.vm.set_active_vm(0);
-        scene_handler.vm.set_layer_enabled(0, true);
     }
 
     /// Draw the 2D scene.
@@ -575,18 +589,36 @@ impl Client {
         // rast.mapmini = self.scene.mapmini.clone();
         // rast.rasterize(&mut self.scene, pixels, width, height, 64, assets);
 
-        scene_handler.vm.execute(scenevm::Atom::SetGP0(Vec4::new(
-            map.grid_size,
-            map.subdivisions,
-            map.offset.x,
-            -map.offset.y,
-        )));
+        let scenevm_mode_2d = scene_handler.settings.scenevm_mode_2d();
+        scene_handler.vm.set_active_vm(0);
+        if matches!(scenevm_mode_2d, scenevm::RenderMode::Compute2D) {
+            scene_handler.vm.execute(scenevm::Atom::SetGP0(Vec4::new(
+                map.grid_size,
+                map.subdivisions,
+                map.offset.x,
+                -map.offset.y,
+            )));
+        }
 
         let hour = self.server_time.to_f32();
 
-        scene_handler.vm.execute(scenevm::Atom::SetRenderMode(
-            scene_handler.settings.scenevm_mode_2d(),
-        ));
+        // Ensure base scene layer is visible in editor 2D mode.
+        let overlay_layer_enabled = if scene_handler.vm.vm_layer_count() > 1 {
+            scene_handler.vm.is_layer_enabled(1).unwrap_or(true)
+        } else {
+            false
+        };
+        scene_handler.vm.set_layer_enabled(0, true);
+        if scene_handler.vm.vm_layer_count() > 1 {
+            scene_handler.vm.set_layer_enabled(1, overlay_layer_enabled);
+        }
+        if scene_handler.vm.vm_layer_count() > 2 {
+            scene_handler.vm.set_layer_enabled(2, false);
+        }
+
+        scene_handler
+            .vm
+            .execute(scenevm::Atom::SetRenderMode(scenevm_mode_2d));
 
         scene_handler.settings.apply_hour(hour);
         scene_handler.settings.apply_2d(&mut scene_handler.vm);
@@ -596,11 +628,22 @@ impl Client {
             .execute(scenevm::Atom::SetTransform2D(transform));
 
         // Set the transform for the overlay if active
-        if scene_handler.vm.vm_layer_count() > 1 {
+        if scene_handler.vm.vm_layer_count() > 1 && overlay_layer_enabled {
+            if scene_handler.vm.vm_layer_count() > 2 {
+                scene_handler.vm.set_layer_enabled(2, false);
+            }
             scene_handler.vm.set_active_vm(1);
             scene_handler
                 .vm
                 .execute(scenevm::Atom::SetTransform2D(transform));
+            // 2D overlay shader expects grid params in GP0 and a non-zero GP2.x to draw background/grid.
+            scene_handler.vm.execute(scenevm::Atom::SetGP0(Vec4::new(
+                map.grid_size,
+                map.subdivisions,
+                map.offset.x,
+                -map.offset.y,
+            )));
+            scene_handler.vm.execute(scenevm::Atom::SetGP2(Vec4::one()));
             scene_handler
                 .vm
                 .execute(scenevm::Atom::SetRenderMode(scenevm::RenderMode::Compute2D));
@@ -718,6 +761,13 @@ impl Client {
             scene_handler
                 .vm
                 .execute(scenevm::Atom::SetTransform2D(transform));
+            // Prevent stale 2D grid/background params from leaking into 3D rendering.
+            scene_handler
+                .vm
+                .execute(scenevm::Atom::SetGP0(Vec4::zero()));
+            scene_handler
+                .vm
+                .execute(scenevm::Atom::SetGP2(Vec4::zero()));
 
             scene_handler.vm.set_active_vm(2);
             scene_handler.settings.apply_3d(&mut scene_handler.vm);

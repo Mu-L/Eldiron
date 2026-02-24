@@ -6,7 +6,13 @@
 
 - New **Avatar** based character *skinning system*.
 - New *Duplicate* tool for vertices, lines, sectors.
-- New paint tools: *Selection, Paint Bucket, Eraser*.
+- New paint tools: *Selection, Paint Bucket, Eraser, Picker*.
+- New 3D and 2D renderer now using rasterization for faster performance.
+- Better terrain creation.
+- Switched action parameters to be TOML based.
+- Procedural geometry actions: *Create Fence*, *Create Palisade*.
+- First procedural geometry props using the *Create Props* action.
+- Terrain and avatars are now drawn in 2D.
 
 ---
 

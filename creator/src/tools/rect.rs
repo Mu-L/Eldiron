@@ -15,7 +15,11 @@ pub struct RectTool {
 
     processed: FxHashSet<Vec2<i32>>,
 
-    is_terrain: bool,
+    stroke_active: bool,
+    stroke_changed: bool,
+    stroke_prev_map: Option<Map>,
+    stroke_work_map: Option<Map>,
+    last_2d_cell: Option<Vec2<i32>>,
 }
 
 impl Tool for RectTool {
@@ -32,7 +36,11 @@ impl Tool for RectTool {
 
             processed: FxHashSet::default(),
 
-            is_terrain: false,
+            stroke_active: false,
+            stroke_changed: false,
+            stroke_prev_map: None,
+            stroke_work_map: None,
+            last_2d_cell: None,
         }
     }
 
@@ -78,6 +86,7 @@ impl Tool for RectTool {
             DeActivate => {
                 server_ctx.curr_map_tool_type = MapToolType::General;
                 server_ctx.hover_cursor = None;
+                self.reset_stroke();
                 if let Some(region) = project.get_region_mut(&server_ctx.curr_region) {
                     region.map.clear_temp();
                 }
@@ -268,8 +277,7 @@ impl Tool for RectTool {
                     map,
                     map.subdivisions,
                 );
-                // The size of the rect is always 1
-                let step = 1.0; // / map.subdivisions;
+                let step = 1.0 / map.subdivisions.max(1.0);
                 map.curr_rectangle = Some((cp, cp + step));
                 hovered_vertices = Some([
                     cp,
@@ -278,6 +286,11 @@ impl Tool for RectTool {
                     cp + Vec2::new(step, 0.0),
                 ]);
                 server_ctx.hover_cursor = Some(cp);
+                if map.properties.get_bool_default("terrain_enabled", false) {
+                    server_ctx.rect_terrain_id = Some((cp.x.floor() as i32, cp.y.floor() as i32));
+                } else {
+                    server_ctx.rect_terrain_id = None;
+                }
             }
 
             hovered_vertices
@@ -300,180 +313,69 @@ impl Tool for RectTool {
 
                 self.processed.clear();
                 if server_ctx.editor_view_mode == EditorViewMode::D2 {
+                    let use_terrain_paint =
+                        map.properties.get_bool_default("terrain_enabled", false);
                     if let Some(cp) = server_ctx.hover_cursor {
-                        let k = Vec2::new(cp.x as i32, cp.y as i32);
-                        if !self.processed.contains(&k) {
-                            undo_atom = add_tile(
-                                ui,
-                                ctx,
-                                map,
-                                server_ctx,
-                                self.hovered_vertices,
-                                self.mode,
-                            );
+                        self.begin_stroke_if_needed(map);
+                        let sub = map.subdivisions.max(1.0);
+                        let k = if use_terrain_paint {
+                            Vec2::new(cp.x.floor() as i32, cp.y.floor() as i32)
+                        } else {
+                            Vec2::new((cp.x * sub).floor() as i32, (cp.y * sub).floor() as i32)
+                        };
+                        eprintln!(
+                            "[rect][d2-click] mouse=({}, {}) cp=({:.3}, {:.3}) sub={:.3} key=({}, {})",
+                            coord.x, coord.y, cp.x, cp.y, sub, k.x, k.y
+                        );
+                        if let Some(work_map) = self.stroke_work_map.as_mut() {
+                            let changed = if use_terrain_paint {
+                                server_ctx.rect_terrain_id = Some((k.x, k.y));
+                                Self::apply_3d_paint_at_current_target(work_map, ui, server_ctx)
+                                    .is_some()
+                            } else {
+                                let step = 1.0 / sub;
+                                let x = k.x as f32 * step;
+                                let y = k.y as f32 * step;
+                                let verts = Some([
+                                    Vec2::new(x, y),
+                                    Vec2::new(x, y + step),
+                                    Vec2::new(x + step, y + step),
+                                    Vec2::new(x + step, y),
+                                ]);
+                                add_tile(ui, ctx, work_map, server_ctx, verts, self.mode).is_some()
+                            };
+                            if changed {
+                                self.stroke_changed = true;
+                                eprintln!(
+                                    "[rect][d2-click] changed=true processed_before={}",
+                                    self.processed.len()
+                                );
+                            } else {
+                                eprintln!(
+                                    "[rect][d2-click] changed=false processed_before={}",
+                                    self.processed.len()
+                                );
+                            }
                             self.processed.insert(k);
+                            self.last_2d_cell = Some(k);
+                            eprintln!(
+                                "[rect][d2-click] processed_after={} last=({}, {})",
+                                self.processed.len(),
+                                k.x,
+                                k.y
+                            );
                         }
                     }
                 } else {
-                    let prev = map.clone();
-                    self.is_terrain = false;
-                    let curr_tile_id = server_ctx.curr_tile_id;
-
-                    if let Some((x, z)) = server_ctx.rect_terrain_id {
-                        // Terrain
-
-                        let _prev = map.clone();
-
-                        let mut tiles = match map.properties.get("tiles") {
-                            Some(Value::TileOverrides(existing)) => existing.clone(),
-                            _ => FxHashMap::default(),
-                        };
-
-                        let mut blend_tiles = match map.properties.get("blend_tiles") {
-                            Some(Value::BlendOverrides(existing)) => existing.clone(),
-                            _ => FxHashMap::default(),
-                        };
-
-                        if ui.shift {
-                            // Deleting terrain paint removes both the base tile and any blend override.
-                            tiles.remove(&(x, z));
-                            blend_tiles.remove(&(x, z));
-
-                            if tiles.is_empty() {
-                                map.properties.remove("tiles");
-                            } else {
-                                map.properties.set("tiles", Value::TileOverrides(tiles));
-                            }
-
-                            if blend_tiles.is_empty() {
-                                map.properties.remove("blend_tiles");
-                            } else {
-                                map.properties
-                                    .set("blend_tiles", Value::BlendOverrides(blend_tiles));
-                            }
-                        } else if let Some(tile_id) = curr_tile_id {
-                            if server_ctx.rect_blend_preset == VertexBlendPreset::Solid {
-                                tiles.insert((x, z), PixelSource::TileId(tile_id));
-
-                                if tiles.is_empty() {
-                                    map.properties.remove("tiles");
-                                } else {
-                                    map.properties.set("tiles", Value::TileOverrides(tiles));
-                                }
-                            } else {
-                                if ui.shift {
-                                    blend_tiles.remove(&(x, z));
-                                } else {
-                                    blend_tiles.insert(
-                                        (x, z),
-                                        (
-                                            server_ctx.rect_blend_preset,
-                                            PixelSource::TileId(tile_id),
-                                        ),
-                                    );
-                                }
-
-                                if blend_tiles.is_empty() {
-                                    map.properties.remove("blend_tiles");
-                                } else {
-                                    map.properties
-                                        .set("blend_tiles", Value::BlendOverrides(blend_tiles));
-                                }
-                            }
-                        } else {
-                            return None;
-                        }
-
-                        undo_atom = Some(ProjectUndoAtom::MapEdit(
-                            server_ctx.pc,
-                            Box::new(prev),
-                            Box::new(map.clone()),
-                        ));
-
-                        self.is_terrain = true;
-                        self.processed.insert(Vec2::new(x, z));
-                    } else if let Some(sector_id) = server_ctx.rect_sector_id_3d {
-                        if let Some(sector) = map.find_sector_mut(sector_id) {
-                            // Sector / Surface
-
-                            let mut tiles = match sector.properties.get("tiles") {
-                                Some(Value::TileOverrides(existing)) => existing.clone(),
-                                _ => FxHashMap::default(),
-                            };
-
-                            let mut blend_tiles = match sector.properties.get("blend_tiles") {
-                                Some(Value::BlendOverrides(existing)) => existing.clone(),
-                                _ => FxHashMap::default(),
-                            };
-
-                            if ui.shift {
-                                // Deleting surface paint removes both base tile and blend override.
-                                tiles.remove(&server_ctx.rect_tile_id_3d);
-                                blend_tiles.remove(&server_ctx.rect_tile_id_3d);
-
-                                if tiles.is_empty() {
-                                    sector.properties.remove("tiles");
-                                } else {
-                                    sector.properties.set("tiles", Value::TileOverrides(tiles));
-                                }
-
-                                if blend_tiles.is_empty() {
-                                    sector.properties.remove("blend_tiles");
-                                } else {
-                                    sector
-                                        .properties
-                                        .set("blend_tiles", Value::BlendOverrides(blend_tiles));
-                                }
-                            } else if let Some(tile_id) = curr_tile_id {
-                                if server_ctx.rect_blend_preset == VertexBlendPreset::Solid {
-                                    {
-                                        tiles.insert(
-                                            server_ctx.rect_tile_id_3d,
-                                            PixelSource::TileId(tile_id),
-                                        );
-                                    }
-
-                                    if tiles.is_empty() {
-                                        sector.properties.remove("tiles");
-                                    } else {
-                                        sector.properties.set("tiles", Value::TileOverrides(tiles));
-                                    }
-                                } else {
-                                    if ui.shift {
-                                        blend_tiles.remove(&server_ctx.rect_tile_id_3d);
-                                    } else {
-                                        blend_tiles.insert(
-                                            server_ctx.rect_tile_id_3d,
-                                            (
-                                                server_ctx.rect_blend_preset,
-                                                PixelSource::TileId(tile_id),
-                                            ),
-                                        );
-                                    }
-
-                                    if blend_tiles.is_empty() {
-                                        sector.properties.remove("blend_tiles");
-                                    } else {
-                                        sector
-                                            .properties
-                                            .set("blend_tiles", Value::BlendOverrides(blend_tiles));
-                                    }
-                                }
-                            } else {
-                                return None;
-                            }
-
-                            undo_atom = Some(ProjectUndoAtom::MapEdit(
-                                server_ctx.pc,
-                                Box::new(prev),
-                                Box::new(map.clone()),
-                            ));
-
-                            self.processed.insert(Vec2::new(
-                                server_ctx.rect_tile_id_3d.0,
-                                server_ctx.rect_tile_id_3d.1,
-                            ));
-                        }
+                    self.compute_3d_tile(coord, map, ui, server_ctx);
+                    self.begin_stroke_if_needed(map);
+                    if let Some(work_map) = self.stroke_work_map.as_mut()
+                        && let Some(key) =
+                            Self::apply_3d_paint_at_current_target(work_map, ui, server_ctx)
+                        && !self.processed.contains(&key)
+                    {
+                        self.stroke_changed = true;
+                        self.processed.insert(key);
                     }
                 }
             }
@@ -483,197 +385,108 @@ impl Tool for RectTool {
                     return None;
                 }
                 if server_ctx.editor_view_mode == EditorViewMode::D2 {
+                    let use_terrain_paint =
+                        map.properties.get_bool_default("terrain_enabled", false);
                     self.hovered_vertices = apply_hover(coord, ui, ctx, map, server_ctx);
                     if let Some(cp) = server_ctx.hover_cursor {
-                        let k = Vec2::new(cp.x as i32, cp.y as i32);
-                        if !self.processed.contains(&k) {
-                            undo_atom = add_tile(
-                                ui,
-                                ctx,
-                                map,
-                                server_ctx,
-                                self.hovered_vertices,
-                                self.mode,
+                        self.begin_stroke_if_needed(map);
+                        let sub = map.subdivisions.max(1.0);
+                        let k = if use_terrain_paint {
+                            Vec2::new(cp.x.floor() as i32, cp.y.floor() as i32)
+                        } else {
+                            Vec2::new((cp.x * sub).floor() as i32, (cp.y * sub).floor() as i32)
+                        };
+                        if let Some(work_map) = self.stroke_work_map.as_mut() {
+                            let from = self.last_2d_cell.unwrap_or(k);
+                            let step = 1.0 / sub;
+                            let between = Self::cells_between(from, k);
+                            let mut attempted = 0usize;
+                            let mut skipped = 0usize;
+                            let mut changed_count = 0usize;
+                            for cell in between.iter().copied() {
+                                attempted += 1;
+                                if self.processed.contains(&cell) {
+                                    skipped += 1;
+                                    continue;
+                                }
+                                let changed = if use_terrain_paint {
+                                    server_ctx.rect_terrain_id = Some((cell.x, cell.y));
+                                    Self::apply_3d_paint_at_current_target(work_map, ui, server_ctx)
+                                        .is_some()
+                                } else {
+                                    let x = cell.x as f32 * step;
+                                    let y = cell.y as f32 * step;
+                                    let verts = Some([
+                                        Vec2::new(x, y),
+                                        Vec2::new(x, y + step),
+                                        Vec2::new(x + step, y + step),
+                                        Vec2::new(x + step, y),
+                                    ]);
+                                    add_tile(ui, ctx, work_map, server_ctx, verts, self.mode)
+                                        .is_some()
+                                };
+                                if changed {
+                                    self.stroke_changed = true;
+                                    changed_count += 1;
+                                }
+                                self.processed.insert(cell);
+                            }
+                            eprintln!(
+                                "[rect][d2-drag] mouse=({}, {}) cp=({:.3}, {:.3}) sub={:.3} from=({}, {}) to=({}, {}) between={} attempted={} skipped={} changed={} processed={}",
+                                coord.x,
+                                coord.y,
+                                cp.x,
+                                cp.y,
+                                sub,
+                                from.x,
+                                from.y,
+                                k.x,
+                                k.y,
+                                between.len(),
+                                attempted,
+                                skipped,
+                                changed_count,
+                                self.processed.len()
                             );
-                            self.processed.insert(k);
+                            self.last_2d_cell = Some(k);
                         }
                     }
                 } else {
                     self.compute_3d_tile(coord, map, ui, server_ctx);
-                    if self.is_terrain {
-                        if let Some((x, z)) = server_ctx.rect_terrain_id {
-                            if !self.processed.contains(&Vec2::new(x, z)) {
-                                let prev = map.clone();
-                                let curr_tile_id = server_ctx.curr_tile_id;
-
-                                let mut tiles = match map.properties.get("tiles") {
-                                    Some(Value::TileOverrides(existing)) => existing.clone(),
-                                    _ => FxHashMap::default(),
-                                };
-
-                                let mut blend_tiles = match map.properties.get("blend_tiles") {
-                                    Some(Value::BlendOverrides(existing)) => existing.clone(),
-                                    _ => FxHashMap::default(),
-                                };
-
-                                if ui.shift || curr_tile_id.is_some() {
-                                    if ui.shift {
-                                        // Deleting terrain paint removes both the base tile and any blend override.
-                                        tiles.remove(&(x, z));
-                                        blend_tiles.remove(&(x, z));
-
-                                        if tiles.is_empty() {
-                                            map.properties.remove("tiles");
-                                        } else {
-                                            map.properties
-                                                .set("tiles", Value::TileOverrides(tiles));
-                                        }
-
-                                        if blend_tiles.is_empty() {
-                                            map.properties.remove("blend_tiles");
-                                        } else {
-                                            map.properties.set(
-                                                "blend_tiles",
-                                                Value::BlendOverrides(blend_tiles),
-                                            );
-                                        }
-                                    } else if let Some(tile_id) = curr_tile_id {
-                                        if server_ctx.rect_blend_preset == VertexBlendPreset::Solid
-                                        {
-                                            tiles.insert((x, z), PixelSource::TileId(tile_id));
-
-                                            if tiles.is_empty() {
-                                                map.properties.remove("tiles");
-                                            } else {
-                                                map.properties
-                                                    .set("tiles", Value::TileOverrides(tiles));
-                                            }
-                                        } else {
-                                            blend_tiles.insert(
-                                                (x, z),
-                                                (
-                                                    server_ctx.rect_blend_preset,
-                                                    PixelSource::TileId(tile_id),
-                                                ),
-                                            );
-
-                                            if blend_tiles.is_empty() {
-                                                map.properties.remove("blend_tiles");
-                                            } else {
-                                                map.properties.set(
-                                                    "blend_tiles",
-                                                    Value::BlendOverrides(blend_tiles),
-                                                );
-                                            }
-                                        }
-                                    }
-
-                                    undo_atom = Some(ProjectUndoAtom::MapEdit(
-                                        server_ctx.pc,
-                                        Box::new(prev),
-                                        Box::new(map.clone()),
-                                    ));
-
-                                    self.processed.insert(Vec2::new(x, z));
-                                }
-                            }
-                        }
-                    } else {
-                        if !self.processed.contains(&Vec2::new(
-                            server_ctx.rect_tile_id_3d.0,
-                            server_ctx.rect_tile_id_3d.1,
-                        )) {
-                            if let Some(sector_id) = server_ctx.rect_sector_id_3d {
-                                let prev = map.clone();
-                                let curr_tile_id = server_ctx.curr_tile_id;
-                                if let Some(sector) = map.find_sector_mut(sector_id) {
-                                    let mut tiles = match sector.properties.get("tiles") {
-                                        Some(Value::TileOverrides(existing)) => existing.clone(),
-                                        _ => FxHashMap::default(),
-                                    };
-
-                                    let mut blend_tiles = match sector.properties.get("blend_tiles")
-                                    {
-                                        Some(Value::BlendOverrides(existing)) => existing.clone(),
-                                        _ => FxHashMap::default(),
-                                    };
-
-                                    if ui.shift || curr_tile_id.is_some() {
-                                        if ui.shift {
-                                            // Deleting surface paint removes both base tile and blend override.
-                                            tiles.remove(&server_ctx.rect_tile_id_3d);
-                                            blend_tiles.remove(&server_ctx.rect_tile_id_3d);
-
-                                            if tiles.is_empty() {
-                                                sector.properties.remove("tiles");
-                                            } else {
-                                                sector
-                                                    .properties
-                                                    .set("tiles", Value::TileOverrides(tiles));
-                                            }
-
-                                            if blend_tiles.is_empty() {
-                                                sector.properties.remove("blend_tiles");
-                                            } else {
-                                                sector.properties.set(
-                                                    "blend_tiles",
-                                                    Value::BlendOverrides(blend_tiles),
-                                                );
-                                            }
-                                        } else if let Some(tile_id) = curr_tile_id {
-                                            if server_ctx.rect_blend_preset
-                                                == VertexBlendPreset::Solid
-                                            {
-                                                tiles.insert(
-                                                    server_ctx.rect_tile_id_3d,
-                                                    PixelSource::TileId(tile_id),
-                                                );
-
-                                                if tiles.is_empty() {
-                                                    sector.properties.remove("tiles");
-                                                } else {
-                                                    sector
-                                                        .properties
-                                                        .set("tiles", Value::TileOverrides(tiles));
-                                                }
-                                            } else {
-                                                blend_tiles.insert(
-                                                    server_ctx.rect_tile_id_3d,
-                                                    (
-                                                        server_ctx.rect_blend_preset,
-                                                        PixelSource::TileId(tile_id),
-                                                    ),
-                                                );
-
-                                                if blend_tiles.is_empty() {
-                                                    sector.properties.remove("blend_tiles");
-                                                } else {
-                                                    sector.properties.set(
-                                                        "blend_tiles",
-                                                        Value::BlendOverrides(blend_tiles),
-                                                    );
-                                                }
-                                            }
-                                        }
-
-                                        undo_atom = Some(ProjectUndoAtom::MapEdit(
-                                            server_ctx.pc,
-                                            Box::new(prev),
-                                            Box::new(map.clone()),
-                                        ));
-
-                                        self.processed.insert(Vec2::new(
-                                            server_ctx.rect_tile_id_3d.0,
-                                            server_ctx.rect_tile_id_3d.1,
-                                        ));
-                                    }
-                                }
-                            }
-                        }
+                    self.begin_stroke_if_needed(map);
+                    if let Some(work_map) = self.stroke_work_map.as_mut()
+                        && let Some(key) =
+                            Self::apply_3d_paint_at_current_target(work_map, ui, server_ctx)
+                        && !self.processed.contains(&key)
+                    {
+                        self.stroke_changed = true;
+                        self.processed.insert(key);
                     }
                 }
             }
-            MapUp(_) => {}
+            MapUp(_) => {
+                if self.stroke_active {
+                    eprintln!(
+                        "[rect][stroke-up] changed={} processed={} has_prev={} has_work={}",
+                        self.stroke_changed,
+                        self.processed.len(),
+                        self.stroke_prev_map.is_some(),
+                        self.stroke_work_map.is_some()
+                    );
+                    if self.stroke_changed
+                        && let (Some(prev), Some(new_map)) =
+                            (self.stroke_prev_map.take(), self.stroke_work_map.take())
+                    {
+                        *map = new_map;
+                        undo_atom = Some(ProjectUndoAtom::MapEdit(
+                            server_ctx.pc,
+                            Box::new(prev),
+                            Box::new(map.clone()),
+                        ));
+                    }
+                    self.reset_stroke();
+                }
+            }
             MapHover(coord) => {
                 if server_ctx.editor_view_mode == EditorViewMode::D2 {
                     self.hovered_vertices = apply_hover(coord, ui, ctx, map, server_ctx);
@@ -683,6 +496,7 @@ impl Tool for RectTool {
             }
             MapDelete => {}
             MapEscape => {
+                self.reset_stroke();
                 map.clear_temp();
                 crate::editor::RUSTERIX.write().unwrap().set_dirty();
             }
@@ -786,6 +600,167 @@ impl Tool for RectTool {
 }
 
 impl RectTool {
+    fn begin_stroke_if_needed(&mut self, map: &Map) {
+        if !self.stroke_active {
+            self.stroke_active = true;
+            self.stroke_changed = false;
+            self.stroke_prev_map = Some(map.clone());
+            self.stroke_work_map = Some(map.clone());
+            self.processed.clear();
+            eprintln!(
+                "[rect][stroke-begin] sub={:.3} tiles={} blend_tiles={}",
+                map.subdivisions,
+                match map.properties.get("tiles") {
+                    Some(Value::TileOverrides(m)) => m.len(),
+                    _ => 0,
+                },
+                match map.properties.get("blend_tiles") {
+                    Some(Value::BlendOverrides(m)) => m.len(),
+                    _ => 0,
+                }
+            );
+        }
+    }
+
+    fn reset_stroke(&mut self) {
+        self.stroke_active = false;
+        self.stroke_changed = false;
+        self.stroke_prev_map = None;
+        self.stroke_work_map = None;
+        self.last_2d_cell = None;
+        self.processed.clear();
+    }
+
+    fn cells_between(a: Vec2<i32>, b: Vec2<i32>) -> Vec<Vec2<i32>> {
+        let mut out = Vec::new();
+        let mut x0 = a.x;
+        let mut y0 = a.y;
+        let x1 = b.x;
+        let y1 = b.y;
+
+        let dx = (x1 - x0).abs();
+        let sx = if x0 < x1 { 1 } else { -1 };
+        let dy = -(y1 - y0).abs();
+        let sy = if y0 < y1 { 1 } else { -1 };
+        let mut err = dx + dy;
+
+        loop {
+            out.push(Vec2::new(x0, y0));
+            if x0 == x1 && y0 == y1 {
+                break;
+            }
+            let e2 = 2 * err;
+            if e2 >= dy {
+                err += dy;
+                x0 += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                y0 += sy;
+            }
+        }
+
+        out
+    }
+
+    fn apply_3d_paint_at_current_target(
+        map: &mut Map,
+        ui: &TheUI,
+        server_ctx: &ServerContext,
+    ) -> Option<Vec2<i32>> {
+        let curr_tile_id = server_ctx.curr_tile_id;
+
+        if let Some((x, z)) = server_ctx.rect_terrain_id {
+            let mut tiles = match map.properties.get("tiles") {
+                Some(Value::TileOverrides(existing)) => existing.clone(),
+                _ => FxHashMap::default(),
+            };
+
+            let mut blend_tiles = match map.properties.get("blend_tiles") {
+                Some(Value::BlendOverrides(existing)) => existing.clone(),
+                _ => FxHashMap::default(),
+            };
+
+            if ui.shift {
+                tiles.remove(&(x, z));
+                blend_tiles.remove(&(x, z));
+            } else if let Some(tile_id) = curr_tile_id {
+                if server_ctx.rect_blend_preset == VertexBlendPreset::Solid {
+                    tiles.insert((x, z), PixelSource::TileId(tile_id));
+                } else {
+                    blend_tiles.insert(
+                        (x, z),
+                        (server_ctx.rect_blend_preset, PixelSource::TileId(tile_id)),
+                    );
+                }
+            } else {
+                return None;
+            }
+
+            if tiles.is_empty() {
+                map.properties.remove("tiles");
+            } else {
+                map.properties.set("tiles", Value::TileOverrides(tiles));
+            }
+            if blend_tiles.is_empty() {
+                map.properties.remove("blend_tiles");
+            } else {
+                map.properties
+                    .set("blend_tiles", Value::BlendOverrides(blend_tiles));
+            }
+
+            return Some(Vec2::new(x, z));
+        }
+
+        if let Some(sector_id) = server_ctx.rect_sector_id_3d
+            && let Some(sector) = map.find_sector_mut(sector_id)
+        {
+            let key = Vec2::new(server_ctx.rect_tile_id_3d.0, server_ctx.rect_tile_id_3d.1);
+
+            let mut tiles = match sector.properties.get("tiles") {
+                Some(Value::TileOverrides(existing)) => existing.clone(),
+                _ => FxHashMap::default(),
+            };
+            let mut blend_tiles = match sector.properties.get("blend_tiles") {
+                Some(Value::BlendOverrides(existing)) => existing.clone(),
+                _ => FxHashMap::default(),
+            };
+
+            if ui.shift {
+                tiles.remove(&server_ctx.rect_tile_id_3d);
+                blend_tiles.remove(&server_ctx.rect_tile_id_3d);
+            } else if let Some(tile_id) = curr_tile_id {
+                if server_ctx.rect_blend_preset == VertexBlendPreset::Solid {
+                    tiles.insert(server_ctx.rect_tile_id_3d, PixelSource::TileId(tile_id));
+                } else {
+                    blend_tiles.insert(
+                        server_ctx.rect_tile_id_3d,
+                        (server_ctx.rect_blend_preset, PixelSource::TileId(tile_id)),
+                    );
+                }
+            } else {
+                return None;
+            }
+
+            if tiles.is_empty() {
+                sector.properties.remove("tiles");
+            } else {
+                sector.properties.set("tiles", Value::TileOverrides(tiles));
+            }
+            if blend_tiles.is_empty() {
+                sector.properties.remove("blend_tiles");
+            } else {
+                sector
+                    .properties
+                    .set("blend_tiles", Value::BlendOverrides(blend_tiles));
+            }
+
+            return Some(key);
+        }
+
+        None
+    }
+
     fn compute_3d_tile(
         &mut self,
         coord: Vec2<i32>,

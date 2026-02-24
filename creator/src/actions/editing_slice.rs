@@ -17,7 +17,17 @@ impl Action for EditingSlice {
             "".into(),
             "".into(),
             0,
-            -5..=5,
+            -100000..=100000,
+            false,
+        );
+        nodeui.add_item(item);
+
+        let item = TheNodeUIItem::IntEditSlider(
+            "actionEditingSliceHeight".into(),
+            "".into(),
+            "".into(),
+            2,
+            1..=10,
             false,
         );
         nodeui.add_item(item);
@@ -62,8 +72,14 @@ impl Action for EditingSlice {
             .nodeui
             .get_i32_value("actionEditingSlicePos")
             .unwrap_or(0);
+        let height = self
+            .nodeui
+            .get_i32_value("actionEditingSliceHeight")
+            .unwrap_or(2)
+            .max(1);
 
         server_ctx.editing_slice = pos as f32;
+        server_ctx.editing_slice_height = height as f32;
 
         ctx.ui.send(TheEvent::Custom(
             TheId::named("Update Client Properties"),

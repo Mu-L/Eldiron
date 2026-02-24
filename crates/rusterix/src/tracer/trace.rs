@@ -427,7 +427,7 @@ impl Tracer {
                 // } else {
                 if let Some(chunk) = chunk {
                     let w = ray.at(hit.t);
-                    let texel = chunk.sample_terrain_texture(Vec2::new(w.x, w.z), Vec2::one());
+                    let texel = chunk.sample_terrain_texture(Vec2::new(w.x, w.z));
                     pixel_to_vec4(&texel)
                 } else {
                     Vec4::zero()

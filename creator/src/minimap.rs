@@ -264,7 +264,7 @@ pub fn draw_minimap(
         let scale_x = width / bbox.z;
         let scale_y = height / bbox.w;
 
-        let rusterix = RUSTERIX.write().unwrap();
+        let mut rusterix = RUSTERIX.write().unwrap();
         let mut map_copy = map.clone();
         map_copy.selected_linedefs.clear();
         map_copy.selected_sectors.clear();
@@ -283,25 +283,74 @@ pub fn draw_minimap(
         let scale_matrix = Mat3::new(scale_x, 0.0, 0.0, 0.0, scale_y, 0.0, 0.0, 0.0, 1.0);
         let transform = translation_matrix * scale_matrix;
 
-        let mut builder = rusterix::D2PreviewBuilder::new();
-        let mut scene = builder.build(
-            &map_copy,
-            &rusterix.assets,
-            Vec2::new(width, height),
-            &ValueContainer::default(),
-        );
-        rusterix::Rasterizer::setup(Some(transform), Mat4::identity(), Mat4::identity())
-            .background(background)
-            .ambient(Vec4::one())
-            .render_mode(rusterix::RenderMode::render_2d().ignore_background_shader(true))
-            .rasterize(
-                &mut scene,
-                buffer.pixels_mut(),
-                width as usize,
-                height as usize,
-                40,
+        let use_scenevm_region = server_ctx.get_map_context() == MapContext::Region
+            && server_ctx.editing_surface.is_none();
+
+        if use_scenevm_region {
+            // Minimap readability: render with stable daytime lighting.
+            let hour = 12.0;
+            let anim_counter = rusterix.client.animation_frame;
+            let scenevm_mode_2d = rusterix.scene_handler.settings.scenevm_mode_2d();
+            let scene_handler = &mut rusterix.scene_handler;
+            let layer_count = scene_handler.vm.vm_layer_count();
+            let mut layer_enabled_before = Vec::with_capacity(layer_count);
+            for i in 0..layer_count {
+                layer_enabled_before.push(scene_handler.vm.is_layer_enabled(i).unwrap_or(true));
+            }
+            // Minimap should show base scene only, never editor/game overlays.
+            for i in 1..layer_count {
+                scene_handler.vm.set_layer_enabled(i, false);
+            }
+            if matches!(scenevm_mode_2d, scenevm::RenderMode::Compute2D) {
+                scene_handler.vm.execute(scenevm::Atom::SetGP0(Vec4::new(
+                    map_copy.grid_size,
+                    map_copy.subdivisions,
+                    map_copy.offset.x,
+                    -map_copy.offset.y,
+                )));
+            }
+            scene_handler
+                .vm
+                .execute(scenevm::Atom::SetRenderMode(scenevm_mode_2d));
+            scene_handler.settings.apply_hour(hour);
+            scene_handler.settings.apply_2d(&mut scene_handler.vm);
+            scene_handler
+                .vm
+                .execute(scenevm::Atom::SetTransform2D(transform));
+            scene_handler
+                .vm
+                .execute(scenevm::Atom::SetAnimationCounter(anim_counter));
+            scene_handler
+                .vm
+                .execute(scenevm::Atom::SetBackground(Vec4::zero()));
+            scene_handler
+                .vm
+                .render_frame(buffer.pixels_mut(), width as u32, height as u32);
+            for (i, enabled) in layer_enabled_before.into_iter().enumerate() {
+                scene_handler.vm.set_layer_enabled(i, enabled);
+            }
+        } else {
+            let mut builder = rusterix::D2PreviewBuilder::new();
+            let mut scene = builder.build(
+                &map_copy,
                 &rusterix.assets,
+                Vec2::new(width, height),
+                &ValueContainer::default(),
             );
+
+            rusterix::Rasterizer::setup(Some(transform), Mat4::identity(), Mat4::identity())
+                .background(background)
+                .ambient(Vec4::one())
+                .render_mode(rusterix::RenderMode::render_2d().ignore_background_shader(true))
+                .rasterize(
+                    &mut scene,
+                    buffer.pixels_mut(),
+                    width as usize,
+                    height as usize,
+                    40,
+                    &rusterix.assets,
+                );
+        }
 
         // Only overlay linedefs while editing a profile surface in D2 mode.
         let show_profile_lines = server_ctx.get_map_context() == MapContext::Region

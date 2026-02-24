@@ -56,7 +56,9 @@ pub struct Vert2DPod {
     pub pos: [f32; 2],
     pub uv: [f32; 2],
     pub tile_index: u32,
-    pub _pad_tile: u32,
+    pub tile_index2: u32,
+    pub blend_factor: f32,
+    pub _pad0: u32,
 }
 
 #[repr(C)]
@@ -381,21 +383,25 @@ pub struct VMGpu {
     pub compute2d_pipeline: Option<wgpu::ComputePipeline>,
     pub compute3d_pipeline: Option<wgpu::ComputePipeline>,
     pub compute_sdf_pipeline: Option<wgpu::ComputePipeline>,
+    pub raster2d_pipeline: Option<wgpu::RenderPipeline>,
     pub raster3d_pipeline: Option<wgpu::RenderPipeline>,
     pub raster3d_alpha_pipeline: Option<wgpu::RenderPipeline>,
     pub raster3d_shadow_pipeline: Option<wgpu::RenderPipeline>,
     pub u2d_buf: Option<wgpu::Buffer>,
     pub u3d_buf: Option<wgpu::Buffer>,
     pub u_sdf_buf: Option<wgpu::Buffer>,
+    pub u_raster2d_buf: Option<wgpu::Buffer>,
     pub u_raster3d_buf: Option<wgpu::Buffer>,
     pub u2d_bgl: Option<wgpu::BindGroupLayout>,
     pub u3d_bgl: Option<wgpu::BindGroupLayout>,
     pub u_sdf_bgl: Option<wgpu::BindGroupLayout>,
+    pub u_raster2d_bgl: Option<wgpu::BindGroupLayout>,
     pub u_raster3d_bgl: Option<wgpu::BindGroupLayout>,
     pub u_raster3d_shadow_bgl: Option<wgpu::BindGroupLayout>,
     pub u2d_bg: Option<wgpu::BindGroup>,
     pub u3d_bg: Option<wgpu::BindGroup>,
     pub u_sdf_bg: Option<wgpu::BindGroup>,
+    pub u_raster2d_bg: Option<wgpu::BindGroup>,
     pub u_raster3d_bg: Option<wgpu::BindGroup>,
     pub u_raster3d_shadow_bg: Option<wgpu::BindGroup>,
     pub v2d_ssbo: Option<wgpu::Buffer>,
@@ -436,6 +442,17 @@ pub struct Globals {
     _pad2: f32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct Raster2DUniforms {
+    pub misc0: [f32; 4],                  // x=fb_w, y=fb_h, z=anim_counter, w=unused
+    pub post_params: [f32; 4],            // x=enabled, y=tone mapper, z=exposure, w=gamma
+    pub post_color_adjust: [f32; 4],      // x=saturation, y=luminance, z/w unused
+    pub ambient_color_strength: [f32; 4], // rgb + strength
+    pub sun_color_intensity: [f32; 4],    // rgb + intensity
+    pub sun_dir_enabled: [f32; 4],        // xyz + enabled
+}
+
 pub const SCENEVM_2D_WGSL: &str = r#"
 struct Globals {
   tx: f32, ty: f32, scale: f32, _pad0: f32,
@@ -462,6 +479,236 @@ fn vs_main(in: VsIn) -> VsOut {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
   return textureSample(atlas_tex, atlas_smp, in.uv);
+}
+"#;
+
+pub const SCENEVM_2D_RASTER_WGSL: &str = r#"
+struct U2D {
+  misc0: vec4<f32>,
+  post_params: vec4<f32>,
+  post_color_adjust: vec4<f32>,
+  ambient_color_strength: vec4<f32>,
+  sun_color_intensity: vec4<f32>,
+  sun_dir_enabled: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> UBO: U2D;
+@group(0) @binding(1) var atlas_tex: texture_2d<f32>;
+@group(0) @binding(2) var atlas_smp: sampler;
+@group(0) @binding(3) var atlas_mat_tex: texture_2d<f32>;
+
+struct TileAnimMeta {
+  first_frame: u32,
+  frame_count: u32,
+  _pad: vec2<u32>,
+};
+struct TileAnims { data: array<TileAnimMeta> };
+struct TileFrame {
+  ofs: vec2<f32>,
+  scale: vec2<f32>,
+};
+struct TileFrames { data: array<TileFrame> };
+@group(0) @binding(4) var<storage, read> tile_anims: TileAnims;
+@group(0) @binding(5) var<storage, read> tile_frames: TileFrames;
+struct SceneDataHeader {
+  lights_offset_words: u32,
+  lights_count: u32,
+  billboard_cmd_offset_words: u32,
+  billboard_cmd_count: u32,
+  avatar_meta_offset_words: u32,
+  avatar_meta_count: u32,
+  avatar_pixel_offset_words: u32,
+  data_word_count: u32,
+};
+struct SceneData { header: SceneDataHeader, data: array<u32> };
+@group(0) @binding(6) var<storage, read> scene_data: SceneData;
+
+struct VsIn {
+  @location(0) pos: vec2<f32>,
+  @location(1) uv: vec2<f32>,
+  @location(2) tile_index: u32,
+  @location(3) tile_index2: u32,
+  @location(4) blend_factor: f32,
+  @location(5) _pad0: u32,
+};
+
+struct VsOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+  @location(1) @interpolate(flat) tile_index: u32,
+  @location(2) @interpolate(flat) tile_index2: u32,
+  @location(3) blend_factor: f32,
+};
+
+fn tile_frame(tile_index: u32) -> TileFrame {
+  let meta_len = arrayLength(&tile_anims.data);
+  if (meta_len == 0u) {
+    return TileFrame(vec2<f32>(0.0), vec2<f32>(0.0));
+  }
+  let idx = min(tile_index, meta_len - 1u);
+  let anim = tile_anims.data[idx];
+  let count = max(anim.frame_count, 1u);
+  let frames_len = arrayLength(&tile_frames.data);
+  if (frames_len == 0u) {
+    return TileFrame(vec2<f32>(0.0), vec2<f32>(0.0));
+  }
+  let anim_counter = u32(max(UBO.misc0.z, 0.0));
+  let frame_offset = anim.first_frame + (anim_counter % count);
+  let frame_idx = min(frame_offset, frames_len - 1u);
+  return tile_frames.data[frame_idx];
+}
+
+fn atlas_uv(tile_index: u32, uv_obj: vec2<f32>) -> vec2<f32> {
+  let frame = tile_frame(tile_index);
+  let uv_wrapped = fract(uv_obj);
+  return frame.ofs + uv_wrapped * frame.scale;
+}
+
+fn sd_data_word(idx: u32) -> u32 {
+  if (idx >= scene_data.header.data_word_count) {
+    return 0u;
+  }
+  return scene_data.data[idx];
+}
+
+fn sd_unpack_rgba8(word: u32) -> vec4<f32> {
+  let r = f32((word >> 0u) & 0xffu) * (1.0 / 255.0);
+  let g = f32((word >> 8u) & 0xffu) * (1.0 / 255.0);
+  let b = f32((word >> 16u) & 0xffu) * (1.0 / 255.0);
+  let a = f32((word >> 24u) & 0xffu) * (1.0 / 255.0);
+  return vec4<f32>(r, g, b, a);
+}
+
+fn sd_sample_avatar(avatar_index: u32, uv: vec2<f32>) -> vec4<f32> {
+  if (avatar_index >= scene_data.header.avatar_meta_count) {
+    return vec4<f32>(0.0);
+  }
+  let meta_base = scene_data.header.avatar_meta_offset_words + avatar_index * 4u;
+  if (meta_base + 1u >= scene_data.header.data_word_count) {
+    return vec4<f32>(0.0);
+  }
+  let offset_pixels = sd_data_word(meta_base + 0u);
+  let size = sd_data_word(meta_base + 1u);
+  if (size == 0u) {
+    return vec4<f32>(0.0);
+  }
+  let u = clamp(uv.x, 0.0, 0.999999);
+  let v = clamp(uv.y, 0.0, 0.999999);
+  let x = u32(floor(u * f32(size)));
+  let y = u32(floor(v * f32(size)));
+  let idx = scene_data.header.avatar_pixel_offset_words + offset_pixels + y * size + x;
+  if (idx >= scene_data.header.data_word_count) {
+    return vec4<f32>(0.0);
+  }
+  return sd_unpack_rgba8(sd_data_word(idx));
+}
+
+fn apply_post(color: vec3<f32>) -> vec3<f32> {
+  var c = max(color, vec3<f32>(0.0));
+  let enabled = UBO.post_params.x > 0.5;
+  let tone = u32(max(UBO.post_params.y, 0.0));
+  let exposure = max(UBO.post_params.z, 0.0);
+  let gamma = max(UBO.post_params.w, 0.001);
+  let saturation = max(UBO.post_color_adjust.x, 0.0);
+  let luminance = max(UBO.post_color_adjust.y, 0.0);
+  if (enabled) {
+    c = max(c * exposure, vec3<f32>(0.0));
+    if (tone == 1u) {
+      c = c / (c + vec3<f32>(1.0));
+    } else if (tone == 2u) {
+      let a = 2.51;
+      let b = 0.03;
+      let c2 = 2.43;
+      let d = 0.59;
+      let e = 0.14;
+      c = clamp((c * (a * c + vec3<f32>(b))) / (c * (c2 * c + vec3<f32>(d)) + vec3<f32>(e)), vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    c *= luminance;
+    let luma = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+    c = vec3<f32>(luma) + (c - vec3<f32>(luma)) * saturation;
+  }
+  c = pow(c, vec3<f32>(1.0 / gamma));
+  return c;
+}
+
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+  return pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
+}
+
+fn unpack_material_nibbles(m: vec4<f32>) -> vec4<f32> {
+  let b0 = u32(round(clamp(m.x, 0.0, 1.0) * 255.0));
+  let b1 = u32(round(clamp(m.y, 0.0, 1.0) * 255.0));
+  let roughness = f32(b0 & 0xFu) / 15.0;
+  let metallic = f32((b0 >> 4u) & 0xFu) / 15.0;
+  let opacity = f32(b1 & 0xFu) / 15.0;
+  let emissive = f32((b1 >> 4u) & 0xFu) / 15.0;
+  return vec4<f32>(roughness, metallic, opacity, emissive);
+}
+
+fn apply_scene_lighting(albedo: vec3<f32>) -> vec3<f32> {
+  let ambient = UBO.ambient_color_strength.xyz * UBO.ambient_color_strength.w;
+  let sun_enabled = UBO.sun_dir_enabled.w > 0.5;
+  let sun = select(
+    vec3<f32>(0.0),
+    UBO.sun_color_intensity.xyz * (UBO.sun_color_intensity.w * 0.35),
+    sun_enabled
+  );
+  let lighting = max(ambient + sun, vec3<f32>(0.0));
+  return albedo * lighting;
+}
+
+@vertex
+fn vs_main(in: VsIn) -> VsOut {
+  var out: VsOut;
+  let fb_w = max(UBO.misc0.x, 1.0);
+  let fb_h = max(UBO.misc0.y, 1.0);
+  let x = (in.pos.x / fb_w) * 2.0 - 1.0;
+  let y = (in.pos.y / fb_h) * -2.0 + 1.0;
+  out.pos = vec4<f32>(x, y, 0.0, 1.0);
+  out.uv = in.uv;
+  out.tile_index = in.tile_index;
+  out.tile_index2 = in.tile_index2;
+  out.blend_factor = in.blend_factor;
+  return out;
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+  let is_avatar = (in.tile_index2 & 0x80000000u) != 0u;
+  if (is_avatar) {
+    let col_srgb = sd_sample_avatar(in.tile_index, in.uv);
+    if (col_srgb.a <= 0.0) {
+      discard;
+    }
+    let col = vec4<f32>(srgb_to_linear(col_srgb.rgb), col_srgb.a);
+    return vec4<f32>(apply_post(apply_scene_lighting(col.rgb)), col.a);
+  }
+
+  let uv0 = atlas_uv(in.tile_index, in.uv);
+  let col0_srgb = textureSampleLevel(atlas_tex, atlas_smp, uv0, 0.0);
+  let col0 = vec4<f32>(srgb_to_linear(col0_srgb.rgb), col0_srgb.a);
+  var col = col0;
+
+  let blend = clamp(in.blend_factor, 0.0, 1.0);
+  if (in.tile_index2 != in.tile_index && blend > 0.0) {
+    let uv1 = atlas_uv(in.tile_index2, in.uv);
+    let col1_srgb = textureSampleLevel(atlas_tex, atlas_smp, uv1, 0.0);
+    let col1 = vec4<f32>(srgb_to_linear(col1_srgb.rgb), col1_srgb.a);
+    let overlay_a = clamp(blend * col1.a, 0.0, 1.0);
+    let out_rgb = mix(col0.rgb, col1.rgb, overlay_a);
+    let out_a = max(col0.a, overlay_a);
+    col = vec4<f32>(out_rgb, out_a);
+  }
+
+  let mats_raw = textureSampleLevel(atlas_mat_tex, atlas_smp, uv0, 0.0);
+  let mats = unpack_material_nibbles(mats_raw);
+  let opacity = mats.z;
+  let emission = mats.w;
+  let rgb = apply_scene_lighting(col.rgb) * (1.0 + emission);
+  let a = col.a * opacity;
+  if (a <= 0.0) {
+    discard;
+  }
+  return vec4<f32>(apply_post(rgb), a);
 }
 "#;
 
@@ -1295,6 +1542,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {
     Compute2D,
+    Raster2D,
     Compute3D,
     Raster3D,
     Sdf,
@@ -1779,6 +2027,13 @@ impl VM {
                     Some(idx) => idx,
                     None => continue,
                 };
+                let tile_index2 = if let Some(tid2) = poly.tile_id2 {
+                    self.shared_atlas.tile_index(&tid2).unwrap_or(tile_index)
+                } else {
+                    tile_index
+                };
+                let has_valid_blend =
+                    poly.tile_id2.is_some() && poly.blend_weights.len() == poly.vertices.len();
 
                 let base = verts_flat.len() as u32;
 
@@ -1792,7 +2047,13 @@ impl VM {
                         pos: [world_p.x, world_p.y],
                         uv: [base_uv[0], base_uv[1]],
                         tile_index,
-                        _pad_tile: 0,
+                        tile_index2,
+                        blend_factor: if has_valid_blend {
+                            poly.blend_weights[i].clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        },
+                        _pad0: 0,
                     });
                 }
 
@@ -1857,7 +2118,9 @@ impl VM {
                                 pos: [0.0, 0.0],
                                 uv: [uv01[0], uv01[1]],
                                 tile_index,
-                                _pad_tile: 0,
+                                tile_index2: tile_index,
+                                blend_factor: 0.0,
+                                _pad0: 0,
                             });
                         }
                         let n = verts_flat.len();
@@ -3043,21 +3306,25 @@ impl VM {
             compute2d_pipeline: None,
             compute3d_pipeline: None,
             compute_sdf_pipeline: None,
+            raster2d_pipeline: None,
             raster3d_pipeline: None,
             raster3d_alpha_pipeline: None,
             raster3d_shadow_pipeline: None,
             u2d_buf: None,
             u3d_buf: None,
             u_sdf_buf: None,
+            u_raster2d_buf: None,
             u_raster3d_buf: None,
             u2d_bgl: None,
             u3d_bgl: None,
             u_sdf_bgl: None,
+            u_raster2d_bgl: None,
             u_raster3d_bgl: None,
             u_raster3d_shadow_bgl: None,
             u2d_bg: None,
             u3d_bg: None,
             u_sdf_bg: None,
+            u_raster2d_bg: None,
             u_raster3d_bg: None,
             u_raster3d_shadow_bg: None,
             v2d_ssbo: None,
@@ -3651,6 +3918,179 @@ impl VM {
         Ok(())
     }
 
+    fn init_raster2d(&mut self, device: &wgpu::Device) -> crate::SceneVMResult<()> {
+        if self.gpu.is_none() {
+            self.init_gpu(device)?;
+        }
+        self.upload_tile_metadata_to_gpu(device);
+        let g = self.gpu.as_mut().unwrap();
+        if g.raster2d_pipeline.is_some() && g.u_raster2d_bgl.is_some() && g.u_raster2d_buf.is_some()
+        {
+            return Ok(());
+        }
+
+        let u_raster2d_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("vm-raster2d-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("vm-2d-raster-shader"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(SCENEVM_2D_RASTER_WGSL)),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("vm-2d-raster-pipeline-layout"),
+            bind_group_layouts: &[&u_raster2d_bgl],
+            push_constant_ranges: &[],
+        });
+        let raster2d_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("vm-2d-raster-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Vert2DPod>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            offset: 0,
+                            shader_location: 0,
+                            format: wgpu::VertexFormat::Float32x2,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 8,
+                            shader_location: 1,
+                            format: wgpu::VertexFormat::Float32x2,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 16,
+                            shader_location: 2,
+                            format: wgpu::VertexFormat::Uint32,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 20,
+                            shader_location: 3,
+                            format: wgpu::VertexFormat::Uint32,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 24,
+                            shader_location: 4,
+                            format: wgpu::VertexFormat::Float32,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 28,
+                            shader_location: 5,
+                            format: wgpu::VertexFormat::Uint32,
+                        },
+                    ],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let u_raster2d_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("vm-raster2d-uniforms"),
+            size: std::mem::size_of::<Raster2DUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        g.raster2d_pipeline = Some(raster2d_pipeline);
+        g.u_raster2d_bgl = Some(u_raster2d_bgl);
+        g.u_raster2d_buf = Some(u_raster2d_buf);
+
+        Ok(())
+    }
+
     fn init_raster3d(&mut self, device: &wgpu::Device) -> crate::SceneVMResult<()> {
         if self.gpu.is_none() {
             self.init_gpu(device)?;
@@ -4176,6 +4616,380 @@ impl VM {
     }
 
     /// Dispatches 2D compute pipeline into a storage-capable surface.
+    pub fn raster_draw_2d_into(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _surface: &mut Texture,
+        fb_w: u32,
+        fb_h: u32,
+    ) -> crate::SceneVMResult<()> {
+        if self.gpu.is_none() {
+            self.init_gpu(device)?;
+        }
+        self.init_raster2d(device)?;
+        self.upload_tile_metadata_to_gpu(device);
+        let (write_view, _prev_view, next_front) =
+            self.prepare_layer_views(device, queue, fb_w, fb_h);
+
+        let fb_dims = (fb_w, fb_h);
+        let has_dynamic_billboards =
+            !self.dynamic_objects.is_empty() || !self.dynamic_avatar_objects.is_empty();
+        let mut geometry_changed = false;
+        if self.geometry2d_dirty
+            || self.cached_v2.is_empty()
+            || self.cached_fb_size_2d != fb_dims
+            || has_dynamic_billboards
+        {
+            let (mut verts_flat, mut indices_flat, tile_bins, tile_tris) =
+                self.build_2d_batches(fb_w, fb_h);
+
+            let m = self.transform2d;
+            let mut avatar_meta_indices: FxHashMap<GeoId, u32> = FxHashMap::default();
+            let mut avatar_meta_count: u32 = 0;
+            for obj in self
+                .dynamic_objects
+                .iter()
+                .chain(self.dynamic_avatar_objects.values())
+            {
+                if obj.kind != DynamicKind::BillboardAvatar
+                    || avatar_meta_indices.contains_key(&obj.id)
+                {
+                    continue;
+                }
+                let Some(avatar) = self.dynamic_avatar_data.get(&obj.id) else {
+                    continue;
+                };
+                if avatar.size == 0 {
+                    continue;
+                }
+                let expected_len = avatar.size as usize * avatar.size as usize * 4;
+                if avatar.rgba.len() != expected_len {
+                    continue;
+                }
+                avatar_meta_indices.insert(obj.id, avatar_meta_count);
+                avatar_meta_count += 1;
+            }
+
+            for obj in self
+                .dynamic_objects
+                .iter()
+                .chain(self.dynamic_avatar_objects.values())
+            {
+                let (tile_index, tile_index2) = match obj.kind {
+                    DynamicKind::BillboardTile => {
+                        let Some(tile_id) = obj.tile_id else { continue };
+                        let Some(tile_index) = self.shared_atlas.tile_index(&tile_id) else {
+                            continue;
+                        };
+                        (tile_index, tile_index)
+                    }
+                    DynamicKind::BillboardAvatar => {
+                        let Some(avatar_index) = avatar_meta_indices.get(&obj.id).copied() else {
+                            continue;
+                        };
+                        (avatar_index, 0x8000_0000u32)
+                    }
+                };
+
+                let center_scr = m * Vec3::new(obj.center.x, obj.center.y, 1.0);
+                let half_width = (obj.width * 0.5).max(0.0);
+                let half_height = (obj.height * 0.5).max(0.0);
+                if half_width <= 0.0 || half_height <= 0.0 {
+                    continue;
+                }
+                let right_world = obj.view_right * half_width;
+                let up_world = obj.view_up * half_height;
+                let right_scr = (m * Vec3::new(
+                    obj.center.x + right_world.x,
+                    obj.center.y + right_world.y,
+                    1.0,
+                ))
+                .xy()
+                    - center_scr.xy();
+                let up_scr =
+                    (m * Vec3::new(obj.center.x + up_world.x, obj.center.y + up_world.y, 1.0)).xy()
+                        - center_scr.xy();
+
+                let c = center_scr.xy();
+                let p0 = c - right_scr - up_scr;
+                let p1 = c - right_scr + up_scr;
+                let p2 = c + right_scr + up_scr;
+                let p3 = c + right_scr - up_scr;
+
+                let uvs = if matches!(obj.repeat_mode, crate::dynamic::RepeatMode::Repeat) {
+                    [
+                        [0.0f32, obj.height],
+                        [0.0, 0.0],
+                        [obj.width, 0.0],
+                        [obj.width, obj.height],
+                    ]
+                } else {
+                    [[0.0f32, 1.0f32], [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
+                };
+
+                let base = verts_flat.len() as u32;
+                let pts = [p0, p1, p2, p3];
+                for i in 0..4 {
+                    verts_flat.push(Vert2DPod {
+                        pos: [pts[i].x, pts[i].y],
+                        uv: uvs[i],
+                        tile_index,
+                        tile_index2,
+                        blend_factor: 0.0,
+                        _pad0: 0,
+                    });
+                }
+                indices_flat.extend_from_slice(&[
+                    base,
+                    base + 1,
+                    base + 2,
+                    base,
+                    base + 2,
+                    base + 3,
+                ]);
+            }
+
+            self.cached_v2 = verts_flat;
+            self.cached_i2 = indices_flat;
+            self.cached_tile_bins = tile_bins;
+            self.cached_tile_tris = tile_tris;
+            self.cached_fb_size_2d = fb_dims;
+            self.geometry2d_dirty = false;
+            geometry_changed = true;
+        }
+
+        use wgpu::util::DeviceExt;
+        {
+            let g = self.gpu.as_mut().unwrap();
+            if geometry_changed || g.v2d_ssbo.is_none() || g.i2d_ssbo.is_none() {
+                let mut v_data = bytemuck::cast_slice(&self.cached_v2).to_vec();
+                if v_data.is_empty() {
+                    v_data = bytemuck::bytes_of(&Vert2DPod {
+                        pos: [0.0, 0.0],
+                        uv: [0.0, 0.0],
+                        tile_index: 0,
+                        tile_index2: 0,
+                        blend_factor: 0.0,
+                        _pad0: 0,
+                    })
+                    .to_vec();
+                }
+                let mut i_data = bytemuck::cast_slice(&self.cached_i2).to_vec();
+                if i_data.is_empty() {
+                    i_data = 0u32.to_ne_bytes().to_vec();
+                }
+                g.v2d_ssbo = Some(
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("vm-2d-verts-raster"),
+                        contents: &v_data,
+                        usage: wgpu::BufferUsages::STORAGE
+                            | wgpu::BufferUsages::VERTEX
+                            | wgpu::BufferUsages::COPY_DST,
+                    }),
+                );
+                g.i2d_ssbo = Some(
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("vm-2d-indices-raster"),
+                        contents: &i_data,
+                        usage: wgpu::BufferUsages::STORAGE
+                            | wgpu::BufferUsages::INDEX
+                            | wgpu::BufferUsages::COPY_DST,
+                    }),
+                );
+            }
+        }
+
+        self.upload_scene_data_ssbo(device, queue);
+        self.upload_atlas_to_gpu_with(device, queue);
+        let (atlas_view, atlas_mat_view) = self
+            .shared_atlas
+            .texture_views()
+            .expect("atlas GPU resources missing");
+
+        let u = Raster2DUniforms {
+            misc0: [fb_w as f32, fb_h as f32, self.animation_counter as f32, 0.0],
+            post_params: [
+                self.gp9.x,
+                self.gp9.y,
+                self.gp9.z.max(0.0),
+                self.gp9.w.max(0.001),
+            ],
+            post_color_adjust: [self.gp8.z.max(0.0), self.gp8.w.max(0.0), 0.0, 0.0],
+            ambient_color_strength: self.gp3.into_array(),
+            sun_color_intensity: self.gp1.into_array(),
+            sun_dir_enabled: self.gp2.into_array(),
+        };
+        let tone_mapper = self.gp9.y.max(0.0) as u32;
+        let post_enabled = self.gp9.x > 0.5;
+        let exposure = self.gp9.z.max(0.0);
+        let gamma = self.gp9.w.max(0.001);
+        let saturation = self.gp8.z.max(0.0);
+        let luminance = self.gp8.w.max(0.0);
+        let apply_post_cpu = |mut c: [f32; 3]| -> [f32; 3] {
+            c[0] = c[0].max(0.0);
+            c[1] = c[1].max(0.0);
+            c[2] = c[2].max(0.0);
+            if post_enabled {
+                c[0] = (c[0] * exposure).max(0.0);
+                c[1] = (c[1] * exposure).max(0.0);
+                c[2] = (c[2] * exposure).max(0.0);
+                match tone_mapper {
+                    1 => {
+                        c[0] = c[0] / (c[0] + 1.0);
+                        c[1] = c[1] / (c[1] + 1.0);
+                        c[2] = c[2] / (c[2] + 1.0);
+                    }
+                    2 => {
+                        let aces = |x: f32| -> f32 {
+                            let a = 2.51;
+                            let b = 0.03;
+                            let c2 = 2.43;
+                            let d = 0.59;
+                            let e = 0.14;
+                            ((x * (a * x + b)) / (x * (c2 * x + d) + e)).clamp(0.0, 1.0)
+                        };
+                        c[0] = aces(c[0]);
+                        c[1] = aces(c[1]);
+                        c[2] = aces(c[2]);
+                    }
+                    _ => {}
+                }
+                c[0] *= luminance;
+                c[1] *= luminance;
+                c[2] *= luminance;
+                let luma = c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
+                c[0] = luma + (c[0] - luma) * saturation;
+                c[1] = luma + (c[1] - luma) * saturation;
+                c[2] = luma + (c[2] - luma) * saturation;
+            }
+            c[0] = c[0].powf(1.0 / gamma);
+            c[1] = c[1].powf(1.0 / gamma);
+            c[2] = c[2].powf(1.0 / gamma);
+            c
+        };
+        let clear_linear = if self.gp0.x.abs() + self.gp0.y.abs() + self.gp0.z.abs() > 0.001 {
+            [self.gp0.x, self.gp0.y, self.gp0.z]
+        } else {
+            [self.background.x, self.background.y, self.background.z]
+        };
+        let clear = {
+            let p = apply_post_cpu(clear_linear);
+            [
+                p[0].clamp(0.0, 1.0),
+                p[1].clamp(0.0, 1.0),
+                p[2].clamp(0.0, 1.0),
+            ]
+        };
+
+        {
+            let g = self.gpu.as_mut().unwrap();
+            queue.write_buffer(
+                g.u_raster2d_buf.as_ref().unwrap(),
+                0,
+                bytemuck::bytes_of(&u),
+            );
+            g.u_raster2d_bg = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("vm-raster2d-bg"),
+                layout: g.u_raster2d_bgl.as_ref().unwrap(),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: g.u_raster2d_buf.as_ref().unwrap().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&atlas_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&g.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&atlas_mat_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: g.tile_meta_ssbo.as_ref().unwrap().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: g.tile_frames_ssbo.as_ref().unwrap().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: g.scene_data_ssbo.as_ref().unwrap().as_entire_binding(),
+                    },
+                ],
+            }));
+        }
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("vm-2d-raster-enc"),
+        });
+        {
+            let g = self.gpu.as_ref().unwrap();
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("vm-2d-raster-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &write_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: clear[0] as f64,
+                            g: clear[1] as f64,
+                            b: clear[2] as f64,
+                            a: if self.layer_index == 0 {
+                                1.0
+                            } else {
+                                self.background.w.clamp(0.0, 1.0) as f64
+                            },
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            if let Some([x, y, w, h]) = self.viewport_rect2d
+                && w > 0.0
+                && h > 0.0
+            {
+                let sx = x.max(0.0).min(fb_w as f32) as u32;
+                let sy = y.max(0.0).min(fb_h as f32) as u32;
+                let sw = w.max(0.0).min((fb_w as f32) - sx as f32) as u32;
+                let sh = h.max(0.0).min((fb_h as f32) - sy as f32) as u32;
+                pass.set_scissor_rect(sx, sy, sw.max(1), sh.max(1));
+                pass.set_viewport(
+                    sx as f32,
+                    sy as f32,
+                    sw.max(1) as f32,
+                    sh.max(1) as f32,
+                    0.0,
+                    1.0,
+                );
+            }
+
+            pass.set_pipeline(g.raster2d_pipeline.as_ref().unwrap());
+            pass.set_bind_group(0, g.u_raster2d_bg.as_ref().unwrap(), &[]);
+            pass.set_vertex_buffer(0, g.v2d_ssbo.as_ref().unwrap().slice(..));
+            pass.set_index_buffer(
+                g.i2d_ssbo.as_ref().unwrap().slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+            pass.draw_indexed(0..self.cached_i2.len() as u32, 0, 0..1);
+        }
+        queue.submit(Some(encoder.finish()));
+        if self.ping_pong_enabled {
+            self.ping_pong_front = next_front;
+        }
+        Ok(())
+    }
+
     pub fn compute_draw_2d_into(
         &mut self,
         device: &wgpu::Device,
@@ -4271,7 +5085,9 @@ impl VM {
                             pos: [0.0, 0.0],
                             uv: [0.0, 0.0],
                             tile_index: 0,
-                            _pad_tile: 0,
+                            tile_index2: 0,
+                            blend_factor: 0.0,
+                            _pad0: 0,
                         })
                         .to_vec(),
                     );
@@ -4291,14 +5107,18 @@ impl VM {
                     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("vm-2d-verts-ssbo"),
                         contents: verts_bytes,
-                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                        usage: wgpu::BufferUsages::STORAGE
+                            | wgpu::BufferUsages::VERTEX
+                            | wgpu::BufferUsages::COPY_DST,
                     }),
                 );
                 g.i2d_ssbo = Some(
                     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("vm-2d-indices-ssbo"),
                         contents: indices_bytes,
-                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                        usage: wgpu::BufferUsages::STORAGE
+                            | wgpu::BufferUsages::INDEX
+                            | wgpu::BufferUsages::COPY_DST,
                     }),
                 );
                 if geometry_changed {
@@ -6576,6 +7396,13 @@ impl VM {
 
                 if self.activity_logging {
                     self.log_layer("2D compute draw completed".to_string());
+                }
+            }
+            RenderMode::Raster2D => {
+                self.raster_draw_2d_into(device, queue, surface, fb_w, fb_h)?;
+
+                if self.activity_logging {
+                    self.log_layer("2D raster draw completed".to_string());
                 }
             }
             RenderMode::Compute3D => {
