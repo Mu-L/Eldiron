@@ -385,38 +385,48 @@ impl ChunkBuilder for D2ChunkBuilder {
                         } else {
                             false
                         };
+                        let has_manual_blend_override = if let Some(overrides) = blend_overrides {
+                            overrides
+                                .get(&(tile_x, tile_z))
+                                .and_then(|(_, ps)| ps.tile_from_tile_list(assets))
+                                .is_some()
+                        } else {
+                            false
+                        };
+                        let has_manual_override =
+                            has_manual_tile_override || has_manual_blend_override;
 
                         let road_tile_id = tile_id;
                         let has_road_tile = road_tile_linedefs
                             .iter()
                             .any(|(_, _, width, _, tid, _)| *tid == road_tile_id && *width > 0.0)
-                            && !has_manual_tile_override;
+                            && !has_manual_override;
                         let has_smooth_road =
                             road_tile_linedefs
                                 .iter()
                                 .any(|(_, _, width, _, tid, smooth)| {
                                     *tid == road_tile_id && *smooth && *width > 0.0
                                 })
-                                && !has_manual_tile_override;
+                                && !has_manual_override;
                         let has_ridge_tile = ridge_tile_sectors
                             .iter()
                             .any(|(_, _, _, tid)| *tid == road_tile_id)
-                            && !has_manual_tile_override;
+                            && !has_manual_override;
                         let has_smooth_ridge =
                             ridge_tile_sectors.iter().any(|(_, _, tile_falloff, tid)| {
                                 *tid == road_tile_id && *tile_falloff > 0.0
-                            }) && !has_manual_tile_override;
+                            }) && !has_manual_override;
                         let has_vertex_tile = vertex_tile_controls
                             .iter()
                             .any(|(_, _, _, tid)| *tid == road_tile_id)
-                            && !has_manual_tile_override;
+                            && !has_manual_override;
                         let has_smooth_vertex =
                             vertex_tile_controls
                                 .iter()
                                 .any(|(_, _, tile_falloff, tid)| {
                                     *tid == road_tile_id && *tile_falloff > 0.0
                                 })
-                                && !has_manual_tile_override;
+                                && !has_manual_override;
 
                         let bg_tile = if let Some(overrides) = tile_overrides {
                             if let Some(ps) = overrides.get(&(tile_x, tile_z)) {

@@ -646,11 +646,13 @@ impl RectTool {
             } else if let Some(tile_id) = curr_tile_id {
                 if server_ctx.rect_blend_preset == VertexBlendPreset::Solid {
                     tiles.insert((x, z), PixelSource::TileId(tile_id));
+                    blend_tiles.remove(&(x, z));
                 } else {
                     blend_tiles.insert(
                         (x, z),
                         (server_ctx.rect_blend_preset, PixelSource::TileId(tile_id)),
                     );
+                    tiles.remove(&(x, z));
                 }
             } else {
                 return None;
@@ -691,11 +693,13 @@ impl RectTool {
             } else if let Some(tile_id) = curr_tile_id {
                 if server_ctx.rect_blend_preset == VertexBlendPreset::Solid {
                     tiles.insert(server_ctx.rect_tile_id_3d, PixelSource::TileId(tile_id));
+                    blend_tiles.remove(&server_ctx.rect_tile_id_3d);
                 } else {
                     blend_tiles.insert(
                         server_ctx.rect_tile_id_3d,
                         (server_ctx.rect_blend_preset, PixelSource::TileId(tile_id)),
                     );
+                    tiles.remove(&server_ctx.rect_tile_id_3d);
                 }
             } else {
                 return None;
