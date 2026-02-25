@@ -92,6 +92,16 @@ impl EditSector {
             );
             nodeui.add_item(item);
 
+            let item = TheNodeUIItem::IntEditSlider(
+                "actionSectorTerrainRidgeSubdiv".into(),
+                "".into(),
+                "".into(),
+                1,
+                1..=8,
+                false,
+            );
+            nodeui.add_item(item);
+
             nodeui.add_item(TheNodeUIItem::Icons(
                 "actionSectorTerrainTile".into(),
                 "".into(),
@@ -118,6 +128,42 @@ impl EditSector {
                 "".into(),
                 1.0,
                 0.0..=16.0,
+                false,
+            ));
+
+            nodeui.add_item(TheNodeUIItem::Checkbox(
+                "actionSectorTerrainRidgeWaterEnabled".into(),
+                "".into(),
+                "".into(),
+                false,
+            ));
+
+            nodeui.add_item(TheNodeUIItem::FloatEditSlider(
+                "actionSectorTerrainRidgeWaterLevel".into(),
+                "".into(),
+                "".into(),
+                0.0,
+                -16.0..=16.0,
+                false,
+            ));
+
+            nodeui.add_item(TheNodeUIItem::Icons(
+                "actionSectorTerrainRidgeWaterTile".into(),
+                "".into(),
+                "".into(),
+                vec![(
+                    TheRGBABuffer::new(TheDim::sized(36, 36)),
+                    "".to_string(),
+                    Uuid::nil(),
+                )],
+            ));
+
+            nodeui.add_item(TheNodeUIItem::Text(
+                "actionSectorTerrainRidgeWaterTileId".into(),
+                "".into(),
+                "".into(),
+                "".into(),
+                None,
                 false,
             ));
 
@@ -208,12 +254,30 @@ impl Action for EditSector {
                     .get_float_default("ridge_falloff_distance", 5.0);
                 self.nodeui
                     .set_f32_value("actionSectorTerrainRidgeFalloff", ridge_falloff);
+                self.nodeui.set_i32_value(
+                    "actionSectorTerrainRidgeSubdiv",
+                    sector.properties.get_int_default("ridge_subdiv", 1).max(1),
+                );
                 self.nodeui.set_f32_value(
                     "actionSectorTerrainTileFalloff",
                     sector
                         .properties
                         .get_float_default("terrain_tile_falloff", 1.0),
                 );
+
+                self.nodeui.set_bool_value(
+                    "actionSectorTerrainRidgeWaterEnabled",
+                    sector
+                        .properties
+                        .get_bool_default("ridge_water_enabled", false),
+                );
+                self.nodeui.set_f32_value(
+                    "actionSectorTerrainRidgeWaterLevel",
+                    sector
+                        .properties
+                        .get_float_default("ridge_water_level", 0.0),
+                );
+
                 let terrain_tile_id = if let Some(Value::Source(PixelSource::TileId(id))) =
                     sector.properties.get("terrain_source")
                 {
@@ -234,6 +298,30 @@ impl Action for EditSector {
                     && items.len() == 1
                 {
                     items[0].2 = terrain_tile_id;
+                }
+
+                let ridge_water_tile_id = if let Some(Value::Source(PixelSource::TileId(id))) =
+                    sector.properties.get("ridge_water_source")
+                {
+                    *id
+                } else {
+                    Uuid::nil()
+                };
+                self.nodeui.set_text_value(
+                    "actionSectorTerrainRidgeWaterTileId",
+                    if ridge_water_tile_id == Uuid::nil() {
+                        String::new()
+                    } else {
+                        ridge_water_tile_id.to_string()
+                    },
+                );
+                if let Some(item) = self
+                    .nodeui
+                    .get_item_mut("actionSectorTerrainRidgeWaterTile")
+                    && let TheNodeUIItem::Icons(_, _, _, items) = item
+                    && items.len() == 1
+                {
+                    items[0].2 = ridge_water_tile_id;
                 }
 
                 let iso_hide_on_enter = match sector.properties.get("iso_hide_on_enter") {
@@ -277,10 +365,22 @@ impl Action for EditSector {
                 .nodeui
                 .get_f32_value("actionSectorTerrainRidgeFalloff")
                 .unwrap_or(5.0);
+            let ridge_subdiv = self
+                .nodeui
+                .get_i32_value("actionSectorTerrainRidgeSubdiv")
+                .unwrap_or(1);
             let terrain_tile_falloff = self
                 .nodeui
                 .get_f32_value("actionSectorTerrainTileFalloff")
                 .unwrap_or(1.0);
+            let ridge_water_enabled = self
+                .nodeui
+                .get_bool_value("actionSectorTerrainRidgeWaterEnabled")
+                .unwrap_or(false);
+            let ridge_water_level = self
+                .nodeui
+                .get_f32_value("actionSectorTerrainRidgeWaterLevel")
+                .unwrap_or(0.0);
             let tile_id_text = self
                 .nodeui
                 .get_text_value("actionSectorTileId")
@@ -288,6 +388,14 @@ impl Action for EditSector {
             let terrain_tile_id = self
                 .nodeui
                 .get_tile_id("actionSectorTerrainTile", 0)
+                .unwrap_or(Uuid::nil());
+            let water_tile_id_text = self
+                .nodeui
+                .get_text_value("actionSectorTerrainRidgeWaterTileId")
+                .unwrap_or_default();
+            let ridge_water_tile_id = self
+                .nodeui
+                .get_tile_id("actionSectorTerrainRidgeWaterTile", 0)
                 .unwrap_or(Uuid::nil());
             let iso_hide_on_enter = self
                 .nodeui
@@ -309,7 +417,13 @@ impl Action for EditSector {
             self.nodeui
                 .set_f32_value("actionSectorTerrainRidgeFalloff", ridge_falloff);
             self.nodeui
+                .set_i32_value("actionSectorTerrainRidgeSubdiv", ridge_subdiv.max(1));
+            self.nodeui
                 .set_f32_value("actionSectorTerrainTileFalloff", terrain_tile_falloff);
+            self.nodeui
+                .set_bool_value("actionSectorTerrainRidgeWaterEnabled", ridge_water_enabled);
+            self.nodeui
+                .set_f32_value("actionSectorTerrainRidgeWaterLevel", ridge_water_level);
             self.nodeui
                 .set_text_value("actionSectorTileId", tile_id_text);
             if let Some(item) = self.nodeui.get_item_mut("actionSectorTerrainTile")
@@ -317,6 +431,16 @@ impl Action for EditSector {
                 && items.len() == 1
             {
                 items[0].2 = terrain_tile_id;
+            }
+            self.nodeui
+                .set_text_value("actionSectorTerrainRidgeWaterTileId", water_tile_id_text);
+            if let Some(item) = self
+                .nodeui
+                .get_item_mut("actionSectorTerrainRidgeWaterTile")
+                && let TheNodeUIItem::Icons(_, _, _, items) = item
+                && items.len() == 1
+            {
+                items[0].2 = ridge_water_tile_id;
             }
             self.nodeui
                 .set_text_value("actionIsoHideOnEnter", iso_hide_on_enter);
@@ -364,6 +488,11 @@ impl Action for EditSector {
             .nodeui
             .get_f32_value("actionSectorTerrainRidgeFalloff")
             .unwrap_or(5.0);
+        let ridge_subdiv = self
+            .nodeui
+            .get_i32_value("actionSectorTerrainRidgeSubdiv")
+            .unwrap_or(1)
+            .clamp(1, 8);
         let terrain_tile_falloff = self
             .nodeui
             .get_f32_value("actionSectorTerrainTileFalloff")
@@ -371,6 +500,18 @@ impl Action for EditSector {
         let terrain_tile_id = self
             .nodeui
             .get_tile_id("actionSectorTerrainTile", 0)
+            .unwrap_or(Uuid::nil());
+        let ridge_water_enabled = self
+            .nodeui
+            .get_bool_value("actionSectorTerrainRidgeWaterEnabled")
+            .unwrap_or(false);
+        let ridge_water_level = self
+            .nodeui
+            .get_f32_value("actionSectorTerrainRidgeWaterLevel")
+            .unwrap_or(0.0);
+        let ridge_water_tile_id = self
+            .nodeui
+            .get_tile_id("actionSectorTerrainRidgeWaterTile", 0)
             .unwrap_or(Uuid::nil());
         let tile_id_text = self
             .nodeui
@@ -380,6 +521,15 @@ impl Action for EditSector {
             id
         } else {
             terrain_tile_id
+        };
+        let ridge_water_tile_text = self
+            .nodeui
+            .get_text_value("actionSectorTerrainRidgeWaterTileId")
+            .unwrap_or_default();
+        let ridge_water_tile_id = if let Ok(id) = Uuid::parse_str(ridge_water_tile_text.trim()) {
+            id
+        } else {
+            ridge_water_tile_id
         };
         let iso_hide_on_enter = self
             .nodeui
@@ -443,6 +593,14 @@ impl Action for EditSector {
                         changed = true;
                     }
 
+                    let r_subdiv = sector.properties.get_int_default("ridge_subdiv", 1).max(1);
+                    if ridge_subdiv != r_subdiv {
+                        sector
+                            .properties
+                            .set("ridge_subdiv", Value::Int(ridge_subdiv));
+                        changed = true;
+                    }
+
                     let r_tile_falloff = sector
                         .properties
                         .get_float_default("terrain_tile_falloff", 1.0);
@@ -451,6 +609,26 @@ impl Action for EditSector {
                             "terrain_tile_falloff",
                             Value::Float(terrain_tile_falloff.max(0.0)),
                         );
+                        changed = true;
+                    }
+
+                    let curr_ridge_water_enabled = sector
+                        .properties
+                        .get_bool_default("ridge_water_enabled", false);
+                    if curr_ridge_water_enabled != ridge_water_enabled {
+                        sector
+                            .properties
+                            .set("ridge_water_enabled", Value::Bool(ridge_water_enabled));
+                        changed = true;
+                    }
+
+                    let curr_ridge_water_level = sector
+                        .properties
+                        .get_float_default("ridge_water_level", 0.0);
+                    if (curr_ridge_water_level - ridge_water_level).abs() > f32::EPSILON {
+                        sector
+                            .properties
+                            .set("ridge_water_level", Value::Float(ridge_water_level));
                         changed = true;
                     }
 
@@ -472,6 +650,30 @@ impl Action for EditSector {
                         _ => {
                             if sector.properties.contains("terrain_source") {
                                 sector.properties.remove("terrain_source");
+                                changed = true;
+                            }
+                        }
+                    }
+
+                    match ridge_water_tile_id {
+                        id if id != Uuid::nil() => {
+                            let has_changed = match sector.properties.get("ridge_water_source") {
+                                Some(Value::Source(PixelSource::TileId(existing))) => {
+                                    *existing != id
+                                }
+                                _ => true,
+                            };
+                            if has_changed {
+                                sector.properties.set(
+                                    "ridge_water_source",
+                                    Value::Source(PixelSource::TileId(id)),
+                                );
+                                changed = true;
+                            }
+                        }
+                        _ => {
+                            if sector.properties.contains("ridge_water_source") {
+                                sector.properties.remove("ridge_water_source");
                                 changed = true;
                             }
                         }
@@ -554,6 +756,24 @@ impl Action for EditSector {
             items[*index].2 = *tile_id;
             self.nodeui
                 .set_text_value("actionSectorTileId", tile_id.to_string());
+            ctx.ui.send(TheEvent::Custom(
+                TheId::named("Update Action List"),
+                TheValue::Empty,
+            ));
+            return true;
+        }
+        if let TheEvent::TileDropped(id, tile_id, index) = event
+            && id.name == "actionSectorTerrainRidgeWaterTile"
+            && let Some(tile) = project.tiles.get(tile_id)
+            && !tile.is_empty()
+            && let Some(TheNodeUIItem::Icons(_, _, _, items)) = self
+                .nodeui
+                .get_item_mut("actionSectorTerrainRidgeWaterTile")
+        {
+            items[*index].0 = tile.textures[0].to_rgba();
+            items[*index].2 = *tile_id;
+            self.nodeui
+                .set_text_value("actionSectorTerrainRidgeWaterTileId", tile_id.to_string());
             ctx.ui.send(TheEvent::Custom(
                 TheId::named("Update Action List"),
                 TheValue::Empty,

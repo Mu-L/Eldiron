@@ -2418,8 +2418,35 @@ fn generate_terrain(
         }
     });
 
-    // Create terrain generator with default config
-    let config = TerrainConfig::default();
+    // Create terrain generator config (can be upsampled per-ridge via `ridge_subdiv`).
+    let mut config = TerrainConfig::default();
+    let mut chunk_ridge_subdiv = config.subdivisions.max(1);
+    for sector in &map.sectors {
+        if sector.properties.get_int_default("terrain_mode", 0) != 2 {
+            continue;
+        }
+        let mut expanded_bbox = sector.bounding_box(map);
+        let influence = sector
+            .properties
+            .get_float_default("ridge_plateau_width", 0.0)
+            .max(0.0)
+            + sector
+                .properties
+                .get_float_default("ridge_falloff_distance", 0.0)
+                .max(0.0);
+        if influence > 0.0 {
+            expanded_bbox.expand(Vec2::broadcast(influence * 2.0));
+        }
+        if !expanded_bbox.intersects(&chunk.bbox) {
+            continue;
+        }
+        let ridge_subdiv = sector
+            .properties
+            .get_int_default("ridge_subdiv", 1)
+            .clamp(1, 8) as u32;
+        chunk_ridge_subdiv = chunk_ridge_subdiv.max(ridge_subdiv);
+    }
+    config.subdivisions = chunk_ridge_subdiv;
     let generator = TerrainGenerator::new(config);
 
     // Collect road tile definitions from linedefs.
@@ -2501,7 +2528,8 @@ fn generate_terrain(
     }
 
     // Generate terrain meshes for this chunk (grouped by tile)
-    if let Some(meshes) = generator.generate(map, chunk, assets, default_tile_id, tile_overrides) {
+    let generated_meshes = generator.generate(map, chunk, assets, default_tile_id, tile_overrides);
+    if let Some(meshes) = generated_meshes.as_ref() {
         // Process each mesh (one per tile)
         for (_mesh_idx, (tile_id, vertices, indices, uvs)) in meshes.iter().enumerate() {
             // Convert vertices from Vec3<f32> to [f32; 4] (homogeneous coordinates)
@@ -2823,6 +2851,9 @@ fn generate_terrain(
                     if let Some(blend_map) = blend_overrides {
                         if let Some((preset, ps)) = blend_map.get(&(tile_x, tile_z)) {
                             if let Some(tile2) = ps.tile_from_tile_list(assets) {
+                                let map_v = |v: f32| {
+                                    if has_manual_override { v } else { 1.0 - v }
+                                };
                                 // Build blend weights for each vertex
                                 let weights_4 = preset.weights();
                                 let mut blend_weights = Vec::new();
@@ -2839,9 +2870,9 @@ fn generate_terrain(
                                     blended_verts.push(vertices_4d[i2]);
 
                                     // Add UVs (flipped V)
-                                    blended_uvs.push([uvs[i0][0], 1.0 - uvs[i0][1]]);
-                                    blended_uvs.push([uvs[i1][0], 1.0 - uvs[i1][1]]);
-                                    blended_uvs.push([uvs[i2][0], 1.0 - uvs[i2][1]]);
+                                    blended_uvs.push([uvs[i0][0], map_v(uvs[i0][1])]);
+                                    blended_uvs.push([uvs[i1][0], map_v(uvs[i1][1])]);
+                                    blended_uvs.push([uvs[i2][0], map_v(uvs[i2][1])]);
 
                                     // Add triangle indices
                                     blended_indices.push((base_idx, base_idx + 1, base_idx + 2));
@@ -2879,6 +2910,9 @@ fn generate_terrain(
                 }
 
                 // No blend override - add as regular poly
+                let map_v = |v: f32| {
+                    if has_manual_override { v } else { 1.0 - v }
+                };
                 for &triangle in &triangles {
                     let i0 = triangle.0;
                     let i1 = triangle.1;
@@ -2886,9 +2920,9 @@ fn generate_terrain(
 
                     let tri_vertices = vec![vertices_4d[i0], vertices_4d[i1], vertices_4d[i2]];
                     let tri_uvs = vec![
-                        [uvs[i0][0], 1.0 - uvs[i0][1]],
-                        [uvs[i1][0], 1.0 - uvs[i1][1]],
-                        [uvs[i2][0], 1.0 - uvs[i2][1]],
+                        [uvs[i0][0], map_v(uvs[i0][1])],
+                        [uvs[i1][0], map_v(uvs[i1][1])],
+                        [uvs[i2][0], map_v(uvs[i2][1])],
                     ];
                     let tri_indices = vec![(0, 1, 2)];
 
@@ -2903,6 +2937,91 @@ fn generate_terrain(
                     );
                 }
             }
+        }
+    }
+
+    // Optional ridge water surfaces.
+    // Build water from generated terrain triangles that lie within the same ridge
+    // influence envelope (plateau + falloff) used by terrain height generation.
+    for sector in &map.sectors {
+        if sector.properties.get_int_default("terrain_mode", 0) != 2 {
+            continue;
+        }
+        if !sector
+            .properties
+            .get_bool_default("ridge_water_enabled", false)
+        {
+            continue;
+        }
+
+        let Some(Value::Source(PixelSource::TileId(water_tile_id))) =
+            sector.properties.get("ridge_water_source")
+        else {
+            continue;
+        };
+
+        let influence = sector
+            .properties
+            .get_float_default("ridge_plateau_width", 0.0)
+            .max(0.0)
+            + sector
+                .properties
+                .get_float_default("ridge_falloff_distance", 0.0)
+                .max(0.0);
+
+        let mut expanded_bbox = sector.bounding_box(map);
+        if influence > 0.0 {
+            expanded_bbox.expand(Vec2::broadcast(influence * 2.0));
+        }
+        if !expanded_bbox.intersects(&chunk.bbox) {
+            continue;
+        }
+
+        let water_y = sector.properties.get_float_default("ridge_height", 0.0)
+            + sector
+                .properties
+                .get_float_default("ridge_water_level", 0.0);
+
+        let mut water_vertices: Vec<[f32; 4]> = Vec::new();
+        let mut water_uvs: Vec<[f32; 2]> = Vec::new();
+        let mut water_indices: Vec<(usize, usize, usize)> = Vec::new();
+
+        if let Some(meshes) = generated_meshes.as_ref() {
+            for (_tile_id, mesh_vertices, mesh_indices, _mesh_uvs) in meshes {
+                for tri in mesh_indices.chunks_exact(3) {
+                    let i0 = tri[0] as usize;
+                    let i1 = tri[1] as usize;
+                    let i2 = tri[2] as usize;
+
+                    let p0 = Vec2::new(mesh_vertices[i0].x, mesh_vertices[i0].z);
+                    let p1 = Vec2::new(mesh_vertices[i1].x, mesh_vertices[i1].z);
+                    let p2 = Vec2::new(mesh_vertices[i2].x, mesh_vertices[i2].z);
+                    let center = (p0 + p1 + p2) / 3.0;
+
+                    if distance_to_sector_edge_2d(center, sector, map) > influence {
+                        continue;
+                    }
+
+                    let base = water_vertices.len();
+                    for p in [p0, p1, p2] {
+                        water_vertices.push([p.x, water_y, p.y, 1.0]);
+                        water_uvs.push([p.x, 1.0 - p.y]);
+                    }
+                    water_indices.push((base, base + 1, base + 2));
+                }
+            }
+        }
+
+        if !water_indices.is_empty() {
+            vmchunk.add_poly_3d(
+                GeoId::Sector(sector.id),
+                *water_tile_id,
+                water_vertices,
+                water_uvs,
+                water_indices,
+                0,
+                true,
+            );
         }
     }
 }

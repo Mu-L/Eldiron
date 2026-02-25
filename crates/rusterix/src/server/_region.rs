@@ -501,37 +501,41 @@ impl RegionInstance {
         let mut chunk_builder = D3ChunkBuilder::new();
         let chunk_size = 10; // Match collision_world chunk size
 
-        // Calculate chunk bounds from map
-        let mut min_chunk = vek::Vec2::new(i32::MAX, i32::MAX);
-        let mut max_chunk = vek::Vec2::new(i32::MIN, i32::MIN);
-
-        for surface in ctx.map.surfaces.values() {
-            if let Some(sector) = ctx.map.find_sector(surface.sector_id) {
-                let bbox = sector.bounding_box(&ctx.map);
-                let chunk_min = vek::Vec2::new(
-                    (bbox.min.x / chunk_size as f32).floor() as i32,
-                    (bbox.min.y / chunk_size as f32).floor() as i32,
-                );
-                let chunk_max = vek::Vec2::new(
-                    (bbox.max.x / chunk_size as f32).floor() as i32,
-                    (bbox.max.y / chunk_size as f32).floor() as i32,
-                );
-                min_chunk =
-                    vek::Vec2::new(min_chunk.x.min(chunk_min.x), min_chunk.y.min(chunk_min.y));
-                max_chunk =
-                    vek::Vec2::new(max_chunk.x.max(chunk_max.x), max_chunk.y.max(chunk_max.y));
+        // Calculate chunk bounds from full map extents (vertices + terrain), not only surfaces.
+        // Feature collisions (e.g. palisade/fence on linedefs) can extend beyond sector surfaces.
+        let mut world_bbox = if ctx.map.vertices.is_empty() {
+            None
+        } else {
+            Some(ctx.map.bbox())
+        };
+        if let Some(tbbox) = ctx.map.terrain.compute_bounds() {
+            if let Some(bbox) = &mut world_bbox {
+                bbox.expand_bbox(tbbox);
+            } else {
+                world_bbox = Some(tbbox);
             }
         }
 
-        // Build collision for each chunk
-        for cy in min_chunk.y..=max_chunk.y {
-            for cx in min_chunk.x..=max_chunk.x {
-                let chunk_origin = vek::Vec2::new(cx, cy);
-                let chunk_collision =
-                    chunk_builder.build_collision(&ctx.map, chunk_origin, chunk_size);
+        if let Some(bbox) = world_bbox {
+            let min_chunk = vek::Vec2::new(
+                (bbox.min.x / chunk_size as f32).floor() as i32,
+                (bbox.min.y / chunk_size as f32).floor() as i32,
+            );
+            let max_chunk = vek::Vec2::new(
+                (bbox.max.x / chunk_size as f32).floor() as i32,
+                (bbox.max.y / chunk_size as f32).floor() as i32,
+            );
 
-                ctx.collision_world
-                    .update_chunk(chunk_origin, chunk_collision);
+            // Build collision for each chunk
+            for cy in min_chunk.y..=max_chunk.y {
+                for cx in min_chunk.x..=max_chunk.x {
+                    let chunk_origin = vek::Vec2::new(cx, cy);
+                    let chunk_collision =
+                        chunk_builder.build_collision(&ctx.map, chunk_origin, chunk_size);
+
+                    ctx.collision_world
+                        .update_chunk(chunk_origin, chunk_collision);
+                }
             }
         }
 

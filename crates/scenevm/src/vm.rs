@@ -1373,9 +1373,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
     let fade_mode = UBO._pad0.x;
-    let is_fading = in.opacity < 0.999;
+    let has_material_fade = mat.z < 0.999;
+    let is_fading = in.opacity < 0.999 || has_material_fade;
     if (is_fading) {
-        if (fade_mode == 0u) {
+        if (!has_material_fade && fade_mode == 0u) {
             // Ordered dither mode: stable pseudo-transparency without alpha sorting.
             let dither = bayer4_threshold(u32(in.pos.x), u32(in.pos.y));
             if (coverage <= dither) {
@@ -1388,7 +1389,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             discard;
         }
     }
-    let out_alpha = select(1.0, coverage, is_fading && fade_mode == 1u);
+    let out_alpha = select(1.0, coverage, has_material_fade || (in.opacity < 0.999 && fade_mode == 1u));
     let color_linear = pow(color.rgb, vec3<f32>(2.2));
     if (mat.w > 0.95) {
         return vec4<f32>(apply_post(color_linear * 2.0), out_alpha);
@@ -4564,6 +4565,20 @@ impl VM {
         if self.cached_i3.is_empty() || self.cached_tri_visibility.is_empty() {
             return (Vec::new(), Vec::new(), Vec::new());
         }
+        const TILE_INDEX_FLAGS_MASK_CPU: u32 = 0xE000_0000;
+        let base_tile_index = |idx: u32| idx & !TILE_INDEX_FLAGS_MASK_CPU;
+        let mut translucent_tile_cache: FxHashMap<u32, bool> = FxHashMap::default();
+        let mut tile_is_translucent = |idx: u32| -> bool {
+            let base = base_tile_index(idx);
+            if let Some(v) = translucent_tile_cache.get(&base) {
+                *v
+            } else {
+                let v = self.shared_atlas.tile_index_has_translucency(base);
+                translucent_tile_cache.insert(base, v);
+                v
+            }
+        };
+
         let tri_capacity = self.cached_i3.len() / 3;
         let mut all_visible: Vec<u32> = Vec::with_capacity(self.cached_i3.len());
         let mut opaque: Vec<u32> = Vec::with_capacity(self.cached_i3.len());
@@ -4587,7 +4602,15 @@ impl VM {
                     let v1 = self.cached_v3.get(i1 as usize);
                     let v2 = self.cached_v3.get(i2 as usize);
                     let is_transparent = if let (Some(a), Some(b), Some(c)) = (v0, v1, v2) {
-                        a.opacity < 0.999 || b.opacity < 0.999 || c.opacity < 0.999
+                        a.opacity < 0.999
+                            || b.opacity < 0.999
+                            || c.opacity < 0.999
+                            || tile_is_translucent(a.tile_index)
+                            || tile_is_translucent(a.tile_index2)
+                            || tile_is_translucent(b.tile_index)
+                            || tile_is_translucent(b.tile_index2)
+                            || tile_is_translucent(c.tile_index)
+                            || tile_is_translucent(c.tile_index2)
                     } else {
                         false
                     };

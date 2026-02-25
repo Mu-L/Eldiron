@@ -228,7 +228,7 @@ Parameter meaning:
 
 Single-sector editor:
 - `[action]`: `name`, `item`, `visible`
-- `[terrain]`: `terrain`, `ridge_height`, `ridge_plateau`, `ridge_falloff`, `tile_id`, `tile_falloff`
+- `[terrain]`: `terrain`, `ridge_height`, `ridge_plateau`, `ridge_falloff`, `ridge_subdiv`, `tile_id`, `tile_falloff`, `ridge_water_enabled`, `ridge_water_level`, `ridge_water_tile_id`
 - `[iso]`: `hide_on_enter` pattern list
 
 Parameter meaning:
@@ -239,8 +239,12 @@ Parameter meaning:
 - `[terrain].ridge_height`: ridge elevation above base terrain.
 - `[terrain].ridge_plateau`: flat top width of the ridge before falloff starts.
 - `[terrain].ridge_falloff`: distance over which ridge height fades to surrounding terrain.
+- `[terrain].ridge_subdiv`: terrain tessellation quality for ridge areas (`1..8`, higher = smoother ridge geometry, higher cost).
 - `[terrain].tile_id`: optional tile used for ridge terrain texturing.
 - `[terrain].tile_falloff`: blend distance from ridge tile into neighboring terrain tiles.
+- `[terrain].ridge_water_enabled`: enables generation of a water surface for this ridge sector.
+- `[terrain].ridge_water_level`: relative water height offset added to `ridge_height` for the generated water surface.
+- `[terrain].ridge_water_tile_id`: tile used to render the generated ridge water surface.
 - `[iso].hide_on_enter`: wildcard sector-name patterns to hide while the player is inside this sector in iso gameplay preview.
 
 ---

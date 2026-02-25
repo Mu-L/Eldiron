@@ -281,6 +281,7 @@ pub struct TheUI {
 
     // Mouse pos
     pub mouse_coord: Vec2<i32>,
+    mouse_capture_id: Option<TheId>,
 }
 
 impl Default for TheUI {
@@ -315,6 +316,7 @@ impl TheUI {
             logo: false,
 
             mouse_coord: Vec2::zero(),
+            mouse_capture_id: None,
         }
     }
 
@@ -794,12 +796,17 @@ impl TheUI {
             return redraw;
         }
 
+        self.mouse_capture_id = None;
+
+        let mut mouse_capture_id: Option<TheId> = None;
         if let Some(widget) = self.get_widget_at_coord(coord) {
+            mouse_capture_id = Some(widget.id().clone());
             let event = TheEvent::MouseDown(widget.dim().to_local(coord));
             redraw = widget.on_event(&event, ctx);
 
             self.process_events(ctx);
         }
+        self.mouse_capture_id = mouse_capture_id;
         redraw
     }
 
@@ -816,6 +823,14 @@ impl TheUI {
                 let event = TheEvent::MouseDragged(widget.dim().to_local(coord));
                 redraw = widget.on_event(&event, ctx);
                 self.process_events(ctx);
+            }
+        } else if let Some(id) = self.mouse_capture_id.clone() {
+            if let Some(widget) = self.get_widget_abs(None, Some(&id.uuid)) {
+                let event = TheEvent::MouseDragged(widget.dim().to_local(coord));
+                redraw = widget.on_event(&event, ctx);
+                self.process_events(ctx);
+            } else {
+                self.mouse_capture_id = None;
             }
         } else if let Some(id) = &ctx.ui.focus {
             if let Some(widget) = self.get_widget_abs(None, Some(&id.uuid)) {
@@ -858,6 +873,12 @@ impl TheUI {
                 redraw = widget.on_event(&event, ctx);
                 self.process_events(ctx);
             }
+        } else if let Some(id) = self.mouse_capture_id.clone() {
+            if let Some(widget) = self.get_widget_abs(Some(&id.name), Some(&id.uuid)) {
+                let event = TheEvent::MouseUp(widget.dim().to_local(coord));
+                redraw = widget.on_event(&event, ctx);
+                self.process_events(ctx);
+            }
         } else if let Some(id) = &ctx.ui.focus {
             if let Some(widget) = self.get_widget_abs(Some(&id.name), Some(&id.uuid)) {
                 let event = TheEvent::MouseUp(widget.dim().to_local(coord));
@@ -883,6 +904,7 @@ impl TheUI {
         }
 
         ctx.ui.clear_drop();
+        self.mouse_capture_id = None;
         redraw
     }
 

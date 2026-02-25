@@ -106,6 +106,37 @@ impl SharedAtlas {
         guard.tiles_index_map.get(id).copied()
     }
 
+    /// Returns true if the tile at `tile_index` has any non-opaque texels/material opacity.
+    pub fn tile_index_has_translucency(&self, tile_index: u32) -> bool {
+        let guard = self.inner.lock().unwrap();
+        let Some(id) = guard.tiles_order.get(tile_index as usize) else {
+            return false;
+        };
+        let Some(tile) = guard.tiles_map.get(id) else {
+            return false;
+        };
+
+        // Color alpha channel.
+        if tile
+            .frames
+            .iter()
+            .any(|frame| frame.chunks_exact(4).any(|px| px[3] < 255))
+        {
+            return true;
+        }
+
+        // Packed material opacity nibble in byte1 low 4 bits (0..15).
+        if tile.material_frames.iter().any(|frame| {
+            frame
+                .chunks_exact(4)
+                .any(|px| (px.get(1).copied().unwrap_or(15) & 0x0F) < 15)
+        }) {
+            return true;
+        }
+
+        false
+    }
+
     /// Get the raw tile data (width, height, and first frame RGBA pixels)
     pub fn get_tile_data(&self, id: Uuid) -> Option<(u32, u32, Vec<u8>)> {
         let guard = self.inner.lock().unwrap();

@@ -147,11 +147,11 @@ export default function Home() {
               color: "var(--ifm-color-primary)",
             }}
           >
-            Dungeon Master-Style Progress
+            Eldiron v0.9 Preview
           </div>
           <img
-            src={useBaseUrl("/img/screenshots/dungeon3d_progress.png")}
-            alt="Dungeon Master example progress"
+            src={useBaseUrl("/img/screenshots/Eldiron_v0.9_preview.png")}
+            alt="Eldiron v0.9 Preview"
             style={{
               width: "100%",
               borderRadius: "12px",

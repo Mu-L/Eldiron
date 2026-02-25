@@ -353,7 +353,35 @@ impl ChunkBuilder for D2ChunkBuilder {
                 ));
             }
 
-            let generator = TerrainGenerator::new(TerrainConfig::default());
+            let mut config = TerrainConfig::default();
+            let mut chunk_ridge_subdiv = config.subdivisions.max(1);
+            for sector in &map.sectors {
+                if sector.properties.get_int_default("terrain_mode", 0) != 2 {
+                    continue;
+                }
+                let mut expanded_bbox = sector.bounding_box(map);
+                let influence = sector
+                    .properties
+                    .get_float_default("ridge_plateau_width", 0.0)
+                    .max(0.0)
+                    + sector
+                        .properties
+                        .get_float_default("ridge_falloff_distance", 0.0)
+                        .max(0.0);
+                if influence > 0.0 {
+                    expanded_bbox.expand(Vec2::broadcast(influence * 2.0));
+                }
+                if !expanded_bbox.intersects(&chunk.bbox) {
+                    continue;
+                }
+                let ridge_subdiv = sector
+                    .properties
+                    .get_int_default("ridge_subdiv", 1)
+                    .clamp(1, 8) as u32;
+                chunk_ridge_subdiv = chunk_ridge_subdiv.max(ridge_subdiv);
+            }
+            config.subdivisions = chunk_ridge_subdiv;
+            let generator = TerrainGenerator::new(config);
             if let Some(meshes) =
                 generator.generate(map, chunk, assets, default_tile_id, tile_overrides)
             {
