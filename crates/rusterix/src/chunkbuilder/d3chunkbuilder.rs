@@ -1729,7 +1729,9 @@ fn add_linedef_feature_collision(
         let mut min2 = Vec2::new(v0.x.min(v1.x), v0.z.min(v1.z));
         let mut max2 = Vec2::new(v0.x.max(v1.x), v0.z.max(v1.z));
 
-        let base_height = linedef.properties.get_float_default("feature_height", 0.0);
+        // Keep collision defaults in sync with visual feature generation.
+        // Otherwise fences/palisades may render but miss collision volumes.
+        let base_height = linedef.properties.get_float_default("feature_height", 2.0);
         if base_height <= 0.0 {
             continue;
         }
@@ -1775,8 +1777,10 @@ fn add_linedef_feature_collision(
             continue;
         }
 
-        let min_y = v0.y.min(v1.y);
-        let max_y = min_y + base_height + extra_height;
+        // Linedef features are authored as 2D blockers (same semantic as mapmini linedefs).
+        // Make them full-height in collision so 3D pathing cannot bypass due to floor-height mismatch.
+        let min_y = -1024.0;
+        let max_y = 1024.0 + base_height + extra_height;
         collision.static_volumes.push(BlockingVolume {
             geo_id: GeoId::Linedef(linedef.id),
             min: Vec3::new(min2.x, min_y, min2.y),

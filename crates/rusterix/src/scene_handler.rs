@@ -1,8 +1,9 @@
 use std::{hash::Hasher, str::FromStr};
 
 use crate::{
-    Assets, AvatarShadingOptions, BillboardAnimation, BillboardMetadata, D3Camera, Item, Map,
-    PixelSource, RenderSettings, Texture, Tile, Value, avatar_builder::AvatarRuntimeBuilder,
+    Assets, AvatarDirection, AvatarShadingOptions, BillboardAnimation, BillboardMetadata, D3Camera,
+    Item, Map, PixelSource, RenderSettings, Texture, Tile, Value,
+    avatar_builder::AvatarRuntimeBuilder,
 };
 use indexmap::IndexMap;
 use rust_embed::EmbeddedFile;
@@ -190,6 +191,42 @@ impl SceneHandler {
         hasher.write_u32(v.x.to_bits());
         hasher.write_u32(v.y.to_bits());
         hasher.write_u32(v.z.to_bits());
+    }
+
+    #[inline]
+    fn avatar_direction_3d(entity: &crate::Entity, camera: &dyn D3Camera) -> AvatarDirection {
+        let mut forward = entity.orientation;
+        if forward.magnitude_squared() <= 1e-6 {
+            return AvatarDirection::Front;
+        }
+        forward = forward.normalized();
+
+        let to_camera = Vec2::new(
+            camera.position().x - entity.position.x,
+            camera.position().z - entity.position.z,
+        );
+        if to_camera.magnitude_squared() <= 1e-6 {
+            return AvatarDirection::Front;
+        }
+        let to_camera = to_camera.normalized();
+
+        // Right vector in XZ for forward=(x,z) stored as Vec2(x,y).
+        // Use the right-handed perpendicular so facing north maps right->+X.
+        let right = Vec2::new(-forward.y, forward.x);
+        let front_dot = forward.dot(to_camera);
+        let right_dot = right.dot(to_camera);
+
+        if front_dot.abs() >= right_dot.abs() {
+            if front_dot >= 0.0 {
+                AvatarDirection::Front
+            } else {
+                AvatarDirection::Back
+            }
+        } else if right_dot >= 0.0 {
+            AvatarDirection::Right
+        } else {
+            AvatarDirection::Left
+        }
     }
 
     fn hash_pixel_source(hasher: &mut rustc_hash::FxHasher, source: &PixelSource) {
@@ -782,14 +819,19 @@ impl SceneHandler {
                         AvatarRuntimeBuilder::find_avatar_for_entity(entity, assets)
                     {
                         // println!("found avatar");
-                        if self.avatar_builder.ensure_entity_avatar_uploaded(
-                            &mut self.vm,
-                            entity,
-                            avatar,
-                            assets,
-                            animation_frame,
-                            geo_id,
-                        ) {
+                        let direction = Self::avatar_direction_3d(entity, camera);
+                        if self
+                            .avatar_builder
+                            .ensure_entity_avatar_uploaded_with_direction(
+                                &mut self.vm,
+                                entity,
+                                avatar,
+                                assets,
+                                animation_frame,
+                                geo_id,
+                                Some(direction),
+                            )
+                        {
                             active_avatar_geo.insert(geo_id);
                             let dynamic = DynamicObject::billboard_avatar(
                                 geo_id, center3, basis.1, basis.2, size, size,

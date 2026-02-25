@@ -1,3 +1,4 @@
+use pathfinding::prelude::astar;
 use rustc_hash::FxHashMap;
 use scenevm::GeoId;
 use vek::{Vec2, Vec3};
@@ -113,6 +114,10 @@ impl CollisionWorld {
     /// Add/update collision data for a chunk
     pub fn update_chunk(&mut self, chunk_origin: Vec2<i32>, collision: ChunkCollision) {
         self.chunks.insert(chunk_origin, collision);
+    }
+
+    pub fn has_collision_data(&self) -> bool {
+        !self.chunks.is_empty()
     }
 
     /// Remove collision data for a chunk (when unloading)
@@ -365,6 +370,83 @@ impl CollisionWorld {
         None
     }
 
+    /// 3D-aware movement on walkable floors.
+    /// Returns `None` if no valid floor/path context exists so caller can fall back.
+    pub fn move_towards_on_floors(
+        &self,
+        from: Vec2<f32>,
+        to: Vec2<f32>,
+        speed: f32,
+        radius: f32,
+        max_step_height: f32,
+    ) -> Option<(Vec2<f32>, bool)> {
+        let base_height = self
+            .sample_floor_height(from, radius)
+            .or_else(|| self.sample_floor_height(to, radius))
+            .or_else(|| self.get_floor_height(from))
+            .or_else(|| self.get_floor_height(to))
+            .unwrap_or(0.0);
+
+        let waypoint = if self.segment_is_clear(
+            Vec3::new(from.x, base_height, from.y),
+            Vec3::new(to.x, base_height, to.y),
+            radius,
+        ) {
+            to
+        } else {
+            self.navgrid_next_waypoint(from, to, radius, base_height, max_step_height, 0.05)?
+        };
+
+        let (new_position, _) =
+            self.step_towards_point(from, waypoint, speed, radius, base_height, 0.05);
+        let arrived = (to - new_position).magnitude() <= 0.05;
+        Some((new_position, arrived))
+    }
+
+    /// Like `move_towards_on_floors`, but stops once the agent is within `dest_radius`.
+    pub fn close_in_on_floors(
+        &self,
+        from: Vec2<f32>,
+        target: Vec2<f32>,
+        dest_radius: f32,
+        speed: f32,
+        agent_radius: f32,
+        max_step_height: f32,
+    ) -> Option<(Vec2<f32>, bool)> {
+        if (target - from).magnitude() <= dest_radius {
+            return Some((from, true));
+        }
+
+        let base_height = self
+            .sample_floor_height(from, agent_radius)
+            .or_else(|| self.sample_floor_height(target, agent_radius))
+            .or_else(|| self.get_floor_height(from))
+            .or_else(|| self.get_floor_height(target))
+            .unwrap_or(0.0);
+
+        let waypoint = if self.segment_is_clear(
+            Vec3::new(from.x, base_height, from.y),
+            Vec3::new(target.x, base_height, target.y),
+            agent_radius,
+        ) {
+            target
+        } else {
+            self.navgrid_next_waypoint(
+                from,
+                target,
+                agent_radius,
+                base_height,
+                max_step_height,
+                dest_radius,
+            )?
+        };
+
+        let (new_position, _) =
+            self.step_towards_point(from, waypoint, speed, agent_radius, base_height, 0.05);
+        let arrived = (target - new_position).magnitude() <= dest_radius;
+        Some((new_position, arrived))
+    }
+
     fn is_in_passable_opening(&self, position: Vec3<f32>, radius: f32) -> bool {
         let chunk_coords = self.world_to_chunk(Vec2::new(position.x, position.z));
 
@@ -390,6 +472,47 @@ impl CollisionWorld {
         }
 
         false
+    }
+
+    fn step_towards_point(
+        &self,
+        from: Vec2<f32>,
+        target: Vec2<f32>,
+        speed: f32,
+        radius: f32,
+        base_height: f32,
+        arrival_radius: f32,
+    ) -> (Vec2<f32>, bool) {
+        let to_vector = target - from;
+        let dist = to_vector.magnitude();
+        if dist <= arrival_radius {
+            return (from, true);
+        }
+
+        let total_step = speed.min(dist);
+        let dir = to_vector.normalized();
+        let mut current = Vec3::new(from.x, base_height, from.y);
+        let mut remaining = total_step;
+        let sub_step = (radius * 0.5).max(0.1);
+
+        while remaining > 0.0001 {
+            let len = remaining.min(sub_step);
+            let delta = Vec3::new(dir.x * len, 0.0, dir.y * len);
+            let (next, blocked) = self.move_distance(current, delta, radius);
+            let moved = Vec2::new(next.x - current.x, next.z - current.z).magnitude();
+            current = next;
+            remaining -= len;
+
+            // Stop after first blocking contact in this tick. This prevents tunneling
+            // while still allowing local sliding from `move_distance`.
+            if blocked || moved < 0.0001 {
+                break;
+            }
+        }
+
+        let end_2d = Vec2::new(current.x, current.z);
+        let arrived = (target - end_2d).magnitude() <= arrival_radius.max(0.05);
+        (end_2d, arrived)
     }
 
     fn collect_blocking_segments(&self, position: Vec3<f32>, radius: f32) -> Vec<CollisionSegment> {
@@ -695,6 +818,149 @@ impl CollisionWorld {
         let t = (ap.dot(ab) / ab_len_sq).clamp(0.0, 1.0);
         let closest = a + ab * t;
         (point - closest).magnitude()
+    }
+
+    fn segment_is_clear(&self, start: Vec3<f32>, end: Vec3<f32>, radius: f32) -> bool {
+        let delta = end - start;
+        let distance = Vec2::new(delta.x, delta.z).magnitude();
+        let sample_step = (radius * 0.5).max(0.2);
+        let steps = (distance / sample_step).ceil().max(1.0) as i32;
+
+        for i in 0..=steps {
+            let t = i as f32 / steps as f32;
+            let p = start + delta * t;
+            if self.is_blocked(p, radius) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn sample_floor_height(&self, position: Vec2<f32>, probe: f32) -> Option<f32> {
+        if let Some(h) = self.get_floor_height(position) {
+            return Some(h);
+        }
+
+        let d = probe.max(0.15);
+        let offsets = [
+            Vec2::new(-d, 0.0),
+            Vec2::new(d, 0.0),
+            Vec2::new(0.0, -d),
+            Vec2::new(0.0, d),
+            Vec2::new(-d, -d),
+            Vec2::new(-d, d),
+            Vec2::new(d, -d),
+            Vec2::new(d, d),
+        ];
+        for off in offsets {
+            if let Some(h) = self.get_floor_height(position + off) {
+                return Some(h);
+            }
+        }
+        None
+    }
+
+    fn navgrid_next_waypoint(
+        &self,
+        from: Vec2<f32>,
+        target: Vec2<f32>,
+        radius: f32,
+        base_height: f32,
+        max_step_height: f32,
+        goal_radius: f32,
+    ) -> Option<Vec2<f32>> {
+        let cell = (radius * 1.25).clamp(0.2, 0.8);
+        let direct_distance = (target - from).magnitude();
+        let search_radius_world = (direct_distance + 8.0).clamp(8.0, 120.0);
+        let search_radius_cells = (search_radius_world / cell).ceil() as i32;
+
+        let start_cell = (from / cell).floor().as_::<i32>();
+        let target_cell = (target / cell).floor().as_::<i32>();
+        let cell_center = |c: Vec2<i32>| (c.map(|v| v as f32) + Vec2::broadcast(0.5)) * cell;
+
+        let min_cell = Vec2::new(
+            start_cell.x.min(target_cell.x) - search_radius_cells,
+            start_cell.y.min(target_cell.y) - search_radius_cells,
+        );
+        let max_cell = Vec2::new(
+            start_cell.x.max(target_cell.x) + search_radius_cells,
+            start_cell.y.max(target_cell.y) + search_radius_cells,
+        );
+
+        let in_bounds = |c: Vec2<i32>| {
+            c.x >= min_cell.x && c.x <= max_cell.x && c.y >= min_cell.y && c.y <= max_cell.y
+        };
+        let sample_height = |c: Vec2<i32>| {
+            self.sample_floor_height(cell_center(c), radius * 0.5)
+                .unwrap_or(base_height)
+        };
+        let cell_passable = |c: Vec2<i32>| {
+            let pos = cell_center(c);
+            let h = sample_height(c);
+            !self.is_blocked(Vec3::new(pos.x, h, pos.y), radius)
+        };
+
+        if !cell_passable(start_cell)
+            || self.is_blocked(Vec3::new(from.x, base_height, from.y), radius)
+        {
+            return None;
+        }
+
+        let successors = |cell_pos: &Vec2<i32>| {
+            let dirs = [
+                Vec2::new(-1, 0),
+                Vec2::new(1, 0),
+                Vec2::new(0, -1),
+                Vec2::new(0, 1),
+                Vec2::new(-1, -1),
+                Vec2::new(-1, 1),
+                Vec2::new(1, -1),
+                Vec2::new(1, 1),
+            ];
+
+            let h0 = sample_height(*cell_pos);
+            let p0 = cell_center(*cell_pos);
+            dirs.iter()
+                .map(|d| *cell_pos + *d)
+                .filter(|n| in_bounds(*n) && cell_passable(*n))
+                .filter_map(|n| {
+                    let h1 = sample_height(n);
+                    if (h0 - h1).abs() > max_step_height {
+                        return None;
+                    }
+                    let p1 = cell_center(n);
+                    let clear = self.segment_is_clear(
+                        Vec3::new(p0.x, h0, p0.y),
+                        Vec3::new(p1.x, h1, p1.y),
+                        radius,
+                    );
+                    if !clear {
+                        return None;
+                    }
+                    let is_diag = (n.x - cell_pos.x).abs() == 1 && (n.y - cell_pos.y).abs() == 1;
+                    let cost = if is_diag { 14 } else { 10 };
+                    Some((n, cost))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let heuristic = |c: &Vec2<i32>| {
+            let p = cell_center(*c);
+            let d = (p - target).magnitude() - goal_radius;
+            (d.max(0.0) * 10.0) as i32
+        };
+
+        let is_goal = |c: &Vec2<i32>| {
+            let p = cell_center(*c);
+            (p - target).magnitude() <= goal_radius.max(cell)
+        };
+
+        let (path, _) = astar(&start_cell, successors, heuristic, is_goal)?;
+        if path.len() < 2 {
+            return Some(target);
+        }
+        Some(cell_center(path[1]))
     }
 }
 

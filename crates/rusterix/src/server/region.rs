@@ -67,6 +67,12 @@ use super::RegionMessage;
 use super::data::{apply_entity_data, apply_item_data};
 use RegionMessage::*;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CollisionMode {
+    Tile,
+    Mesh,
+}
+
 pub struct RegionInstance {
     pub id: u32,
 
@@ -87,6 +93,7 @@ pub struct RegionInstance {
 
     /// Entity block mode
     entity_block_mode: i32,
+    collision_mode: CollisionMode,
     last_redraw_at: Instant,
     movement_units_per_sec: f32,
 }
@@ -362,6 +369,7 @@ impl RegionInstance {
             from_sender,
 
             entity_block_mode: 0,
+            collision_mode: CollisionMode::Tile,
             last_redraw_at: Instant::now(),
             movement_units_per_sec: 4.0,
         }
@@ -661,6 +669,14 @@ impl RegionInstance {
         self.entity_block_mode = {
             let mode = get_config_string_default(&ctx, "game", "entity_block_mode", "always");
             if mode == "always" { 1 } else { 0 }
+        };
+        self.collision_mode = {
+            let mode = get_config_string_default(&ctx, "game", "collision_mode", "tile");
+            if mode.eq_ignore_ascii_case("mesh") {
+                CollisionMode::Mesh
+            } else {
+                CollisionMode::Tile
+            }
         };
         self.movement_units_per_sec =
             get_config_i32_default(&ctx, "game", "movement_units_per_sec", 4).max(1) as f32;
@@ -1691,15 +1707,57 @@ impl RegionInstance {
                         }
 
                         if let Some(coord) = coord {
-                            let (new_position, arrived) = ctx.mapmini.close_in(
-                                position,
-                                coord,
-                                *target_radius,
-                                speed,
-                                radius,
-                                1.0,
-                            );
+                            let use_3d_nav = self.collision_mode == CollisionMode::Mesh
+                                && ctx.collision_world.has_collision_data();
+                            let (new_position, arrived) = if use_3d_nav {
+                                ctx.collision_world
+                                    .close_in_on_floors(
+                                        position,
+                                        coord,
+                                        *target_radius,
+                                        speed,
+                                        radius,
+                                        1.0,
+                                    )
+                                    .unwrap_or_else(|| {
+                                        let to_target = coord - position;
+                                        let dist = to_target.magnitude();
+                                        if dist <= *target_radius {
+                                            (position, true)
+                                        } else if dist <= f32::EPSILON {
+                                            (position, false)
+                                        } else {
+                                            let step = to_target.normalized() * speed.min(dist);
+                                            let start_3d = vek::Vec3::new(
+                                                position.x,
+                                                entity.position.y,
+                                                position.y,
+                                            );
+                                            let step_3d = vek::Vec3::new(step.x, 0.0, step.y);
+                                            let (end_3d, _) = ctx
+                                                .collision_world
+                                                .move_distance(start_3d, step_3d, radius);
+                                            let end_2d = vek::Vec2::new(end_3d.x, end_3d.z);
+                                            let arrived =
+                                                (coord - end_2d).magnitude() <= *target_radius;
+                                            (end_2d, arrived)
+                                        }
+                                    })
+                            } else {
+                                ctx.mapmini.close_in(
+                                    position,
+                                    coord,
+                                    *target_radius,
+                                    speed,
+                                    radius,
+                                    1.0,
+                                )
+                            };
 
+                            let move_delta = new_position - position;
+                            if move_delta.magnitude_squared() > 1e-6 {
+                                entity.set_orientation(move_delta.normalized());
+                            }
                             entity.set_pos_xz(new_position);
                             if arrived {
                                 entity.action = EntityAction::Off;
@@ -1729,10 +1787,43 @@ impl RegionInstance {
                     with_regionctx(self.id, |ctx| {
                         let speed = self.movement_units_per_sec * speed * ctx.delta_time;
 
-                        let (new_position, arrived) = ctx
-                            .mapmini
-                            .move_towards(position, *coord, speed, radius, 1.0);
+                        let use_3d_nav = self.collision_mode == CollisionMode::Mesh
+                            && ctx.collision_world.has_collision_data();
+                        let (new_position, arrived) = if use_3d_nav {
+                            ctx.collision_world
+                                .move_towards_on_floors(position, *coord, speed, radius, 1.0)
+                                .unwrap_or_else(|| {
+                                    let to_target = *coord - position;
+                                    let dist = to_target.magnitude();
+                                    if dist <= 0.05 {
+                                        (position, true)
+                                    } else if dist <= f32::EPSILON {
+                                        (position, false)
+                                    } else {
+                                        let step = to_target.normalized() * speed.min(dist);
+                                        let start_3d = vek::Vec3::new(
+                                            position.x,
+                                            entity.position.y,
+                                            position.y,
+                                        );
+                                        let step_3d = vek::Vec3::new(step.x, 0.0, step.y);
+                                        let (end_3d, _) = ctx
+                                            .collision_world
+                                            .move_distance(start_3d, step_3d, radius);
+                                        let end_2d = vek::Vec2::new(end_3d.x, end_3d.z);
+                                        let arrived = (*coord - end_2d).magnitude() <= 0.05;
+                                        (end_2d, arrived)
+                                    }
+                                })
+                        } else {
+                            ctx.mapmini
+                                .move_towards(position, *coord, speed, radius, 1.0)
+                        };
 
+                        let move_delta = new_position - position;
+                        if move_delta.magnitude_squared() > 1e-6 {
+                            entity.set_orientation(move_delta.normalized());
+                        }
                         entity.set_pos_xz(new_position);
                         if arrived {
                             entity.action = EntityAction::Off;
@@ -2210,29 +2301,32 @@ impl RegionInstance {
             // Now we set the new position after we've done all the entity/item collision resolution
             entity.set_pos_xz(new_position);
 
-            // Finally, let the geometry/linedef collision do its thing (OLD SYSTEM)
-            let (end_position, geometry_blocked) =
-                ctx.mapmini
-                    .move_distance(position, new_position - position, radius);
-
-            // Move the entity after geometry
-            entity.set_pos_xz(end_position);
-
-            // NEW COLLISION SYSTEM
-            let collision_blocked = {
-                let move_vec = end_position - position;
-                let start_pos = vek::Vec3::new(
-                    position.x,
-                    entity.position.y,
-                    position.y, /* z component */
-                );
-                let move_vec_3d = vek::Vec3::new(move_vec.x, 0.0, move_vec.y);
-                let (collision_pos, blocked) =
-                    ctx.collision_world
-                        .move_distance(start_pos, move_vec_3d, radius);
-
-                entity.set_pos_xz(vek::Vec2::new(collision_pos.x, collision_pos.z));
-                blocked
+            let blocked = match self.collision_mode {
+                CollisionMode::Tile => {
+                    let (end_position, geometry_blocked) =
+                        ctx.mapmini
+                            .move_distance(position, new_position - position, radius);
+                    entity.set_pos_xz(end_position);
+                    geometry_blocked
+                }
+                CollisionMode::Mesh => {
+                    if ctx.collision_world.has_collision_data() {
+                        let move_vec = new_position - position;
+                        let start_pos = vek::Vec3::new(position.x, entity.position.y, position.y);
+                        let move_vec_3d = vek::Vec3::new(move_vec.x, 0.0, move_vec.y);
+                        let (collision_pos, blocked) =
+                            ctx.collision_world
+                                .move_distance(start_pos, move_vec_3d, radius);
+                        entity.set_pos_xz(vek::Vec2::new(collision_pos.x, collision_pos.z));
+                        blocked
+                    } else {
+                        let (end_position, geometry_blocked) =
+                            ctx.mapmini
+                                .move_distance(position, new_position - position, radius);
+                        entity.set_pos_xz(end_position);
+                        geometry_blocked
+                    }
+                }
             };
 
             // Adjust vertical position based on collision floors/terrain at the final XZ.
@@ -2254,7 +2348,7 @@ impl RegionInstance {
             }
 
             ctx.check_player_for_section_change(entity);
-            geometry_blocked || collision_blocked
+            blocked
         })
         .unwrap()
     }

@@ -20,6 +20,7 @@ movement_units_per_sec = 4     # Base movement speed in world units per second.
 turn_speed_deg_per_sec = 120   # First-person turn speed in degrees per second.
 firstp_eye_level = 1.7         # First-person camera eye height above the entity base Y.
 entity_block_mode = "always"   # The block mode, "always" or "never".
+collision_mode = "tile"        # Collision/path mode: "tile" or "mesh".
 auto_create_player = true      # Whether to auto-create a player entity.
 start_region = ""              # The name of the region to start the game in.
 start_screen = ""              # The name of the screen to show at startup.
@@ -79,6 +80,13 @@ avatar_skin_auto_shading = false
   - Controls whether **entities (i.e., characters)** can move through each other.
   - `"always"` → Entities **always block each other**.
   - `"never"` → Entities **never block each other**.
+
+- **`collision_mode`**
+  - Selects which collision/pathfinding mode movement actions use (`move`, `goto`, `close_in`).
+  - `"tile"` → Use tile/linedef-based collision and pathing.
+  - `"mesh"` → Use 3D mesh/chunk-based collision and pathing.
+  - Default: `"tile"`.
+  - Recommendation: use `"tile"` for 2D games and `"mesh"` for 3D games.
 
 - **`auto_create_player`**
   If `true`, Eldiron will automatically **create a player instance** in the map if one is defined.
