@@ -229,6 +229,22 @@ impl SceneHandler {
         }
     }
 
+    #[inline]
+    fn avatar_direction_from_orientation(entity: &crate::Entity) -> AvatarDirection {
+        let dir = entity.orientation;
+        if dir.x.abs() >= dir.y.abs() {
+            if dir.x >= 0.0 {
+                AvatarDirection::Right
+            } else {
+                AvatarDirection::Left
+            }
+        } else if dir.y >= 0.0 {
+            AvatarDirection::Front
+        } else {
+            AvatarDirection::Back
+        }
+    }
+
     fn hash_pixel_source(hasher: &mut rustc_hash::FxHasher, source: &PixelSource) {
         match source {
             PixelSource::Off => hasher.write_u8(0),
@@ -819,7 +835,11 @@ impl SceneHandler {
                         AvatarRuntimeBuilder::find_avatar_for_entity(entity, assets)
                     {
                         // println!("found avatar");
-                        let direction = Self::avatar_direction_3d(entity, camera);
+                        let direction = if camera.id() == "iso" && entity.is_player() {
+                            Self::avatar_direction_from_orientation(entity)
+                        } else {
+                            Self::avatar_direction_3d(entity, camera)
+                        };
                         if self
                             .avatar_builder
                             .ensure_entity_avatar_uploaded_with_direction(
