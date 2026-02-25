@@ -47,6 +47,7 @@ status_help_button = Нажмите любой элемент интерфейс
 ## Sidebar
 status_project_add_button = Добавить в проект.
 status_project_remove_button = Удалить элемент из проекта.
+status_project_duplicate_button = Дублировать текущий элемент проекта.
 status_project_import_button = Импортировать в проект.
 status_project_export_button = Экспортировать из проекта.
 ## Dock

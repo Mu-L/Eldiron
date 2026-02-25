@@ -47,6 +47,7 @@ status_help_button = Auf ein beliebiges UI-Element klicken, um die Eldiron-Onlin
 ## Sidebar
 status_project_add_button = Zum Projekt hinzufügen.
 status_project_remove_button = Ein Element aus dem Projekt entfernen.
+status_project_duplicate_button = Das aktuelle Projektelement duplizieren.
 status_project_import_button = In das Projekt importieren.
 status_project_export_button = Aus dem Projekt exportieren.
 ## Dock

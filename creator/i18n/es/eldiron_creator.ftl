@@ -47,6 +47,7 @@ status_help_button = Haz clic en cualquier elemento de la UI para visitar la Doc
 ## Sidebar
 status_project_add_button = Añadir al proyecto.
 status_project_remove_button = Eliminar un elemento del proyecto.
+status_project_duplicate_button = Duplicar el elemento actual del proyecto.
 status_project_import_button = Importar al proyecto.
 status_project_export_button = Exportar del proyecto.
 ## Dock

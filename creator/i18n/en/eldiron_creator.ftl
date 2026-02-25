@@ -47,6 +47,7 @@ status_help_button = Click on any UI element to visit the Eldiron Online Documen
 ## Sidebar
 status_project_add_button = Add to the project.
 status_project_remove_button = Remove an item from the project.
+status_project_duplicate_button = Duplicate the current project item.
 status_project_import_button = Import to the project.
 status_project_export_button = Export from the project.
 ## Dock

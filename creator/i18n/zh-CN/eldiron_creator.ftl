@@ -47,6 +47,7 @@ status_help_button = 点击任意 UI 元素以访问 Eldiron 在线文档。
 ## Sidebar
 status_project_add_button = 添加到项目
 status_project_remove_button = 从项目中移除条目
+status_project_duplicate_button = 复制当前项目条目
 status_project_import_button = 导入到项目
 status_project_export_button = 从项目导出
 ## Dock

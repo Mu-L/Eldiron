@@ -510,6 +510,28 @@ pub fn set_project_context(
 
     server_ctx.pc = pc;
 
+    let duplicate_allowed = matches!(
+        pc,
+        ProjectContext::Region(_)
+            | ProjectContext::RegionSettings(_)
+            | ProjectContext::RegionCharacterInstance(_, _)
+            | ProjectContext::RegionItemInstance(_, _)
+            | ProjectContext::Character(_)
+            | ProjectContext::CharacterVisualCode(_)
+            | ProjectContext::CharacterCode(_)
+            | ProjectContext::CharacterData(_)
+            | ProjectContext::CharacterPreviewRigging(_)
+            | ProjectContext::Item(_)
+            | ProjectContext::ItemVisualCode(_)
+            | ProjectContext::ItemCode(_)
+            | ProjectContext::ItemData(_)
+            | ProjectContext::Screen(_)
+            | ProjectContext::ScreenWidget(_, _)
+            | ProjectContext::Avatar(_)
+            | ProjectContext::AvatarAnimation(_, _, _)
+    );
+    ui.set_widget_disabled_state("Project Duplicate", ctx, !duplicate_allowed);
+
     match pc {
         ProjectContext::Region(id) => {
             if let Some(region) = project.get_region(&id) {

@@ -213,6 +213,11 @@ impl Sidebar {
         remove_button.set_icon_name("icon_role_remove".to_string());
         remove_button.set_status_text(&fl!("status_project_remove_button"));
 
+        let mut duplicate_button = TheTraybarButton::new(TheId::named("Project Duplicate"));
+        duplicate_button.set_icon_name("duplicate".to_string());
+        duplicate_button.set_status_text(&fl!("status_project_duplicate_button"));
+        duplicate_button.set_disabled(true);
+
         let mut project_context_text = TheText::new(TheId::named("Project Context"));
         project_context_text.set_text("".to_string());
 
@@ -252,6 +257,7 @@ impl Sidebar {
         toolbar_hlayout.set_margin(Vec4::new(5, 2, 5, 2));
         toolbar_hlayout.add_widget(Box::new(add_button));
         toolbar_hlayout.add_widget(Box::new(remove_button));
+        toolbar_hlayout.add_widget(Box::new(duplicate_button));
         toolbar_hlayout.add_widget(Box::new(TheHDivider::new(TheId::empty())));
         toolbar_hlayout.add_widget(Box::new(project_context_text));
         toolbar_hlayout.add_widget(Box::new(import_button));
@@ -2198,6 +2204,172 @@ impl Sidebar {
                                 atom.redo(project, ui, ctx, server_ctx);
                                 UNDOMANAGER.write().unwrap().add_undo(atom, ctx);
                             }
+                        }
+                    }
+                } else if id.name == "Project Duplicate" {
+                    if server_ctx.pc.is_region() {
+                        if let Some(region) = project.get_region_ctx(server_ctx).cloned() {
+                            let mut duplicated = region;
+                            duplicated.id = Uuid::new_v4();
+                            duplicated.name = format!("{} Copy", duplicated.name);
+                            duplicated.map.id = Uuid::new_v4();
+                            duplicated.map.name = duplicated.name.clone();
+                            let insert_index = project.regions.len();
+                            project.regions.push(duplicated.clone());
+                            if let Some(tree_layout) = ui.get_tree_layout("Project Tree")
+                                && let Some(region_node) =
+                                    tree_layout.get_node_by_id_mut(&server_ctx.tree_regions_id)
+                            {
+                                let mut node = gen_region_tree_node(&duplicated);
+                                node.set_open(true);
+                                region_node.add_child(node);
+                            }
+                            server_ctx.curr_region = duplicated.id;
+                            set_project_context(
+                                ctx,
+                                ui,
+                                project,
+                                server_ctx,
+                                ProjectContext::Region(duplicated.id),
+                            );
+                            update_region(ctx);
+                            let undo = ProjectUndoAtom::RemoveRegion(insert_index, duplicated);
+                            UNDOMANAGER.write().unwrap().add_undo(undo, ctx);
+                            redraw = true;
+                        }
+                    } else if server_ctx.pc.is_character() {
+                        if let Some(id) = server_ctx.pc.id()
+                            && let Some(character) = project.characters.get(&id).cloned()
+                        {
+                            let mut duplicated = character;
+                            duplicated.id = Uuid::new_v4();
+                            duplicated.name = format!("{} Copy", duplicated.name);
+                            duplicated.map.id = Uuid::new_v4();
+                            duplicated.map.name = duplicated.name.clone();
+                            duplicated.character_id = Uuid::new_v4();
+                            let insert_index = project.characters.len();
+                            project.add_character(duplicated.clone());
+                            if let Some(tree_layout) = ui.get_tree_layout("Project Tree")
+                                && let Some(characters_node) =
+                                    tree_layout.get_node_by_id_mut(&server_ctx.tree_characters_id)
+                            {
+                                let mut node = gen_character_tree_node(&duplicated);
+                                node.set_open(true);
+                                characters_node.add_child(node);
+                            }
+                            set_project_context(
+                                ctx,
+                                ui,
+                                project,
+                                server_ctx,
+                                ProjectContext::Character(duplicated.id),
+                            );
+                            update_region(ctx);
+                            let undo =
+                                ProjectUndoAtom::RemoveCharacter(insert_index, duplicated.clone());
+                            UNDOMANAGER.write().unwrap().add_undo(undo, ctx);
+                            redraw = true;
+                        }
+                    } else if server_ctx.pc.is_item() {
+                        if let Some(id) = server_ctx.pc.id()
+                            && let Some(item) = project.items.get(&id).cloned()
+                        {
+                            let mut duplicated = item;
+                            duplicated.id = Uuid::new_v4();
+                            duplicated.name = format!("{} Copy", duplicated.name);
+                            duplicated.map.id = Uuid::new_v4();
+                            duplicated.map.name = duplicated.name.clone();
+                            duplicated.item_id = Uuid::new_v4();
+                            let insert_index = project.items.len();
+                            project.add_item(duplicated.clone());
+                            if let Some(tree_layout) = ui.get_tree_layout("Project Tree")
+                                && let Some(items_node) =
+                                    tree_layout.get_node_by_id_mut(&server_ctx.tree_items_id)
+                            {
+                                let mut node = gen_item_tree_node(&duplicated);
+                                node.set_open(true);
+                                items_node.add_child(node);
+                            }
+                            set_project_context(
+                                ctx,
+                                ui,
+                                project,
+                                server_ctx,
+                                ProjectContext::Item(duplicated.id),
+                            );
+                            update_region(ctx);
+                            let undo = ProjectUndoAtom::RemoveItem(insert_index, duplicated);
+                            UNDOMANAGER.write().unwrap().add_undo(undo, ctx);
+                            redraw = true;
+                        }
+                    } else if server_ctx.pc.is_screen() {
+                        if let Some(id) = server_ctx.pc.id()
+                            && let Some(screen) = project.screens.get(&id).cloned()
+                        {
+                            let mut duplicated = screen;
+                            duplicated.id = Uuid::new_v4();
+                            duplicated.name = format!("{} Copy", duplicated.name);
+                            duplicated.map.id = Uuid::new_v4();
+                            duplicated.map.name = duplicated.name.clone();
+                            let insert_index = project.screens.len();
+                            project.add_screen(duplicated.clone());
+                            if let Some(tree_layout) = ui.get_tree_layout("Project Tree")
+                                && let Some(screens_node) =
+                                    tree_layout.get_node_by_id_mut(&server_ctx.tree_screens_id)
+                            {
+                                let mut node = gen_screen_tree_node(&duplicated);
+                                node.set_open(true);
+                                screens_node.add_child(node);
+                            }
+                            server_ctx.curr_screen = duplicated.id;
+                            set_project_context(
+                                ctx,
+                                ui,
+                                project,
+                                server_ctx,
+                                ProjectContext::Screen(duplicated.id),
+                            );
+                            update_region(ctx);
+                            let undo = ProjectUndoAtom::RemoveScreen(insert_index, duplicated);
+                            UNDOMANAGER.write().unwrap().add_undo(undo, ctx);
+                            redraw = true;
+                        }
+                    } else {
+                        let avatar_id = match server_ctx.pc {
+                            ProjectContext::Avatar(id) => Some(id),
+                            ProjectContext::AvatarAnimation(id, _, _) => Some(id),
+                            _ => None,
+                        };
+                        if let Some(avatar_id) = avatar_id
+                            && let Some(avatar) = project.avatars.get(&avatar_id).cloned()
+                        {
+                            let mut duplicated = avatar;
+                            duplicated.id = Uuid::new_v4();
+                            duplicated.name = format!("{} Copy", duplicated.name);
+                            for animation in &mut duplicated.animations {
+                                animation.id = Uuid::new_v4();
+                            }
+                            let insert_index = project.avatars.len();
+                            project.add_avatar(duplicated.clone());
+                            if let Some(tree_layout) = ui.get_tree_layout("Project Tree")
+                                && let Some(avatars_node) =
+                                    tree_layout.get_node_by_id_mut(&server_ctx.tree_avatars_id)
+                            {
+                                let mut node = gen_avatar_tree_node(&duplicated);
+                                node.set_open(true);
+                                avatars_node.add_child(node);
+                            }
+                            set_project_context(
+                                ctx,
+                                ui,
+                                project,
+                                server_ctx,
+                                ProjectContext::Avatar(duplicated.id),
+                            );
+                            update_region(ctx);
+                            let undo = ProjectUndoAtom::RemoveAvatar(insert_index, duplicated);
+                            UNDOMANAGER.write().unwrap().add_undo(undo, ctx);
+                            redraw = true;
                         }
                     }
                 } else if id.name == "Project Export" {
