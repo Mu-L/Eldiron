@@ -2134,7 +2134,7 @@ impl TheTrait for Editor {
                                 start_server(
                                     &mut RUSTERIX.write().unwrap(),
                                     &mut self.project,
-                                    true,
+                                    false,
                                 );
                                 let commands =
                                     setup_client(&mut RUSTERIX.write().unwrap(), &mut self.project);

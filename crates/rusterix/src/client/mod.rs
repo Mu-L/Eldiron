@@ -482,7 +482,7 @@ impl Client {
             .render_mode(RenderMode::render_2d());
         rast.render_graph = self.global.clone();
         rast.hour = self.server_time.to_f32();
-        rast.mapmini = self.scene.mapmini.clone();
+        rast.mapmini = self.scene_d2.mapmini.clone();
         rast.rasterize(&mut self.scene_d2, pixels, width, height, 64, assets);
 
         // Composite SceneVM 2D overlay layer on top so profile/screen editors show lines/handles.
@@ -622,7 +622,7 @@ impl Client {
 
         scene_handler.settings.apply_hour(hour);
         scene_handler.settings.apply_2d(&mut scene_handler.vm);
-        // Editor 2D should always render on black, independent of project sky color/simulation.
+        // 2D should render against black, independent of project sky color/simulation.
         scene_handler
             .vm
             .execute(scenevm::Atom::SetGP0(Vec4::zero()));

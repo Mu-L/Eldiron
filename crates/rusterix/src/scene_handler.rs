@@ -684,8 +684,16 @@ impl SceneHandler {
             // Find light on entity
             if let Some(Value::Light(light)) = entity.attributes.get("light") {
                 if light.active {
-                    let mut light = light.clone();
-                    light.set_position(entity.position);
+                    self.vm.execute(Atom::AddLight {
+                        id: GeoId::ItemLight(entity.id),
+                        light: Light::new_pointlight(entity.position)
+                            .with_color(Vec3::from(light.get_color()))
+                            .with_intensity(light.get_intensity())
+                            .with_emitting(light.active)
+                            .with_start_distance(light.get_start_distance())
+                            .with_end_distance(light.get_end_distance())
+                            .with_flicker(light.get_flicker()),
+                    });
                 }
             }
 

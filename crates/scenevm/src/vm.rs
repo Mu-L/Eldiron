@@ -451,6 +451,9 @@ pub struct Raster2DUniforms {
     pub ambient_color_strength: [f32; 4], // rgb + strength
     pub sun_color_intensity: [f32; 4],    // rgb + intensity
     pub sun_dir_enabled: [f32; 4],        // xyz + enabled
+    pub mat2d_inv_c0: [f32; 4],
+    pub mat2d_inv_c1: [f32; 4],
+    pub mat2d_inv_c2: [f32; 4],
 }
 
 pub const SCENEVM_2D_WGSL: &str = r#"
@@ -490,6 +493,9 @@ struct U2D {
   ambient_color_strength: vec4<f32>,
   sun_color_intensity: vec4<f32>,
   sun_dir_enabled: vec4<f32>,
+  mat2d_inv_c0: vec4<f32>,
+  mat2d_inv_c1: vec4<f32>,
+  mat2d_inv_c2: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> UBO: U2D;
 @group(0) @binding(1) var atlas_tex: texture_2d<f32>;
@@ -570,6 +576,38 @@ fn sd_data_word(idx: u32) -> u32 {
   return scene_data.data[idx];
 }
 
+struct LightWGSL {
+  header: vec4<u32>,
+  position: vec4<f32>,
+  color: vec4<f32>,
+  params0: vec4<f32>,
+  params1: vec4<f32>,
+};
+
+fn sd_vec4u(base_word: u32) -> vec4<u32> {
+  return vec4<u32>(
+    sd_data_word(base_word + 0u),
+    sd_data_word(base_word + 1u),
+    sd_data_word(base_word + 2u),
+    sd_data_word(base_word + 3u)
+  );
+}
+
+fn sd_vec4f(base_word: u32) -> vec4<f32> {
+  return bitcast<vec4<f32>>(sd_vec4u(base_word));
+}
+
+fn sd_light(li: u32) -> LightWGSL {
+  let base = scene_data.header.lights_offset_words + li * 20u;
+  var light: LightWGSL;
+  light.header = sd_vec4u(base + 0u);
+  light.position = sd_vec4f(base + 4u);
+  light.color = sd_vec4f(base + 8u);
+  light.params0 = sd_vec4f(base + 12u);
+  light.params1 = sd_vec4f(base + 16u);
+  return light;
+}
+
 fn sd_unpack_rgba8(word: u32) -> vec4<f32> {
   let r = f32((word >> 0u) & 0xffu) * (1.0 / 255.0);
   let g = f32((word >> 8u) & 0xffu) * (1.0 / 255.0);
@@ -644,7 +682,7 @@ fn unpack_material_nibbles(m: vec4<f32>) -> vec4<f32> {
   return vec4<f32>(roughness, metallic, opacity, emissive);
 }
 
-fn apply_scene_lighting(albedo: vec3<f32>) -> vec3<f32> {
+fn apply_scene_lighting(albedo: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
   let ambient = UBO.ambient_color_strength.xyz * UBO.ambient_color_strength.w;
   let sun_enabled = UBO.sun_dir_enabled.w > 0.5;
   let sun = select(
@@ -652,7 +690,27 @@ fn apply_scene_lighting(albedo: vec3<f32>) -> vec3<f32> {
     UBO.sun_color_intensity.xyz * (UBO.sun_color_intensity.w * 0.35),
     sun_enabled
   );
-  let lighting = max(ambient + sun, vec3<f32>(0.0));
+  var lighting = max(ambient + sun, vec3<f32>(0.0));
+
+  // Point lights from SceneVM scene data (same backing as Compute2D).
+  for (var li: u32 = 0u; li < scene_data.header.lights_count; li = li + 1u) {
+    let light = sd_light(li);
+    if (light.header.y == 0u) { continue; }
+
+    let to_light = light.position.xyz - world;
+    let dist2 = max(dot(to_light, to_light), 1e-6);
+    let dist = sqrt(dist2);
+
+    let start_d = light.params0.z;
+    let end_d = max(light.params0.w, start_d + 1e-3);
+    let fall = clamp((end_d - dist) / max(end_d - start_d, 1e-3), 0.0, 1.0);
+
+    let intensity = light.params0.x * light.params1.x;
+    let atten = intensity * fall / dist2;
+    lighting += light.color.xyz * atten;
+  }
+
+  lighting = clamp(lighting, vec3<f32>(0.0), vec3<f32>(1.0));
   return albedo * lighting;
 }
 
@@ -673,6 +731,10 @@ fn vs_main(in: VsIn) -> VsOut {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+  let Minv = mat3x3<f32>(UBO.mat2d_inv_c0.xyz, UBO.mat2d_inv_c1.xyz, UBO.mat2d_inv_c2.xyz);
+  let world2 = Minv * vec3<f32>(in.pos.xy, 1.0);
+  let world = vec3<f32>(world2.x, 0.0, world2.y);
+
   let is_avatar = (in.tile_index2 & 0x80000000u) != 0u;
   if (is_avatar) {
     let col_srgb = sd_sample_avatar(in.tile_index, in.uv);
@@ -680,7 +742,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
       discard;
     }
     let col = vec4<f32>(srgb_to_linear(col_srgb.rgb), col_srgb.a);
-    return vec4<f32>(apply_post(apply_scene_lighting(col.rgb)), col.a);
+    return vec4<f32>(apply_post(apply_scene_lighting(col.rgb, world)), col.a);
   }
 
   let uv0 = atlas_uv(in.tile_index, in.uv);
@@ -703,7 +765,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
   let mats = unpack_material_nibbles(mats_raw);
   let opacity = mats.z;
   let emission = mats.w;
-  let rgb = apply_scene_lighting(col.rgb) * (1.0 + emission);
+  let rgb = apply_scene_lighting(col.rgb, world) * (1.0 + emission);
   let a = col.a * opacity;
   if (a <= 0.0) {
     discard;
@@ -4830,6 +4892,8 @@ impl VM {
             .texture_views()
             .expect("atlas GPU resources missing");
 
+        let m = self.transform2d;
+        let m_inv = mat3_inverse_f32(&m).unwrap_or(Mat3::<f32>::identity());
         let u = Raster2DUniforms {
             misc0: [fb_w as f32, fb_h as f32, self.animation_counter as f32, 0.0],
             post_params: [
@@ -4842,6 +4906,9 @@ impl VM {
             ambient_color_strength: self.gp3.into_array(),
             sun_color_intensity: self.gp1.into_array(),
             sun_dir_enabled: self.gp2.into_array(),
+            mat2d_inv_c0: [m_inv[(0, 0)], m_inv[(1, 0)], m_inv[(2, 0)], 0.0],
+            mat2d_inv_c1: [m_inv[(0, 1)], m_inv[(1, 1)], m_inv[(2, 1)], 0.0],
+            mat2d_inv_c2: [m_inv[(0, 2)], m_inv[(1, 2)], m_inv[(2, 2)], 0.0],
         };
         let tone_mapper = self.gp9.y.max(0.0) as u32;
         let post_enabled = self.gp9.x > 0.5;

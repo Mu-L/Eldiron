@@ -13,6 +13,18 @@ struct RegionHost<'a> {
     ctx: &'a mut RegionCtx,
 }
 
+const COMBAT_DEBUG_CALLS: &[&str] = &[
+    "action",
+    "intent",
+    "set_attr",
+    "set_proximity_tracking",
+    "block_events",
+    "deal_damage",
+    "took_damage",
+    "goto",
+    "close_in",
+];
+
 fn opening_geo_for_item(item: &Item) -> Option<GeoId> {
     let host_id = match item.attributes.get("profile_host_sector_id") {
         Some(Value::UInt(v)) => Some(*v),
@@ -27,8 +39,78 @@ fn opening_geo_for_item(item: &Item) -> Option<GeoId> {
     Some(GeoId::Hole(host_id, profile_id))
 }
 
+fn format_vm_value(v: &VMValue) -> String {
+    match v.as_string() {
+        Some(s) => format!("\"{}\" ({:.2},{:.2},{:.2})", s, v.x, v.y, v.z),
+        None => format!("({:.2},{:.2},{:.2})", v.x, v.y, v.z),
+    }
+}
+
+fn convert_attr_value(key: &str, val: &VMValue, hint: Option<&Value>, health_attr: &str) -> Value {
+    // Health is treated as integer gameplay state.
+    if key == health_attr {
+        return Value::Int(val.x as i32);
+    }
+
+    // Target IDs are used as numeric entity IDs in combat logic.
+    // Preserve explicit empty-string clears used by scripts.
+    if matches!(key, "target" | "attack_target") {
+        if let Some(s) = val.as_string() {
+            if s.is_empty() {
+                return Value::Str(String::new());
+            }
+            if let Ok(id) = s.parse::<u32>() {
+                return Value::UInt(id);
+            }
+            return Value::Str(s.to_string());
+        }
+        return Value::UInt(val.x.max(0.0) as u32);
+    }
+    val.to_value_with_hint(hint)
+}
+
+impl<'a> RegionHost<'a> {
+    fn is_combat_debug_call(name: &str, args: &[VMValue]) -> bool {
+        if name == "set_attr" {
+            return args
+                .first()
+                .and_then(|v| v.as_string())
+                .map(|k| matches!(k, "intent" | "mode" | "target" | "attack_target"))
+                .unwrap_or(false);
+        }
+        COMBAT_DEBUG_CALLS.contains(&name)
+    }
+
+    fn debug_log_call(&self, name: &str, args: &[VMValue]) {
+        if !self.ctx.debug_mode || !Self::is_combat_debug_call(name, args) {
+            return;
+        }
+
+        let formatted_args = args
+            .iter()
+            .map(format_vm_value)
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let msg = format!(
+            "[host:{}] region={} entity={} item={:?} args=[{}]",
+            name,
+            self.ctx.region_id,
+            self.ctx.curr_entity_id,
+            self.ctx.curr_item_id,
+            formatted_args
+        );
+
+        if let Some(sender) = self.ctx.from_sender.get() {
+            let _ = sender.send(RegionMessage::LogMessage(msg));
+        }
+    }
+}
+
 impl<'a> HostHandler for RegionHost<'a> {
     fn on_host_call(&mut self, name: &str, args: &[VMValue]) -> Option<VMValue> {
+        self.debug_log_call(name, args);
+
         match name {
             "action" => {
                 if let Some(s) = args.get(0).and_then(|v| v.as_string()) {
@@ -40,6 +122,14 @@ impl<'a> HostHandler for RegionHost<'a> {
                             .iter_mut()
                             .find(|e| e.id == self.ctx.curr_entity_id)
                         {
+                            if self.ctx.debug_mode {
+                                if let Some(sender) = self.ctx.from_sender.get() {
+                                    let _ = sender.send(RegionMessage::LogMessage(format!(
+                                        "[host:action] entity={} {:?} -> {:?}",
+                                        ent.id, ent.action, action
+                                    )));
+                                }
+                            }
                             ent.action = action;
                         }
                     }
@@ -54,6 +144,19 @@ impl<'a> HostHandler for RegionHost<'a> {
                         .iter_mut()
                         .find(|e| e.id == self.ctx.curr_entity_id)
                     {
+                        if self.ctx.debug_mode {
+                            if let Some(sender) = self.ctx.from_sender.get() {
+                                let old_intent = ent
+                                    .attributes
+                                    .get_str("intent")
+                                    .unwrap_or("<none>")
+                                    .to_string();
+                                let _ = sender.send(RegionMessage::LogMessage(format!(
+                                    "[host:intent] entity={} {} -> {}",
+                                    ent.id, old_intent, s
+                                )));
+                            }
+                        }
                         ent.set_attribute("intent", Value::Str(s.to_string()));
                     }
                 }
@@ -127,7 +230,7 @@ impl<'a> HostHandler for RegionHost<'a> {
                 }
             }
             "set_emit_light" => {
-                let active = args.get(0).map(|v| v.is_truthy()).unwrap_or(false);
+                let active = args.get(0).map(|v| v.to_bool()).unwrap_or(false);
                 if let Some(item_id) = self.ctx.curr_item_id {
                     if let Some(item) = self.ctx.get_item_mut(item_id) {
                         if let Some(Value::Light(light)) = item.attributes.get_mut("light") {
@@ -146,10 +249,16 @@ impl<'a> HostHandler for RegionHost<'a> {
                 if let (Some(key), Some(val)) =
                     (args.get(0).and_then(|v| v.as_string()), args.get(1))
                 {
+                    let health_attr = self.ctx.health_attr.clone();
                     if let Some(item_id) = self.ctx.curr_item_id {
                         if let Some(item) = self.ctx.get_item_mut(item_id) {
                             // Single conversion path with optional type hints (string tag or attr type).
-                            let converted = val.to_value_with_hint(item.attributes.get(key));
+                            let converted = convert_attr_value(
+                                key,
+                                val,
+                                item.attributes.get(key),
+                                &health_attr,
+                            );
                             item.set_attribute(key, converted);
 
                             let (queue_active, queued_id, active_val) = if key == "active" {
@@ -187,7 +296,8 @@ impl<'a> HostHandler for RegionHost<'a> {
                             }
                         }
                     } else if let Some(entity) = self.ctx.get_current_entity_mut() {
-                        let converted = val.to_value_with_hint(entity.attributes.get(key));
+                        let converted =
+                            convert_attr_value(key, val, entity.attributes.get(key), &health_attr);
                         entity.set_attribute(key, converted);
                     }
                 }
@@ -314,7 +424,7 @@ impl<'a> HostHandler for RegionHost<'a> {
                 }
             }
             "set_proximity_tracking" => {
-                let turn_on = args.get(0).map(|v| v.is_truthy()).unwrap_or(false);
+                let turn_on = args.get(0).map(|v| v.to_bool()).unwrap_or(false);
                 let distance = args.get(1).map(|v| v.x).unwrap_or(5.0);
                 if let Some(item_id) = self.ctx.curr_item_id {
                     if turn_on {
@@ -746,6 +856,14 @@ impl<'a> HostHandler for RegionHost<'a> {
                         "take_damage".into(),
                         VMValue::new(subject_id as f32, dmg as f32, 0.0),
                     ));
+                    if self.ctx.debug_mode {
+                        if let Some(sender) = self.ctx.from_sender.get() {
+                            let _ = sender.send(RegionMessage::LogMessage(format!(
+                                "[host:deal_damage] from={} to={} amount={}",
+                                subject_id, id, dmg
+                            )));
+                        }
+                    }
                 }
             }
             "took_damage" => {
@@ -803,6 +921,23 @@ impl<'a> HostHandler for RegionHost<'a> {
                             VMValue::broadcast(id as f32),
                         ));
                     }
+
+                    if self.ctx.debug_mode {
+                        if let Some(sender) = self.ctx.from_sender.get() {
+                            let hp_after = self
+                                .ctx
+                                .map
+                                .entities
+                                .iter()
+                                .find(|e| e.id == id)
+                                .and_then(|e| e.attributes.get_int(&health_attr))
+                                .unwrap_or(-1);
+                            let _ = sender.send(RegionMessage::LogMessage(format!(
+                                "[host:took_damage] entity={} from={} amount={} hp_after={} kill={}",
+                                id, from, amount, hp_after, kill
+                            )));
+                        }
+                    }
                 }
             }
             "block_events" => {
@@ -811,7 +946,11 @@ impl<'a> HostHandler for RegionHost<'a> {
                 {
                     let target_tick =
                         self.ctx.ticks + (self.ctx.ticks_per_minute as f32 * minutes.x) as i64;
+                    let mut target_kind = "entity";
+                    let mut target_id = self.ctx.curr_entity_id;
                     if let Some(item_id) = self.ctx.curr_item_id {
+                        target_kind = "item";
+                        target_id = item_id;
                         if let Some(state) = self.ctx.item_state_data.get_mut(&item_id) {
                             state.set(event, Value::Int64(target_tick));
                         }
@@ -820,6 +959,21 @@ impl<'a> HostHandler for RegionHost<'a> {
                         if let Some(state) = self.ctx.entity_state_data.get_mut(&eid) {
                             state.set(event, Value::Int64(target_tick));
                         }
+                    }
+
+                    if self.ctx.debug_mode
+                        && let Some(sender) = self.ctx.from_sender.get()
+                    {
+                        let _ = sender.send(RegionMessage::LogMessage(format!(
+                            "[host:block_events] region={} {}={} event={} minutes={:.2} ticks_now={} blocked_until={}",
+                            self.ctx.region_id,
+                            target_kind,
+                            target_id,
+                            event,
+                            minutes.x,
+                            self.ctx.ticks,
+                            target_tick
+                        )));
                     }
                 }
             }
