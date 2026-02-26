@@ -1,4 +1,4 @@
-use crate::server::message::RegionMessage;
+use crate::server::message::{AudioCommand, RegionMessage};
 use crate::server::region::add_debug_value;
 use crate::vm::*;
 use crate::{
@@ -191,6 +191,61 @@ impl<'a> HostHandler for RegionHost<'a> {
 
                     if self.ctx.debug_mode {
                         add_debug_value(&mut self.ctx, TheValue::Text("Ok".into()), false);
+                    }
+                }
+            }
+            "play_audio" => {
+                if let Some(name) = args.first().and_then(|v| v.as_string()) {
+                    let bus = args
+                        .get(1)
+                        .and_then(|v| v.as_string())
+                        .unwrap_or("sfx")
+                        .to_string();
+                    let gain = args.get(2).map(|v| v.x).unwrap_or(1.0).clamp(0.0, 4.0);
+                    let looping = args.get(3).map(|v| v.to_bool()).unwrap_or(false);
+
+                    let msg = RegionMessage::AudioCmd(
+                        self.ctx.region_id,
+                        AudioCommand::Play {
+                            name: name.to_string(),
+                            bus,
+                            gain,
+                            looping,
+                        },
+                    );
+
+                    if let Some(sender) = self.ctx.from_sender.get() {
+                        let _ = sender.send(msg);
+                    }
+                }
+            }
+            "clear_audio" => {
+                let cmd = if let Some(bus) = args.first().and_then(|v| v.as_string()) {
+                    if bus.is_empty() {
+                        AudioCommand::ClearAll
+                    } else {
+                        AudioCommand::ClearBus {
+                            bus: bus.to_string(),
+                        }
+                    }
+                } else {
+                    AudioCommand::ClearAll
+                };
+
+                if let Some(sender) = self.ctx.from_sender.get() {
+                    let _ = sender.send(RegionMessage::AudioCmd(self.ctx.region_id, cmd));
+                }
+            }
+            "set_audio_bus_volume" => {
+                if let (Some(bus), Some(volume)) =
+                    (args.first().and_then(|v| v.as_string()), args.get(1))
+                {
+                    let cmd = AudioCommand::SetBusVolume {
+                        bus: bus.to_string(),
+                        volume: volume.x.clamp(0.0, 4.0),
+                    };
+                    if let Some(sender) = self.ctx.from_sender.get() {
+                        let _ = sender.send(RegionMessage::AudioCmd(self.ctx.region_id, cmd));
                     }
                 }
             }

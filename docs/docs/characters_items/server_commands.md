@@ -7,6 +7,8 @@ sidebar_position: 7
 
 This chapter lists all available scripting **commands** for Eldiron, used by characters and items.
 
+For a complete audio workflow (assets + buses + command examples), see [Audio](../audio).
+
 ---
 
 ## `add_item`
@@ -52,6 +54,22 @@ Once it is in range, sends [closed_in](events#closed_in) events to the NPC.
 
 ```eldrin
 close_in(entity_id, 4.0, 1.0) // Close in within 4.0 radius on the entity_id with 1.0 speed.
+```
+
+---
+
+## `clear_audio`
+
+*This command can be used with both characters and items.*
+
+Stops currently playing audio.
+
+- `clear_audio("bus")` clears one audio bus/layer (for example `"music"` or `"sfx"`).
+- `clear_audio()` clears all buses.
+
+```eldrin
+clear_audio("music") // Stop only music layer.
+clear_audio() // Stop all currently playing audio.
 ```
 
 ---
@@ -257,6 +275,28 @@ offer_inventory(entity, "Torch") // Offer only items named Torch.
 
 ---
 
+## `play_audio`
+
+*This command can be used with both characters and items.*
+
+Plays an audio asset by name.
+
+```eldrin
+play_audio("door_open")
+play_audio("battle_theme", "music", 0.8, true)
+```
+
+Parameters:
+
+- `name` (required): Audio asset name.
+- `bus` (optional): Audio bus/layer, default is `"sfx"`.
+- `gain` (optional): Volume multiplier in range `0.0..4.0`, default is `1.0`.
+- `looping` (optional): `true` loops the clip, `false` plays once (default).
+
+Common buses are `music`, `sfx`, `ui`, `ambience`, and `voice`, but you can use custom bus names.
+
+---
+
 ## `random_walk`
 
 *This command can only be used with characters.*
@@ -291,6 +331,21 @@ Sets an attribute on the current character or item.
 ```eldrin
 set_attr("key", value)
 ```
+
+---
+
+## `set_audio_bus_volume`
+
+*This command can be used with both characters and items.*
+
+Sets the volume for one audio bus/layer.
+
+```eldrin
+set_audio_bus_volume("music", 0.5)
+set_audio_bus_volume("sfx", 1.0)
+```
+
+`volume` is clamped to `0.0..4.0`.
 
 ---
 

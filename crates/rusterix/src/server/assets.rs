@@ -37,6 +37,7 @@ pub struct Assets {
     pub atlas: Texture,
 
     pub fonts: FxHashMap<String, fontdue::Font>,
+    pub audio: FxHashMap<String, Vec<u8>>,
     pub palette: ThePalette,
 
     // The global render graph
@@ -75,6 +76,7 @@ impl Assets {
             config: String::new(),
             atlas: Texture::default(),
             fonts: FxHashMap::default(),
+            audio: FxHashMap::default(),
             palette: ThePalette::default(),
             global: ShapeFXGraph::default(),
             locales: FxHashMap::default(),
@@ -239,6 +241,16 @@ impl Assets {
                                     file_path.file_stem().and_then(|stem| stem.to_str())
                                 {
                                     self.map_sources.insert(base_name.to_string(), source);
+                                }
+                            }
+                        }
+                        // Audio
+                        "wav" | "WAV" | "ogg" | "OGG" => {
+                            if let Ok(bytes) = std::fs::read(file_path) {
+                                if let Some(base_name) =
+                                    file_path.file_stem().and_then(|stem| stem.to_str())
+                                {
+                                    self.audio.insert(base_name.to_string(), bytes);
                                 }
                             }
                         }

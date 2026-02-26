@@ -527,9 +527,11 @@ impl ProjectUndoAtom {
             }
             AddAsset(asset) => {
                 if let Some(tree_layout) = ui.get_tree_layout("Project Tree") {
-                    if let Some(asset_node) =
-                        tree_layout.get_node_by_id_mut(&server_ctx.tree_assets_id)
-                    {
+                    let parent_id = match &asset.buffer {
+                        AssetBuffer::Audio(_) => server_ctx.tree_assets_audio_id,
+                        _ => server_ctx.tree_assets_fonts_id,
+                    };
+                    if let Some(asset_node) = tree_layout.get_node_by_id_mut(&parent_id) {
                         project.remove_asset(&asset.id);
                         asset_node.remove_child_by_uuid(&asset.id);
                     }
@@ -541,10 +543,13 @@ impl ProjectUndoAtom {
 
                     let mut node = gen_asset_tree_node(&asset);
                     node.set_open(true);
-                    if let Some(asset_node) =
-                        tree_layout.get_node_by_id_mut(&server_ctx.tree_assets_id)
-                    {
-                        asset_node.add_child_at(*index, node);
+                    let parent_id = match &asset.buffer {
+                        AssetBuffer::Audio(_) => server_ctx.tree_assets_audio_id,
+                        _ => server_ctx.tree_assets_fonts_id,
+                    };
+                    if let Some(asset_node) = tree_layout.get_node_by_id_mut(&parent_id) {
+                        let insert_index = (*index).min(asset_node.childs.len());
+                        asset_node.add_child_at(insert_index, node);
                     }
                     let asset_id: Uuid = asset.id;
                     project.assets.insert_before(*index, asset_id, asset);
@@ -1206,7 +1211,11 @@ impl ProjectUndoAtom {
             }
             AddAsset(asset) => {
                 if let Some(tree_layout) = ui.get_tree_layout("Project Tree") {
-                    if let Some(node) = tree_layout.get_node_by_id_mut(&server_ctx.tree_assets_id) {
+                    let parent_id = match &asset.buffer {
+                        AssetBuffer::Audio(_) => server_ctx.tree_assets_audio_id,
+                        _ => server_ctx.tree_assets_fonts_id,
+                    };
+                    if let Some(node) = tree_layout.get_node_by_id_mut(&parent_id) {
                         let asset = asset.clone();
 
                         let mut asset_node = gen_asset_tree_node(&asset);
@@ -1230,7 +1239,12 @@ impl ProjectUndoAtom {
             RemoveAsset(_, asset) => {
                 if let Some(tree_layout) = ui.get_tree_layout("Project Tree") {
                     if let Some(asset_node) =
-                        tree_layout.get_node_by_id_mut(&server_ctx.tree_assets_id)
+                        tree_layout.get_node_by_id_mut(&server_ctx.tree_assets_fonts_id)
+                    {
+                        asset_node.remove_child_by_uuid(&asset.id);
+                    }
+                    if let Some(asset_node) =
+                        tree_layout.get_node_by_id_mut(&server_ctx.tree_assets_audio_id)
                     {
                         asset_node.remove_child_by_uuid(&asset.id);
                     }

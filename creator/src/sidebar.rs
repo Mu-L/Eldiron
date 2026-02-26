@@ -5,7 +5,7 @@ use crate::editor::{
 use crate::minimap::{draw_minimap, draw_minimap_context_label, minimap_bbox_for_map};
 use crate::prelude::*;
 use crate::undo::project_helper::*;
-use rusterix::{Texture, TileRole};
+use rusterix::{AudioEngine, Texture, TileRole};
 
 #[derive(PartialEq, Debug)]
 pub enum SidebarMode {
@@ -33,6 +33,22 @@ pub struct Sidebar {
 
 #[allow(clippy::new_without_default)]
 impl Sidebar {
+    fn preview_audio_asset(asset: &Asset) {
+        let AssetBuffer::Audio(bytes) = &asset.buffer else {
+            return;
+        };
+
+        let mut rusterix = RUSTERIX.write().unwrap();
+        if rusterix.audio.is_none() {
+            rusterix.audio = AudioEngine::new().ok();
+        }
+        if let Some(engine) = rusterix.audio.as_ref() {
+            let _ = engine.load_clip_from_bytes(&asset.name, bytes);
+            engine.clear_bus("preview");
+            let _ = engine.play_on_bus(&asset.name, "preview", 1.0, false);
+        }
+    }
+
     fn action_help_anchor(name: &str) -> String {
         let lower = name.trim().to_ascii_lowercase();
         let compact = lower.replace(['_', '-'], " ");
@@ -160,6 +176,11 @@ impl Sidebar {
             server_ctx.tree_assets_fonts_id,
         ));
         assets_node.add_child(fonts_node);
+        let audio_node: TheTreeNode = TheTreeNode::new(TheId::named_with_id(
+            "Audio",
+            server_ctx.tree_assets_audio_id,
+        ));
+        assets_node.add_child(audio_node);
         root.add_child(assets_node);
 
         let mut palette_node: TheTreeNode = TheTreeNode::new(TheId::named_with_id(
@@ -205,6 +226,10 @@ impl Sidebar {
                     "Add Font Asset".to_string(),
                     TheId::named("Add Font Asset"),
                 ),
+                TheContextMenuItem::new(
+                    "Add Audio Asset".to_string(),
+                    TheId::named("Add Audio Asset"),
+                ),
             ],
             ..Default::default()
         }));
@@ -242,6 +267,10 @@ impl Sidebar {
                 TheContextMenuItem::new(
                     "Import Font Asset".to_string(),
                     TheId::named("Import Font Asset"),
+                ),
+                TheContextMenuItem::new(
+                    "Import Audio Asset".to_string(),
+                    TheId::named("Import Audio Asset"),
                 ),
             ],
             ..Default::default()
@@ -1358,6 +1387,31 @@ impl Sidebar {
                             }
                         }
                     }
+                } else if id.name == "Add Audio Asset" {
+                    for p in paths {
+                        if let Ok(bytes) = std::fs::read(&p) {
+                            let ext = p
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .map(|s| s.to_ascii_lowercase())
+                                .unwrap_or_default();
+                            if ext == "wav" || ext == "ogg" {
+                                let asset = Asset {
+                                    name: p
+                                        .file_stem()
+                                        .unwrap_or_default()
+                                        .to_string_lossy()
+                                        .to_string(),
+                                    id: Uuid::new_v4(),
+                                    buffer: AssetBuffer::Audio(bytes),
+                                };
+
+                                let atom = ProjectUndoAtom::AddAsset(asset);
+                                atom.redo(project, ui, ctx, server_ctx);
+                                UNDOMANAGER.write().unwrap().add_undo(atom, ctx);
+                            }
+                        }
+                    }
                 } else if id.name == "Add Font Old" {
                     for p in paths {
                         if let Ok(bytes) = std::fs::read(p) {
@@ -1626,6 +1680,18 @@ impl Sidebar {
                         atom.redo(project, ui, ctx, server_ctx);
                         UNDOMANAGER.write().unwrap().add_undo(atom, ctx);
                     }
+                } else if id.name == "Audio Asset Import" {
+                    for p in paths {
+                        let contents = std::fs::read_to_string(p).unwrap_or("".to_string());
+                        let mut asset: Asset =
+                            serde_json::from_str(&contents).unwrap_or(Asset::default());
+
+                        asset.id = Uuid::new_v4();
+
+                        let atom = ProjectUndoAtom::AddAsset(asset);
+                        atom.redo(project, ui, ctx, server_ctx);
+                        UNDOMANAGER.write().unwrap().add_undo(atom, ctx);
+                    }
                 } else if id.name == "Font Asset Export" {
                     if let Some(asset) = project.assets.get(&id.uuid) {
                         let mut asset = asset.clone();
@@ -1641,6 +1707,26 @@ impl Sidebar {
                                     ctx.ui.send(TheEvent::SetStatusText(
                                         TheId::empty(),
                                         "Unable to save Font Asset!".to_string(),
+                                    ))
+                                }
+                            }
+                        }
+                    }
+                } else if id.name == "Audio Asset Export" {
+                    if let Some(asset) = project.assets.get(&id.uuid) {
+                        let mut asset = asset.clone();
+                        for p in paths {
+                            asset.id = Uuid::new_v4();
+                            if let Ok(json) = serde_json::to_string(&asset) {
+                                if std::fs::write(p, json).is_ok() {
+                                    ctx.ui.send(TheEvent::SetStatusText(
+                                        TheId::empty(),
+                                        "Audio Asset saved successfully.".to_string(),
+                                    ))
+                                } else {
+                                    ctx.ui.send(TheEvent::SetStatusText(
+                                        TheId::empty(),
+                                        "Unable to save Audio Asset!".to_string(),
                                     ))
                                 }
                             }
@@ -2000,6 +2086,19 @@ impl Sidebar {
                         .set_widget_state("Add Font Asset".to_string(), TheWidgetState::None);
                     ctx.ui.clear_hover();
                     redraw = true;
+                } else if id.name == "Add Audio Asset" {
+                    ctx.ui.open_file_requester(
+                        TheId::named_with_id("Add Audio Asset", Uuid::new_v4()),
+                        "Open Audio File".into(),
+                        TheFileExtension::new(
+                            "Audio File".into(),
+                            vec!["wav".to_string(), "ogg".to_string()],
+                        ),
+                    );
+                    ctx.ui
+                        .set_widget_state("Add Audio Asset".to_string(), TheWidgetState::None);
+                    ctx.ui.clear_hover();
+                    redraw = true;
                 } else if id.name == "Add Avatar" {
                     // Add Avatar
                     let atom = ProjectUndoAtom::AddAvatar(Avatar::default());
@@ -2041,6 +2140,15 @@ impl Sidebar {
                         TheFileExtension::new(
                             "Eldiron Font Asset".into(),
                             vec!["eldiron_font_asset".to_string()],
+                        ),
+                    );
+                } else if id.name == "Import Audio Asset" {
+                    ctx.ui.open_file_requester(
+                        TheId::named_with_id("Audio Asset Import", Uuid::new_v4()),
+                        "Import Audio Asset".into(),
+                        TheFileExtension::new(
+                            "Eldiron Audio Asset".into(),
+                            vec!["eldiron_audio_asset".to_string()],
                         ),
                     );
                 } else if id.name == "Project Remove" {
@@ -2432,14 +2540,27 @@ impl Sidebar {
                                 ),
                             );
                         } else if server_ctx.pc.is_asset() {
-                            ctx.ui.save_file_requester(
-                                TheId::named_with_id("Font Asset Export", id),
-                                "Export Font Asset".into(),
-                                TheFileExtension::new(
-                                    "Eldiron Font Asset".into(),
-                                    vec!["eldiron_font_asset".to_string()],
-                                ),
-                            );
+                            if let Some(asset) = project.assets.get(&id) {
+                                let (req_id, title, ext_label, ext) = match &asset.buffer {
+                                    AssetBuffer::Audio(_) => (
+                                        "Audio Asset Export",
+                                        "Export Audio Asset",
+                                        "Eldiron Audio Asset",
+                                        "eldiron_audio_asset",
+                                    ),
+                                    _ => (
+                                        "Font Asset Export",
+                                        "Export Font Asset",
+                                        "Eldiron Font Asset",
+                                        "eldiron_font_asset",
+                                    ),
+                                };
+                                ctx.ui.save_file_requester(
+                                    TheId::named_with_id(req_id, id),
+                                    title.into(),
+                                    TheFileExtension::new(ext_label.into(), vec![ext.to_string()]),
+                                );
+                            }
                         }
                     }
                 } else if id.name == "Region Item" {
@@ -2627,7 +2748,7 @@ impl Sidebar {
                         redraw = true;
                     }
                 } else if id.name == "Asset Item" {
-                    if let Some(_screen) = project.assets.get(&id.references) {
+                    if let Some(asset) = project.assets.get(&id.references) {
                         set_project_context(
                             ctx,
                             ui,
@@ -2635,6 +2756,7 @@ impl Sidebar {
                             server_ctx,
                             ProjectContext::Asset(id.references),
                         );
+                        Self::preview_audio_asset(asset);
                         redraw = true;
                     }
                 } else if id.name == "Asset Item Name Edit" {
@@ -3223,15 +3345,36 @@ impl Sidebar {
         project: &mut Project,
     ) {
         if let Some(tree_layout) = ui.get_tree_layout("Project Tree") {
-            if let Some(asset_node) =
+            if let Some(font_node) =
                 tree_layout.get_node_by_id_mut(&server_ctx.tree_assets_fonts_id)
             {
-                asset_node.widgets.clear();
-                asset_node.childs.clear();
+                font_node.widgets.clear();
+                font_node.childs.clear();
+            }
+            if let Some(audio_node) =
+                tree_layout.get_node_by_id_mut(&server_ctx.tree_assets_audio_id)
+            {
+                audio_node.widgets.clear();
+                audio_node.childs.clear();
+            }
 
-                for (_, assets) in project.assets.iter() {
-                    let node = gen_asset_tree_node(assets);
-                    asset_node.add_child(node);
+            for (_, asset) in project.assets.iter() {
+                match &asset.buffer {
+                    AssetBuffer::Font(_) => {
+                        if let Some(font_node) =
+                            tree_layout.get_node_by_id_mut(&server_ctx.tree_assets_fonts_id)
+                        {
+                            font_node.add_child(gen_asset_tree_node(asset));
+                        }
+                    }
+                    AssetBuffer::Audio(_) => {
+                        if let Some(audio_node) =
+                            tree_layout.get_node_by_id_mut(&server_ctx.tree_assets_audio_id)
+                        {
+                            audio_node.add_child(gen_asset_tree_node(asset));
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

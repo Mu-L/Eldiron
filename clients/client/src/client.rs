@@ -1,5 +1,6 @@
 use crate::Embedded;
 use crate::prelude::*;
+use rusterix::server::message::AudioCommand;
 use rusterix::{EntityAction, Rusterix, Value};
 use shared::{project::Project, rusterix_utils::*};
 use std::path::PathBuf;
@@ -170,6 +171,27 @@ impl TheTrait for Client {
                     rusterix::tile_builder(&mut r.map, &mut self.rusterix.assets);
                     let messages = self.rusterix.server.get_messages(&r.map.id);
                     let choices = self.rusterix.server.get_choices(&r.map.id);
+                    for cmd in self.rusterix.server.get_audio_commands(&r.map.id) {
+                        match cmd {
+                            AudioCommand::Play {
+                                name,
+                                bus,
+                                gain,
+                                looping,
+                            } => {
+                                self.rusterix.play_audio_on_bus(&name, &bus, gain, looping);
+                            }
+                            AudioCommand::ClearBus { bus } => {
+                                self.rusterix.clear_audio_bus(&bus);
+                            }
+                            AudioCommand::ClearAll => {
+                                self.rusterix.clear_all_audio();
+                            }
+                            AudioCommand::SetBusVolume { bus, volume } => {
+                                self.rusterix.set_audio_bus_volume(&bus, volume);
+                            }
+                        }
+                    }
                     self.rusterix.draw_game(&r.map, messages, choices);
                     self.rusterix
                         .client

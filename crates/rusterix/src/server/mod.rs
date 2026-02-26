@@ -15,6 +15,7 @@ use rayon::prelude::*;
 use crate::Command;
 use crate::EntityAction;
 use crate::prelude::*;
+use crate::server::message::AudioCommand;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use theframework::prelude::*;
 
@@ -56,6 +57,7 @@ pub struct Server {
     pub items: FxHashMap<u32, Vec<Item>>,
     pub messages: FxHashMap<u32, Vec<Message>>,
     pub multiple_choice: FxHashMap<u32, Vec<MultipleChoice>>,
+    pub audio_commands: FxHashMap<u32, Vec<AudioCommand>>,
     pub times: FxHashMap<u32, TheTime>,
 
     pub state: ServerState,
@@ -88,6 +90,7 @@ impl Server {
             items: FxHashMap::default(),
             messages: FxHashMap::default(),
             multiple_choice: FxHashMap::default(),
+            audio_commands: FxHashMap::default(),
             times: FxHashMap::default(),
 
             state: ServerState::Off,
@@ -233,6 +236,17 @@ impl Server {
         }
     }
 
+    /// Get queued audio commands for a given region and clear them.
+    pub fn get_audio_commands(&mut self, region_id: &Uuid) -> Vec<AudioCommand> {
+        if let Some(region_id) = self.region_id_map.get(region_id) {
+            let commands = self.audio_commands.get(region_id).cloned();
+            self.audio_commands.remove(region_id);
+            commands.unwrap_or(vec![])
+        } else {
+            vec![]
+        }
+    }
+
     /// Get the current time for the given region.
     pub fn get_time(&self, region_id: &Uuid) -> Option<TheTime> {
         if let Some(region_id) = self.region_id_map.get(region_id) {
@@ -351,6 +365,13 @@ impl Server {
                         } else {
                             let multi_choice = vec![choices.clone()];
                             self.multiple_choice.insert(choices.region, multi_choice);
+                        }
+                    }
+                    RegionMessage::AudioCmd(region_id, cmd) => {
+                        if let Some(commands) = self.audio_commands.get_mut(&region_id) {
+                            commands.push(cmd);
+                        } else {
+                            self.audio_commands.insert(region_id, vec![cmd]);
                         }
                     }
                     RegionMessage::Time(id, time) => {
@@ -571,6 +592,7 @@ impl Server {
         self.entities.clear();
         self.items.clear();
         self.messages.clear();
+        self.audio_commands.clear();
         self.id_gen = 0;
         self.region_id_map.clear();
         self.region_name_id_map.clear();

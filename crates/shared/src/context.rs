@@ -305,6 +305,7 @@ pub struct ServerContext {
     pub tree_avatars_id: Uuid,
     pub tree_assets_id: Uuid,
     pub tree_assets_fonts_id: Uuid,
+    pub tree_assets_audio_id: Uuid,
     pub tree_palette_id: Uuid,
     pub tree_settings_id: Uuid,
 
@@ -495,6 +496,7 @@ impl ServerContext {
             tree_avatars_id: Uuid::new_v4(),
             tree_assets_id: Uuid::new_v4(),
             tree_assets_fonts_id: Uuid::new_v4(),
+            tree_assets_audio_id: Uuid::new_v4(),
             tree_palette_id: Uuid::new_v4(),
             tree_settings_id: Uuid::new_v4(),
 

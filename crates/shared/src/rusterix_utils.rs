@@ -107,6 +107,7 @@ pub fn setup_client(rusterix: &mut Rusterix, project: &mut Project) -> Vec<Comma
         rusterix.assets.screens.insert(screen.map.name.clone(), scr);
     }
     rusterix.assets.fonts.clear();
+    rusterix.assets.audio.clear();
     for (_, asset) in project.assets.iter() {
         if let AssetBuffer::Font(bytes) = &asset.buffer {
             if let Ok(font) =
@@ -114,6 +115,11 @@ pub fn setup_client(rusterix: &mut Rusterix, project: &mut Project) -> Vec<Comma
             {
                 rusterix.assets.fonts.insert(asset.name.clone(), font);
             }
+        } else if let AssetBuffer::Audio(bytes) = &asset.buffer {
+            rusterix
+                .assets
+                .audio
+                .insert(asset.name.clone(), bytes.clone());
         }
     }
     // Client setup can swap maps/widgets while keeping SceneVM alive.

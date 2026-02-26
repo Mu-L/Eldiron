@@ -35,6 +35,7 @@ pub enum AssetBuffer {
     Empty,
     Image(TheRGBABuffer),
     Font(Vec<u8>),
+    Audio(Vec<u8>),
 }
 
 impl AssetBuffer {
@@ -43,6 +44,7 @@ impl AssetBuffer {
             AssetBuffer::Empty => "Empty",
             AssetBuffer::Image(_) => "Image",
             AssetBuffer::Font(_) => "Font",
+            AssetBuffer::Audio(_) => "Audio",
         }
     }
 }

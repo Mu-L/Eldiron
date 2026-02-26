@@ -2,6 +2,23 @@ use crate::{Entity, Value};
 use codegridfx::DebugModule;
 use theframework::prelude::*;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum AudioCommand {
+    /// Play an audio asset on a bus/layer.
+    Play {
+        name: String,
+        bus: String,
+        gain: f32,
+        looping: bool,
+    },
+    /// Clear one bus/layer.
+    ClearBus { bus: String },
+    /// Clear all currently playing audio voices on all buses.
+    ClearAll,
+    /// Set volume for one bus/layer.
+    SetBusVolume { bus: String, volume: f32 },
+}
+
 /// Messages to / from the Region to the server or client
 #[derive(Debug)]
 // #[allow(clippy::large_enum_variant)]
@@ -33,6 +50,8 @@ pub enum RegionMessage {
     TransferEntity(u32, Entity, String, String),
     /// Send a multiple choice
     MultipleChoice(MultipleChoice),
+    /// Send an audio command to the client
+    AudioCmd(u32, AudioCommand),
     /// Send the debug id of a character or item
     DebugData(DebugModule),
     /// Pause the server.

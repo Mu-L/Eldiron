@@ -62,6 +62,14 @@ See the **Working with Screens** chapter (coming soon).
 Assets you added for your game will be listed here. Currently supported assets:
 
 - **TTF** fonts for in-game text drawing.
+- **WAV** and **OGG** audio files for music, ambience, UI sounds and effects.
+
+Use the **+** button in the project tree to add assets:
+
+- **Add Font Asset** to import a font.
+- **Add Audio Asset** to import WAV/OGG audio.
+
+For the complete audio workflow (assets, buses, and scripting), see [Audio](../audio).
 
 ## Palette
 

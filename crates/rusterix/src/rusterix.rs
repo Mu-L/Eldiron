@@ -17,6 +17,7 @@ pub struct Rusterix {
     pub assets: Assets,
     pub server: Server,
     pub client: Client,
+    pub audio: Option<AudioEngine>,
 
     pub is_dirty_d2: bool,
     pub is_dirty_d3: bool,
@@ -53,6 +54,7 @@ impl Rusterix {
             assets: Assets::default(),
             server: Server::default(),
             client: Client::default(),
+            audio: AudioEngine::new().ok(),
 
             is_dirty_d2: true,
             is_dirty_d3: true,
@@ -88,7 +90,76 @@ impl Rusterix {
 
     /// Set the assets
     pub fn set_assets(&mut self, assets: Assets) {
-        self.assets = assets
+        self.assets = assets;
+        self.load_audio_assets();
+    }
+
+    fn ensure_audio_engine(&mut self) {
+        if self.audio.is_none() {
+            self.audio = AudioEngine::new().ok();
+        }
+    }
+
+    /// Load all audio assets into the runtime audio engine cache.
+    pub fn load_audio_assets(&mut self) {
+        self.ensure_audio_engine();
+        let Some(engine) = self.audio.as_ref() else {
+            return;
+        };
+        engine.clear_clips();
+        for (name, bytes) in &self.assets.audio {
+            let _ = engine.load_clip_from_bytes(name, bytes);
+        }
+    }
+
+    /// Play one-shot audio by asset name.
+    pub fn play_audio(&mut self, name: &str) -> bool {
+        self.ensure_audio_engine();
+        let Some(engine) = self.audio.as_ref() else {
+            return false;
+        };
+        engine.play_one_shot(name, 1.0)
+    }
+
+    /// Play audio on a given bus/layer (e.g. "music", "sfx"), optionally looping.
+    pub fn play_audio_on_bus(&mut self, name: &str, bus: &str, gain: f32, looping: bool) -> bool {
+        self.ensure_audio_engine();
+        let Some(engine) = self.audio.as_ref() else {
+            return false;
+        };
+        engine.play_on_bus(name, bus, gain, looping)
+    }
+
+    /// Set per-bus volume.
+    pub fn set_audio_bus_volume(&mut self, bus: &str, volume: f32) {
+        self.ensure_audio_engine();
+        if let Some(engine) = self.audio.as_ref() {
+            engine.set_bus_volume(bus, volume);
+        }
+    }
+
+    /// Get per-bus volume.
+    pub fn audio_bus_volume(&self, bus: &str) -> f32 {
+        if let Some(engine) = self.audio.as_ref() {
+            return engine.bus_volume(bus);
+        }
+        1.0
+    }
+
+    /// Stop all currently playing voices on a bus/layer.
+    pub fn clear_audio_bus(&mut self, bus: &str) {
+        self.ensure_audio_engine();
+        if let Some(engine) = self.audio.as_ref() {
+            engine.clear_bus(bus);
+        }
+    }
+
+    /// Stop all currently playing clip voices across all buses/layers.
+    pub fn clear_all_audio(&mut self) {
+        self.ensure_audio_engine();
+        if let Some(engine) = self.audio.as_ref() {
+            engine.clear_all_buses();
+        }
     }
 
     /// Create the server regions.
@@ -303,7 +374,9 @@ impl Rusterix {
 
     /// Set up the client for processing the game.
     pub fn setup_client(&mut self) -> Vec<Command> {
-        self.client.setup(&mut self.assets, &mut self.scene_handler)
+        let cmds = self.client.setup(&mut self.assets, &mut self.scene_handler);
+        self.load_audio_assets();
+        cmds
     }
 
     /// Draw the game as the client sees it.

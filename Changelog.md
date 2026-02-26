@@ -13,6 +13,7 @@
 - Procedural geometry actions: *Create Fence*, *Create Palisade*.
 - First procedural geometry props using the *Create Props* action.
 - Terrain and avatars are now drawn in 2D.
+- Added audio support to Eldion (WAV + OGG) and added the corresponding host scripting commands ("play_audio", "clear_audio", set_audio_bus_volume").
 
 ---
 

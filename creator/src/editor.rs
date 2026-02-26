@@ -4,6 +4,7 @@ use crate::prelude::*;
 use crate::self_update::{SelfUpdateEvent, SelfUpdater};
 use codegridfx::Module;
 use rusterix::render_settings::RendererBackend;
+use rusterix::server::message::AudioCommand;
 use rusterix::{
     PlayerCamera, Rusterix, SceneManager, SceneManagerResult, Texture, Value, ValueContainer,
 };
@@ -839,6 +840,27 @@ impl TheTrait for Editor {
                             rusterix::tile_builder(&mut r.map, &mut rusterix.assets);
                             messages = rusterix.server.get_messages(&r.map.id);
                             choices = rusterix.server.get_choices(&r.map.id);
+                            for cmd in rusterix.server.get_audio_commands(&r.map.id) {
+                                match cmd {
+                                    AudioCommand::Play {
+                                        name,
+                                        bus,
+                                        gain,
+                                        looping,
+                                    } => {
+                                        rusterix.play_audio_on_bus(&name, &bus, gain, looping);
+                                    }
+                                    AudioCommand::ClearBus { bus } => {
+                                        rusterix.clear_audio_bus(&bus);
+                                    }
+                                    AudioCommand::ClearAll => {
+                                        rusterix.clear_all_audio();
+                                    }
+                                    AudioCommand::SetBusVolume { bus, volume } => {
+                                        rusterix.set_audio_bus_volume(&bus, volume);
+                                    }
+                                }
+                            }
 
                             // Redraw the nodes
                             match &self.server_ctx.cc {
