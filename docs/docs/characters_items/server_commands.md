@@ -74,6 +74,22 @@ clear_audio() // Stop all currently playing audio.
 
 ---
 
+## `clear_target`
+
+*This command can be used with both characters and items.*
+
+Clears the current target.
+
+```eldrin
+clear_target()
+```
+
+Returns `true`.
+
+See also: [set_target](#set_target), [target](#target), [has_target](#has_target), [deal_damage](#deal_damage).
+
+---
+
 ## `deal_damage`
 
 *This command can be used with both characters and items.*
@@ -82,7 +98,12 @@ Deals damage to an entity or item. Sends a [take_damage](events#take_damage) eve
 
 ```eldrin
 deal_damage(id, random(2, 5))
+deal_damage(random(2, 5)) // Uses current target.
 ```
+
+If called with one argument, `deal_damage(amount)` uses the current target (see [set_target](#set_target)).
+
+See also: [set_target](#set_target), [target](#target), [has_target](#has_target), [clear_target](#clear_target).
 
 :::note
 Characters and items can deal damage. But only characters can receive damage and actually die.
@@ -199,11 +220,30 @@ goto("Garden", 1.0)
 
 ---
 
+## `has_target`
+
+*This command can be used with both characters and items.*
+
+Checks whether a valid current target is set.
+
+```eldrin
+if has_target() {
+    deal_damage(3)
+}
+```
+
+See also: [set_target](#set_target), [target](#target), [clear_target](#clear_target), [deal_damage](#deal_damage).
+
+---
+
 ## `id`
 
 *This command can only be used with characters.*
 
 Returns the **id** of the current entity.
+
+Valid entity IDs are always `> 0`.  
+`0` is reserved as a sentinel value meaning "no entity / no target".
 
 ```eldrin
 id()
@@ -401,6 +441,22 @@ set_proximity_tracking(true, 4.0)
 
 ---
 
+## `set_target`
+
+*This command can be used with both characters and items.*
+
+Sets the current target for the current character or item.
+
+```eldrin
+set_target(entity_id)
+```
+
+Returns `true` if the target exists and was set, otherwise `false`.
+
+See also: [target](#target), [has_target](#has_target), [clear_target](#clear_target), [deal_damage](#deal_damage).
+
+---
+
 ## `take`
 
 *This command can only be used with characters.*
@@ -411,6 +467,22 @@ Returns `True` on success or `False` if the inventory is full.
 ```eldrin
 take(item_id)
 ```
+
+---
+
+## `target`
+
+*This command can be used with both characters and items.*
+
+Returns the current target entity id.
+
+```eldrin
+let id = target()
+```
+
+Returns `0` when no target is set.
+
+See also: [set_target](#set_target), [has_target](#has_target), [clear_target](#clear_target), [deal_damage](#deal_damage).
 
 ---
 

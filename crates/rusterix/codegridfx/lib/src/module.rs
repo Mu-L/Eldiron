@@ -3,13 +3,15 @@ use indexmap::*;
 use theframework::prelude::*;
 
 const BLOCKS: [&str; 3] = ["Event", "Var = ..", "If .. == .."];
-const VALUES: [&str; 5] = ["Boolean", "Float", "Integer", "String", "Variable"];
+const VALUES: [&str; 1] = ["Value"];
 const OPERATORS: [&str; 4] = ["Arithmetic", "Assignment", "Comparison", "Else"];
 const USER_EVENTS: [&str; 2] = ["key_down", "key_up"];
-const FUNCTIONS: [&str; 31] = [
+const FUNCTIONS: [&str; 38] = [
     "action",
     "add_item",
     "block_events",
+    "clear_audio",
+    "clear_target",
     "close_in",
     "deal_damage",
     "drop",
@@ -26,15 +28,20 @@ const FUNCTIONS: [&str; 31] = [
     "message",
     "notify_in",
     "offer_inventory",
+    "play_audio",
     "random",
     "random_walk",
     "random_walk_in_sector",
     "set_attr",
+    "set_audio_bus_volume",
     "set_emit_light",
     "set_player_camera",
     "set_proximity_tracking",
+    "set_target",
     "set_tile",
     "take",
+    "target",
+    "has_target",
     "teleport",
     "toggle_attr",
     "took_damage",
@@ -560,9 +567,14 @@ impl Module {
                 renderview.dim().width,
                 renderview.dim().height,
             ));
+            let mut global_width = 0u32;
             for r in self.routines.values_mut() {
                 r.set_screen_width(renderview.dim().width as u32, ctx, &self.grid_ctx);
-                r.draw(ctx, &self.grid_ctx, 0, None);
+                r.draw(ctx, &self.grid_ctx, 0, None, None);
+                global_width = global_width.max(r.buffer.dim().width as u32);
+            }
+            for r in self.routines.values_mut() {
+                r.draw(ctx, &self.grid_ctx, 0, None, Some(global_width));
             }
             self.draw(renderview.render_buffer_mut());
         }
@@ -576,9 +588,14 @@ impl Module {
                 renderview.dim().width,
                 renderview.dim().height,
             ));
+            let mut global_width = 0u32;
             for r in self.routines.values_mut() {
                 r.set_screen_width(renderview.dim().width as u32, ctx, &self.grid_ctx);
-                r.draw(ctx, &self.grid_ctx, id, Some(debug));
+                r.draw(ctx, &self.grid_ctx, id, Some(debug), None);
+                global_width = global_width.max(r.buffer.dim().width as u32);
+            }
+            for r in self.routines.values_mut() {
+                r.draw(ctx, &self.grid_ctx, id, Some(debug), Some(global_width));
             }
             self.draw(renderview.render_buffer_mut());
         }
@@ -635,18 +652,9 @@ impl Module {
         let mut redraw: bool = false;
 
         match event {
-            TheEvent::WidgetResized(id, dim) => {
+            TheEvent::WidgetResized(id, _dim) => {
                 if id.name == self.get_view_name() {
-                    // Set the screen widths in case something changed and the routines need a redraw.
-                    for r in self.routines.values_mut() {
-                        r.set_screen_width(dim.width as u32, ctx, &self.grid_ctx);
-                    }
-
-                    if let Some(renderview) = ui.get_render_view(&self.get_view_name()) {
-                        *renderview.render_buffer_mut() =
-                            TheRGBABuffer::new(TheDim::new(0, 0, dim.width, dim.height));
-                        self.draw(renderview.render_buffer_mut());
-                    }
+                    self.redraw(ui, ctx);
 
                     redraw = true;
                 }
@@ -917,7 +925,7 @@ impl Module {
                                 if let Some(item) = r.grid.grid.get_mut(&coord) {
                                     needs_update =
                                         item.apply_value(&id.name, value, self.module_type);
-                                    r.draw(ctx, &self.grid_ctx, 0, None);
+                                    r.draw(ctx, &self.grid_ctx, 0, None, None);
                                 }
                             }
                         }
@@ -1058,7 +1066,7 @@ impl Module {
                             }
                             let loc = Vec2::new(content_x.max(0) as u32, local_y as u32);
                             if let Some(menu) = r.context_at(loc, ctx, &mut self.grid_ctx) {
-                                r.draw(ctx, &mut self.grid_ctx, 0, None);
+                                r.draw(ctx, &mut self.grid_ctx, 0, None, None);
                                 if let Some(renderview) = ui.get_render_view(&self.get_view_name())
                                 {
                                     self.draw(renderview.render_buffer_mut());
@@ -1104,6 +1112,7 @@ impl Module {
                     }
                     if handled {
                         self.redraw(ui, ctx);
+                        redraw = true;
                         // if let Some(renderview) = ui.get_render_view("ModuleView") {
                         //     self.draw(renderview.render_buffer_mut());
                         //     redraw = true;

@@ -739,7 +739,7 @@ impl CellItem {
                 if pos.0 == 0 {
                     grid.insert((pos.0, pos.1), CellItem::new(Cell::Variable("var".into())));
                     grid.insert((pos.0 + 1, pos.1), CellItem::new(Cell::Assignment));
-                    grid.insert((pos.0 + 2, pos.1), CellItem::new(Cell::Integer("0".into())));
+                    grid.insert((pos.0 + 2, pos.1), CellItem::new(Cell::Value("0".into())));
                 }
             }
             Cell::ConstructColorAssignBlock => {
@@ -763,7 +763,7 @@ impl CellItem {
                         (pos.0 + 2, pos.1),
                         CellItem::new(Cell::Comparison(ComparisonOp::Equal)),
                     );
-                    grid.insert((pos.0 + 3, pos.1), CellItem::new(Cell::Integer("0".into())));
+                    grid.insert((pos.0 + 3, pos.1), CellItem::new(Cell::Value("0".into())));
 
                     grid.move_down_from(pos.1 + 1);
 
@@ -799,7 +799,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("".into()),
+                        Cell::Value("\"\"".into()),
                         self.id,
                         true,
                         "Action Cmd",
@@ -814,7 +814,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("".into()),
+                        Cell::Value("\"\"".into()),
                         self.id,
                         true,
                         "Intent Cmd",
@@ -829,7 +829,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("".into()),
+                        Cell::Value("\"\"".into()),
                         self.id,
                         false,
                         "Item Name",
@@ -843,7 +843,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Integer("1".into()),
+                        Cell::Value("1".into()),
                         self.id,
                         true,
                         "Minutes",
@@ -853,7 +853,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 2, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("".into()),
+                        Cell::Value("\"\"".into()),
                         self.id,
                         true,
                         "Event",
@@ -863,11 +863,29 @@ impl CellItem {
                 self.form = CellItemForm::LeftRounded;
                 grid.insert(pos, self)
             }
+            Cell::ClearAudio => {
+                grid.insert(
+                    (pos.0 + 1, pos.1),
+                    CellItem::new_dependency(
+                        Cell::Value("\"\"".into()),
+                        self.id,
+                        false,
+                        "Bus (optional)",
+                        CellItemForm::RightRounded,
+                    ),
+                );
+                self.form = CellItemForm::LeftRounded;
+                grid.insert(pos, self)
+            }
+            Cell::ClearTarget => {
+                self.form = CellItemForm::Rounded;
+                grid.insert(pos, self)
+            }
             Cell::CloseIn => {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Variable("".into()),
+                        Cell::Value("0".into()),
                         self.id,
                         true,
                         "Target ID",
@@ -877,7 +895,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 2, pos.1),
                     CellItem::new_dependency(
-                        Cell::Float("1.5".into()),
+                        Cell::Value("1.5".into()),
                         self.id,
                         true,
                         "Radius",
@@ -887,7 +905,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 3, pos.1),
                     CellItem::new_dependency(
-                        Cell::Float("1.0".into()),
+                        Cell::Value("1.0".into()),
                         self.id,
                         true,
                         "Speed",
@@ -901,7 +919,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Variable("".into()),
+                        Cell::Value("0".into()),
                         self.id,
                         true,
                         "Entity ID",
@@ -909,7 +927,7 @@ impl CellItem {
                     ),
                 );
                 let mut item = CellItem::new_dependency(
-                    Cell::Integer("0".into()),
+                    Cell::Value("0".into()),
                     self.id,
                     true,
                     "Damage",
@@ -924,7 +942,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Integer("0".into()),
+                        Cell::Value("0".into()),
                         self.id,
                         true,
                         "Item ID",
@@ -938,7 +956,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("".into()),
+                        Cell::Value("\"\"".into()),
                         self.id,
                         false,
                         "Filter",
@@ -956,7 +974,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Integer("0".into()),
+                        Cell::Value("0".into()),
                         self.id,
                         true,
                         "Item ID",
@@ -971,7 +989,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("attr".into()),
+                        Cell::Value("\"attr\"".into()),
                         self.id,
                         false,
                         "Attribute Name",
@@ -985,7 +1003,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Variable("".into()),
+                        Cell::Value("0".into()),
                         self.id,
                         true,
                         "Entity/Item ID",
@@ -995,7 +1013,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 2, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("attr".into()),
+                        Cell::Value("\"attr\"".into()),
                         self.id,
                         false,
                         "Attribute Name",
@@ -1009,7 +1027,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("".into()),
+                        Cell::Value("\"\"".into()),
                         self.id,
                         true,
                         "Sector Name",
@@ -1019,7 +1037,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 2, pos.1),
                     CellItem::new_dependency(
-                        Cell::Float("1.0".into()),
+                        Cell::Value("1.0".into()),
                         self.id,
                         true,
                         "Speed",
@@ -1038,7 +1056,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("".into()),
+                        Cell::Value("\"\"".into()),
                         self.id,
                         true,
                         "Filter",
@@ -1053,7 +1071,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Variable("".into()),
+                        Cell::Value("0".into()),
                         self.id,
                         true,
                         "Entity ID",
@@ -1063,7 +1081,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 2, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("".into()),
+                        Cell::Value("\"\"".into()),
                         self.id,
                         true,
                         "Filter",
@@ -1078,7 +1096,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Variable("".into()),
+                        Cell::Value("0".into()),
                         self.id,
                         true,
                         "Receiver ID",
@@ -1088,7 +1106,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 2, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("".into()),
+                        Cell::Value("\"\"".into()),
                         self.id,
                         true,
                         "Message",
@@ -1098,7 +1116,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 3, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("".into()),
+                        Cell::Value("\"\"".into()),
                         self.id,
                         true,
                         "Category",
@@ -1113,7 +1131,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Integer("1".into()),
+                        Cell::Value("1".into()),
                         self.id,
                         true,
                         "In-Game Minutes",
@@ -1123,7 +1141,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 2, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("event".into()),
+                        Cell::Value("\"event\"".into()),
                         self.id,
                         true,
                         "Event Name",
@@ -1138,7 +1156,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Variable("".into()),
+                        Cell::Value("0".into()),
                         self.id,
                         true,
                         "Entity ID",
@@ -1148,7 +1166,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 2, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("".into()),
+                        Cell::Value("\"\"".into()),
                         self.id,
                         true,
                         "Filter",
@@ -1159,11 +1177,55 @@ impl CellItem {
                 self.form = CellItemForm::LeftRounded;
                 grid.insert(pos, self)
             }
+            Cell::PlayAudio => {
+                grid.insert(
+                    (pos.0 + 1, pos.1),
+                    CellItem::new_dependency(
+                        Cell::Value("\"\"".into()),
+                        self.id,
+                        true,
+                        "Asset Name",
+                        CellItemForm::Box,
+                    ),
+                );
+                grid.insert(
+                    (pos.0 + 2, pos.1),
+                    CellItem::new_dependency(
+                        Cell::Value("\"sfx\"".into()),
+                        self.id,
+                        false,
+                        "Bus (optional)",
+                        CellItemForm::Box,
+                    ),
+                );
+                grid.insert(
+                    (pos.0 + 3, pos.1),
+                    CellItem::new_dependency(
+                        Cell::Value("1.0".into()),
+                        self.id,
+                        false,
+                        "Gain (optional)",
+                        CellItemForm::Box,
+                    ),
+                );
+                grid.insert(
+                    (pos.0 + 4, pos.1),
+                    CellItem::new_dependency(
+                        Cell::Value("false".into()),
+                        self.id,
+                        false,
+                        "Loop (optional)",
+                        CellItemForm::RightRounded,
+                    ),
+                );
+                self.form = CellItemForm::LeftRounded;
+                grid.insert(pos, self)
+            }
             Cell::Random => {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Integer("1".into()),
+                        Cell::Value("1".into()),
                         self.id,
                         true,
                         "From",
@@ -1173,7 +1235,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 2, pos.1),
                     CellItem::new_dependency(
-                        Cell::Integer("5".into()),
+                        Cell::Value("5".into()),
                         self.id,
                         true,
                         "To",
@@ -1188,7 +1250,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Float("1.0".into()),
+                        Cell::Value("1.0".into()),
                         self.id,
                         true,
                         "Distance",
@@ -1198,7 +1260,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 2, pos.1),
                     CellItem::new_dependency(
-                        Cell::Float("1.0".into()),
+                        Cell::Value("1.0".into()),
                         self.id,
                         true,
                         "Speed",
@@ -1208,7 +1270,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 3, pos.1),
                     CellItem::new_dependency(
-                        Cell::Integer("1".into()),
+                        Cell::Value("1".into()),
                         self.id,
                         true,
                         "Max Sleep",
@@ -1223,7 +1285,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("attr".into()),
+                        Cell::Value("\"attr\"".into()),
                         self.id,
                         false,
                         "Attribute Name",
@@ -1233,7 +1295,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 2, pos.1),
                     CellItem::new_dependency(
-                        Cell::Integer("0".into()),
+                        Cell::Value("0".into()),
                         self.id,
                         true,
                         "Value",
@@ -1244,11 +1306,35 @@ impl CellItem {
                 self.form = CellItemForm::LeftRounded;
                 grid.insert(pos, self)
             }
+            Cell::SetAudioBusVolume => {
+                grid.insert(
+                    (pos.0 + 1, pos.1),
+                    CellItem::new_dependency(
+                        Cell::Value("\"music\"".into()),
+                        self.id,
+                        true,
+                        "Bus",
+                        CellItemForm::Box,
+                    ),
+                );
+                grid.insert(
+                    (pos.0 + 2, pos.1),
+                    CellItem::new_dependency(
+                        Cell::Value("1.0".into()),
+                        self.id,
+                        true,
+                        "Volume",
+                        CellItemForm::RightRounded,
+                    ),
+                );
+                self.form = CellItemForm::LeftRounded;
+                grid.insert(pos, self)
+            }
             Cell::SetEmitLight => {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Boolean(false),
+                        Cell::Value("false".into()),
                         self.id,
                         true,
                         "Emission State",
@@ -1263,7 +1349,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("firstp".into()),
+                        Cell::Value("\"firstp\"".into()),
                         self.id,
                         true,
                         "Camera",
@@ -1278,7 +1364,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Boolean(true),
+                        Cell::Value("true".into()),
                         self.id,
                         true,
                         "On / Off",
@@ -1288,7 +1374,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 2, pos.1),
                     CellItem::new_dependency(
-                        Cell::Float("5.0".into()),
+                        Cell::Value("5.0".into()),
                         self.id,
                         true,
                         "Distance",
@@ -1299,11 +1385,25 @@ impl CellItem {
                 self.form = CellItemForm::LeftRounded;
                 grid.insert(pos, self)
             }
+            Cell::SetTarget => {
+                grid.insert(
+                    (pos.0 + 1, pos.1),
+                    CellItem::new_dependency(
+                        Cell::Value("0".into()),
+                        self.id,
+                        true,
+                        "Target ID",
+                        CellItemForm::RightRounded,
+                    ),
+                );
+                self.form = CellItemForm::LeftRounded;
+                grid.insert(pos, self)
+            }
             Cell::SetTile => {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("".into()),
+                        Cell::Value("\"\"".into()),
                         self.id,
                         true,
                         "Tile ID",
@@ -1318,7 +1418,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Variable("".into()),
+                        Cell::Value("0".into()),
                         self.id,
                         true,
                         "Item ID",
@@ -1329,11 +1429,15 @@ impl CellItem {
                 self.form = CellItemForm::LeftRounded;
                 grid.insert(pos, self)
             }
+            Cell::Target | Cell::HasTarget => {
+                self.form = CellItemForm::Rounded;
+                grid.insert(pos, self)
+            }
             Cell::Teleport => {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("".into()),
+                        Cell::Value("\"\"".into()),
                         self.id,
                         true,
                         "Sector Name",
@@ -1343,7 +1447,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 2, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("".into()),
+                        Cell::Value("\"\"".into()),
                         self.id,
                         true,
                         "Region Name",
@@ -1358,7 +1462,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Str("attr".into()),
+                        Cell::Value("\"attr\"".into()),
                         self.id,
                         false,
                         "Attribute Name",
@@ -1372,7 +1476,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 1, pos.1),
                     CellItem::new_dependency(
-                        Cell::Integer("0".into()),
+                        Cell::Value("0".into()),
                         self.id,
                         true,
                         "ID",
@@ -1382,7 +1486,7 @@ impl CellItem {
                 grid.insert(
                     (pos.0 + 2, pos.1),
                     CellItem::new_dependency(
-                        Cell::Integer("0".into()),
+                        Cell::Value("0".into()),
                         self.id,
                         true,
                         "Amount",

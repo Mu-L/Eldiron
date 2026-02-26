@@ -77,7 +77,8 @@ impl Default for Server {
 impl Server {
     pub fn new() -> Self {
         Self {
-            id_gen: 0,
+            // 0 is reserved as NO_ID / None sentinel.
+            id_gen: 1,
 
             debug_mode: false,
             debug: DebugModule::default(),
@@ -593,7 +594,7 @@ impl Server {
         self.items.clear();
         self.messages.clear();
         self.audio_commands.clear();
-        self.id_gen = 0;
+        self.id_gen = 1;
         self.region_id_map.clear();
         self.region_name_id_map.clear();
         self.state = ServerState::Off;
@@ -603,6 +604,7 @@ impl Server {
 
         // Clear the store
         crate::server::region::clear_regionctx_store();
+        crate::server::region::reset_global_id_gen();
 
         self.instances.clear();
     }

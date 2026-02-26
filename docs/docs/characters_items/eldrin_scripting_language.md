@@ -141,6 +141,9 @@ value.subject_id // an alias for value.x.
 
 As *subject_id* is an alias for the .x, you can also always just use *value* directly without the .x reference.
 
+Entity/item IDs are always `> 0`.  
+`0` is reserved and means "no id" (for example: no current target).
+
 ---
 
 **distance** and **amount** are aliases for **.y**.

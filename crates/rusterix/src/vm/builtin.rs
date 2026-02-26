@@ -285,10 +285,66 @@ impl Default for Builtins {
             },
         );
         b.insert(
+            "set_target",
+            1,
+            NodeOp::HostCall {
+                name: "set_target".into(),
+                argc: 1,
+            },
+        );
+        b.insert(
+            "clear_target",
+            0,
+            NodeOp::HostCall {
+                name: "clear_target".into(),
+                argc: 0,
+            },
+        );
+        b.insert(
+            "target",
+            0,
+            NodeOp::HostCall {
+                name: "target".into(),
+                argc: 0,
+            },
+        );
+        b.insert(
+            "has_target",
+            0,
+            NodeOp::HostCall {
+                name: "has_target".into(),
+                argc: 0,
+            },
+        );
+        b.insert(
             "deal_damage",
             2,
             NodeOp::HostCall {
                 name: "deal_damage".into(),
+                argc: 2,
+            },
+        );
+        b.insert(
+            "play_audio",
+            1,
+            NodeOp::HostCall {
+                name: "play_audio".into(),
+                argc: 1,
+            },
+        );
+        b.insert(
+            "clear_audio",
+            0,
+            NodeOp::HostCall {
+                name: "clear_audio".into(),
+                argc: 0,
+            },
+        );
+        b.insert(
+            "set_audio_bus_volume",
+            2,
+            NodeOp::HostCall {
+                name: "set_audio_bus_volume".into(),
                 argc: 2,
             },
         );

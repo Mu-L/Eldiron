@@ -75,6 +75,7 @@ impl Routine {
         grid_ctx: &GridCtx,
         id: u32,
         debug: Option<&DebugModule>,
+        global_header_width: Option<u32>,
     ) {
         // Size check
         let size = self.grid.size(
@@ -88,10 +89,13 @@ impl Routine {
         );
 
         let width = size.x.max(self.screen_width);
+        let header_width = global_header_width.unwrap_or(width).max(width);
         let height = size.y;
 
-        if self.buffer.dim().width != width as i32 || self.buffer.dim().height != height as i32 {
-            self.buffer = TheRGBABuffer::new(TheDim::sized(width as i32, height as i32));
+        if self.buffer.dim().width != header_width as i32
+            || self.buffer.dim().height != height as i32
+        {
+            self.buffer = TheRGBABuffer::new(TheDim::sized(header_width as i32, height as i32));
         }
 
         self.buffer.fill([116, 116, 116, 255]);
@@ -119,9 +123,11 @@ impl Routine {
         let is_selected = Some(self.id) == grid_ctx.selected_routine;
         let normal_color = CellRole::Event.to_color();
         let text_color = [85, 81, 85, 255];
+        let header_width_i32 = header_width as i32;
+        let header_width_usize = header_width as usize;
 
         self.buffer.draw_rounded_rect(
-            &TheDim::rect(0, 0, self.screen_width as i32, header_height as i32),
+            &TheDim::rect(0, 0, header_width_i32, header_height as i32),
             if is_selected {
                 &[187, 122, 208, 255]
             } else {
@@ -137,7 +143,7 @@ impl Routine {
 
         ctx.draw.text_rect_blend(
             self.buffer.pixels_mut(),
-            &(20, 0, self.screen_width as usize, header_height as usize),
+            &(20, 0, header_width_usize, header_height as usize),
             stride,
             &format!("{} ({})", self.name, self.grid.count()),
             TheFontSettings {
@@ -153,7 +159,7 @@ impl Routine {
             &(
                 200,
                 0,
-                self.screen_width as usize - 210,
+                header_width_usize.saturating_sub(210),
                 header_height as usize,
             ),
             stride,
@@ -191,7 +197,7 @@ impl Routine {
     /// Sets the screen width.
     pub fn set_screen_width(&mut self, width: u32, ctx: &TheContext, grid_ctx: &GridCtx) {
         self.screen_width = width;
-        self.draw(ctx, grid_ctx, 0, None);
+        self.draw(ctx, grid_ctx, 0, None, None);
     }
 
     /// Returns the number of lines in the grid.
@@ -290,13 +296,8 @@ impl Routine {
                         let right_pos = (pos.0 + 1, pos.1);
                         // For arithmetic make sure we insert a value to the right
                         if !self.grid.grid.contains_key(&(pos.0 + 1, pos.1)) {
-                            if module_type.is_shader() {
-                                let value = CellItem::new(Cell::Value("1".to_string()));
-                                value.insert_at(right_pos, &mut self.grid);
-                            } else {
-                                let value = CellItem::new(Cell::Integer("1".to_string()));
-                                value.insert_at(right_pos, &mut self.grid);
-                            }
+                            let value = CellItem::new(Cell::Value("1".to_string()));
+                            value.insert_at(right_pos, &mut self.grid);
                         }
                     }
 
@@ -321,7 +322,7 @@ impl Routine {
             }
 
             self.grid.insert_empty();
-            self.draw(ctx, grid_ctx, 0, None);
+            self.draw(ctx, grid_ctx, 0, None, None);
         }
 
         handled
@@ -344,7 +345,7 @@ impl Routine {
             self.folded = !self.folded;
             grid_ctx.selected_routine = Some(self.id);
             grid_ctx.current_cell = None;
-            self.draw(ctx, grid_ctx, 0, None);
+            self.draw(ctx, grid_ctx, 0, None, None);
             handled = true;
 
             ctx.ui.send(TheEvent::Custom(
@@ -362,7 +363,7 @@ impl Routine {
                             let nodeui: TheNodeUI = cell.create_settings(palette, module_type);
                             *settings = Some(nodeui);
 
-                            self.draw(ctx, grid_ctx, 0, None);
+                            self.draw(ctx, grid_ctx, 0, None, None);
                         }
                         handled = true;
                         break;

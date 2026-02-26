@@ -54,11 +54,16 @@ where
 //     obj.try_to_value::<u32>(vm).ok()
 // }
 
-// Global Id Generator over all threads and regions
-static GLOBAL_ID_GEN: AtomicU32 = AtomicU32::new(0);
+// Global ID generator over all threads and regions.
+// 0 is reserved as NO_ID / None sentinel.
+static GLOBAL_ID_GEN: AtomicU32 = AtomicU32::new(1);
 
 pub fn get_global_id() -> u32 {
     GLOBAL_ID_GEN.fetch_add(1, Ordering::Relaxed)
+}
+
+pub fn reset_global_id_gen() {
+    GLOBAL_ID_GEN.store(1, Ordering::Relaxed);
 }
 
 use EntityAction::*;

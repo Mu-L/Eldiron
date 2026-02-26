@@ -607,9 +607,30 @@ impl Visitor for CompileVisitor {
         loc: &Location,
         ctx: &mut Context,
     ) -> Result<ASTValue, RuntimeError> {
-        let callee = callee.accept(self, ctx)?;
+        // In call position, prefer function symbols for plain identifiers.
+        // This avoids accidental shadowing errors like `let target = target()`.
+        let name_from_callee = if let Expr::Variable(name, _swz, _field_path, _loc) = callee {
+            if self.functions.contains_key(name) || self.user_functions.contains_key(name) {
+                Some(name.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
-        if let ASTValue::Function(name, _func_args, _returns) = callee {
+        let name = if let Some(name) = name_from_callee {
+            name
+        } else {
+            let callee = callee.accept(self, ctx)?;
+            if let ASTValue::Function(name, _func_args, _returns) = callee {
+                name
+            } else {
+                return Err(RuntimeError::new(format!("Unknown function ''"), loc));
+            }
+        };
+
+        {
             if let Some(func) = &self.functions.get(&name).cloned() {
                 if name == "format" {
                     for arg in args {
@@ -624,6 +645,63 @@ impl Visitor for CompileVisitor {
                         _ = arg.accept(self, ctx)?;
                     }
                     ctx.emit(NodeOp::Print(args.len() as u8));
+                } else if name == "deal_damage" {
+                    if args.len() == 1 || args.len() == 2 {
+                        for arg in args {
+                            _ = arg.accept(self, ctx)?;
+                        }
+                        ctx.emit(NodeOp::HostCall {
+                            name: "deal_damage".into(),
+                            argc: args.len() as u8,
+                        });
+                    } else {
+                        return Err(RuntimeError::new(
+                            format!(
+                                "Wrong amount of arguments for '{}', expected '1 or 2' got '{}'",
+                                name,
+                                args.len(),
+                            ),
+                            loc,
+                        ));
+                    }
+                } else if name == "clear_audio" {
+                    if args.len() <= 1 {
+                        for arg in args {
+                            _ = arg.accept(self, ctx)?;
+                        }
+                        ctx.emit(NodeOp::HostCall {
+                            name: "clear_audio".into(),
+                            argc: args.len() as u8,
+                        });
+                    } else {
+                        return Err(RuntimeError::new(
+                            format!(
+                                "Wrong amount of arguments for '{}', expected '0 or 1' got '{}'",
+                                name,
+                                args.len(),
+                            ),
+                            loc,
+                        ));
+                    }
+                } else if name == "play_audio" {
+                    if (1..=4).contains(&args.len()) {
+                        for arg in args {
+                            _ = arg.accept(self, ctx)?;
+                        }
+                        ctx.emit(NodeOp::HostCall {
+                            name: "play_audio".into(),
+                            argc: args.len() as u8,
+                        });
+                    } else {
+                        return Err(RuntimeError::new(
+                            format!(
+                                "Wrong amount of arguments for '{}', expected '1..4' got '{}'",
+                                name,
+                                args.len(),
+                            ),
+                            loc,
+                        ));
+                    }
                 } else {
                     if func.arguments as usize == args.len() {
                         for arg in args {
@@ -678,8 +756,6 @@ impl Visitor for CompileVisitor {
                     loc,
                 ));
             }
-        } else {
-            return Err(RuntimeError::new(format!("Unknown function ''"), loc));
         }
 
         Ok(ASTValue::None)

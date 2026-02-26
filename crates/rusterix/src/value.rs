@@ -268,6 +268,23 @@ impl ValueContainer {
             .unwrap_or(def)
     }
 
+    pub fn get_uint(&self, key: &str) -> Option<u32> {
+        self.values.get(key).and_then(|v| {
+            if let Value::UInt(val) = v {
+                Some(*val)
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn get_uint_default(&self, key: &str, def: u32) -> u32 {
+        self.values
+            .get(key)
+            .map(|v| if let Value::UInt(val) = v { *val } else { def })
+            .unwrap_or(def)
+    }
+
     pub fn get_float(&self, key: &str) -> Option<f32> {
         self.values.get(key).and_then(|v| {
             if let Value::Float(val) = v {

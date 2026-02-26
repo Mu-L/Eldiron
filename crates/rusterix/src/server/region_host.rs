@@ -16,6 +16,10 @@ struct RegionHost<'a> {
 const COMBAT_DEBUG_CALLS: &[&str] = &[
     "action",
     "intent",
+    "clear_target",
+    "set_target",
+    "target",
+    "has_target",
     "set_attr",
     "set_proximity_tracking",
     "block_events",
@@ -70,6 +74,94 @@ fn convert_attr_value(key: &str, val: &VMValue, hint: Option<&Value>, health_att
 }
 
 impl<'a> RegionHost<'a> {
+    fn parse_target_arg_id(arg: &VMValue) -> Option<u32> {
+        if let Some(s) = arg.as_string() {
+            if let Ok(id) = s.parse::<u32>() {
+                return Some(id);
+            }
+            return None;
+        }
+        Some(arg.x.max(0.0) as u32)
+    }
+
+    fn get_current_target_id(&mut self) -> Option<u32> {
+        // Current item target first
+        if let Some(item_id) = self.ctx.curr_item_id
+            && let Some(item) = self.ctx.get_item_mut(item_id)
+        {
+            if let Some(id) = item.attributes.get_uint("target") {
+                return Some(id);
+            }
+            if let Some(id) = item.attributes.get_uint("attack_target") {
+                return Some(id);
+            }
+            if let Some(s) = item.attributes.get_str("target")
+                && let Ok(id) = s.parse::<u32>()
+            {
+                return Some(id);
+            }
+            if let Some(s) = item.attributes.get_str("attack_target")
+                && let Ok(id) = s.parse::<u32>()
+            {
+                return Some(id);
+            }
+        }
+
+        // Otherwise current entity target
+        if let Some(entity) = self.ctx.get_current_entity_mut() {
+            if let Some(id) = entity.attributes.get_uint("target") {
+                return Some(id);
+            }
+            if let Some(id) = entity.attributes.get_uint("attack_target") {
+                return Some(id);
+            }
+            if let Some(s) = entity.attributes.get_str("target")
+                && let Ok(id) = s.parse::<u32>()
+            {
+                return Some(id);
+            }
+            if let Some(s) = entity.attributes.get_str("attack_target")
+                && let Ok(id) = s.parse::<u32>()
+            {
+                return Some(id);
+            }
+        }
+
+        None
+    }
+
+    fn set_current_target_id(&mut self, target_id: Option<u32>) {
+        if let Some(item_id) = self.ctx.curr_item_id {
+            if let Some(item) = self.ctx.get_item_mut(item_id) {
+                if let Some(id) = target_id {
+                    item.set_attribute("target", Value::UInt(id));
+                    item.set_attribute("attack_target", Value::UInt(id));
+                } else {
+                    item.set_attribute("target", Value::Str(String::new()));
+                    item.set_attribute("attack_target", Value::Str(String::new()));
+                }
+            }
+            return;
+        }
+
+        if let Some(entity) = self.ctx.get_current_entity_mut() {
+            if let Some(id) = target_id {
+                entity.set_attribute("target", Value::UInt(id));
+                entity.set_attribute("attack_target", Value::UInt(id));
+            } else {
+                entity.set_attribute("target", Value::Str(String::new()));
+                entity.set_attribute("attack_target", Value::Str(String::new()));
+            }
+        }
+    }
+
+    fn has_valid_target(&mut self) -> bool {
+        let Some(target_id) = self.get_current_target_id() else {
+            return false;
+        };
+        self.ctx.map.entities.iter().any(|e| e.id == target_id)
+    }
+
     fn is_combat_debug_call(name: &str, args: &[VMValue]) -> bool {
         if name == "set_attr" {
             return args
@@ -193,6 +285,30 @@ impl<'a> HostHandler for RegionHost<'a> {
                         add_debug_value(&mut self.ctx, TheValue::Text("Ok".into()), false);
                     }
                 }
+            }
+            "set_target" => {
+                let target_id = args
+                    .first()
+                    .and_then(Self::parse_target_arg_id)
+                    .filter(|id| self.ctx.map.entities.iter().any(|e| e.id == *id));
+                if let Some(target_id) = target_id {
+                    self.set_current_target_id(Some(target_id));
+                    return Some(VMValue::from_bool(true));
+                }
+                return Some(VMValue::from_bool(false));
+            }
+            "clear_target" => {
+                self.set_current_target_id(None);
+                return Some(VMValue::from_bool(true));
+            }
+            "target" => {
+                if let Some(target_id) = self.get_current_target_id() {
+                    return Some(VMValue::from_u32(target_id));
+                }
+                return Some(VMValue::zero());
+            }
+            "has_target" => {
+                return Some(VMValue::from_bool(self.has_valid_target()));
             }
             "play_audio" => {
                 if let Some(name) = args.first().and_then(|v| v.as_string()) {
@@ -898,9 +1014,17 @@ impl<'a> HostHandler for RegionHost<'a> {
                 }
             }
             "deal_damage" => {
-                if let (Some(target), Some(amount)) = (args.get(0), args.get(1)) {
-                    let id = target.x as u32;
-                    let dmg = amount.x as i32;
+                // deal_damage(target, amount) or deal_damage(amount) using current target.
+                let (target_id, dmg) = match args {
+                    [amount] => (self.get_current_target_id(), amount.x as i32),
+                    [target, amount, ..] => (
+                        Self::parse_target_arg_id(target).or_else(|| self.get_current_target_id()),
+                        amount.x as i32,
+                    ),
+                    _ => (None, 0),
+                };
+
+                if let Some(id) = target_id {
                     let subject_id = if self.ctx.curr_item_id.is_some() {
                         self.ctx.curr_item_id.unwrap()
                     } else {
