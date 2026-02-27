@@ -37,7 +37,8 @@ Most important attributes:
 player = true
 ```
 
-Defines a player based character. Only players get send [user events](client_commands). These commands map user input to **actions** and **intents**.
+Defines a player based character.
+Player input mapping is configured in [Input Mapping](input_mapping).
 
 You can find a complete reference of all [attributes here](attributes).
 
@@ -45,4 +46,5 @@ You can find a complete reference of all [attributes here](attributes).
 
 ## Player Characters
 
-While all characters and items get send [event](events), only player characters get send **user events**. *User events* are used to map user events (key presses, mouse events) to an [action](client_commands/#action) or [intent](client_commands/#intent). These are client commands, as user input is processed on the client and send to the server. All other commands are processed on the server.
+While all characters and items receive [events](events), player characters additionally receive client input.
+Input is configured in the character data with [Input Mapping](input_mapping), which maps keys to player actions and intents.

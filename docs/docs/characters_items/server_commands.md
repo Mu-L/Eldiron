@@ -411,7 +411,7 @@ fn event(event, value) {
 
 *This command can only be used with player characters.*
 
-Defines how incoming player [actions](client_commands/#action) are translated into movement and camera behavior.  
+Defines how incoming player [actions](input_mapping#action-types) are translated into movement and camera behavior.  
 This command **does not change the visual rendering camera**. This is done by the game widgets [camera setting](/docs/screens/widgets/#camera-section)
 It only changes how player input is interpreted.
 

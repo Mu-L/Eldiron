@@ -1691,6 +1691,106 @@ impl RegionInstance {
                         self.move_entity(entity, -1.0, self.entity_block_mode);
                     }
                 }
+                EntityAction::ForwardLeft => {
+                    if entity.is_player() {
+                        let intent = entity.attributes.get_str_default("intent", "".into());
+                        if intent.is_empty() {
+                            if let Some(Value::PlayerCamera(player_camera)) =
+                                entity.attributes.get("player_camera")
+                            {
+                                if *player_camera != PlayerCamera::D3FirstP {
+                                    entity.set_orientation(vek::Vec2::new(-1.0, 1.0).normalized());
+                                    self.move_entity(entity, 1.0, self.entity_block_mode);
+                                } else {
+                                    entity.turn_left(turn_step_deg);
+                                    self.move_entity(entity, 1.0, self.entity_block_mode);
+                                }
+                            }
+                        } else {
+                            entity.set_orientation(vek::Vec2::new(-1.0, 1.0).normalized());
+                            let position = entity.get_forward_pos(1.0);
+                            self.send_entity_intent_events(entity, position);
+                            entity.action = EntityAction::Off;
+                        }
+                    } else {
+                        self.move_entity(entity, 1.0, self.entity_block_mode);
+                    }
+                }
+                EntityAction::ForwardRight => {
+                    if entity.is_player() {
+                        let intent = entity.attributes.get_str_default("intent", "".into());
+                        if intent.is_empty() {
+                            if let Some(Value::PlayerCamera(player_camera)) =
+                                entity.attributes.get("player_camera")
+                            {
+                                if *player_camera != PlayerCamera::D3FirstP {
+                                    entity.set_orientation(vek::Vec2::new(1.0, 1.0).normalized());
+                                    self.move_entity(entity, 1.0, self.entity_block_mode);
+                                } else {
+                                    entity.turn_right(turn_step_deg);
+                                    self.move_entity(entity, 1.0, self.entity_block_mode);
+                                }
+                            }
+                        } else {
+                            entity.set_orientation(vek::Vec2::new(1.0, 1.0).normalized());
+                            let position = entity.get_forward_pos(1.0);
+                            self.send_entity_intent_events(entity, position);
+                            entity.action = EntityAction::Off;
+                        }
+                    } else {
+                        self.move_entity(entity, 1.0, self.entity_block_mode);
+                    }
+                }
+                EntityAction::BackwardLeft => {
+                    if entity.is_player() {
+                        let intent = entity.attributes.get_str_default("intent", "".into());
+                        if intent.is_empty() {
+                            if let Some(Value::PlayerCamera(player_camera)) =
+                                entity.attributes.get("player_camera")
+                            {
+                                if *player_camera != PlayerCamera::D3FirstP {
+                                    entity.set_orientation(vek::Vec2::new(-1.0, -1.0).normalized());
+                                    self.move_entity(entity, 1.0, self.entity_block_mode);
+                                } else {
+                                    entity.turn_left(turn_step_deg);
+                                    self.move_entity(entity, -1.0, self.entity_block_mode);
+                                }
+                            }
+                        } else {
+                            entity.set_orientation(vek::Vec2::new(-1.0, -1.0).normalized());
+                            let position = entity.get_forward_pos(1.0);
+                            self.send_entity_intent_events(entity, position);
+                            entity.action = EntityAction::Off;
+                        }
+                    } else {
+                        self.move_entity(entity, -1.0, self.entity_block_mode);
+                    }
+                }
+                EntityAction::BackwardRight => {
+                    if entity.is_player() {
+                        let intent = entity.attributes.get_str_default("intent", "".into());
+                        if intent.is_empty() {
+                            if let Some(Value::PlayerCamera(player_camera)) =
+                                entity.attributes.get("player_camera")
+                            {
+                                if *player_camera != PlayerCamera::D3FirstP {
+                                    entity.set_orientation(vek::Vec2::new(1.0, -1.0).normalized());
+                                    self.move_entity(entity, 1.0, self.entity_block_mode);
+                                } else {
+                                    entity.turn_right(turn_step_deg);
+                                    self.move_entity(entity, -1.0, self.entity_block_mode);
+                                }
+                            }
+                        } else {
+                            entity.set_orientation(vek::Vec2::new(1.0, -1.0).normalized());
+                            let position = entity.get_forward_pos(1.0);
+                            self.send_entity_intent_events(entity, position);
+                            entity.action = EntityAction::Off;
+                        }
+                    } else {
+                        self.move_entity(entity, -1.0, self.entity_block_mode);
+                    }
+                }
                 EntityAction::CloseIn(target, target_radius, speed) => {
                     if is_entity_dead(self.id, *target) {
                         continue;

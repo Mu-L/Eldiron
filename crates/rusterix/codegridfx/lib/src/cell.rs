@@ -145,7 +145,7 @@ pub enum Cell {
     PaletteColor(u8),
     Value(String),
 
-    // Python based
+    // Script based
     Action,
     AddItem,
     BlockEvents,

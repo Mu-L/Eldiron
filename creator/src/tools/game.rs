@@ -205,15 +205,6 @@ impl Tool for GameTool {
             EditorViewMode::FirstP => PlayerCamera::D3FirstP,
             EditorViewMode::Iso | EditorViewMode::Orbit => PlayerCamera::D3Iso,
         };
-        let key_to_action = |c: char| -> Option<EntityAction> {
-            match c.to_ascii_lowercase() {
-                'w' => Some(EntityAction::Forward),
-                'a' => Some(EntityAction::Left),
-                's' => Some(EntityAction::Backward),
-                'd' => Some(EntityAction::Right),
-                _ => None,
-            }
-        };
 
         #[allow(clippy::single_match)]
         match event {
@@ -231,15 +222,9 @@ impl Tool for GameTool {
                             .server
                             .local_player_action(EntityAction::SetPlayerCamera(camera));
 
-                        // Use action mapping so editor routed input behaves like in-game controls.
-                        let mut action = rusterix
+                        let action = rusterix
                             .client
                             .user_event("key_down".into(), Value::Str(char.to_string()));
-                        if matches!(action, EntityAction::Off)
-                            && let Some(fallback) = key_to_action(*char)
-                        {
-                            action = fallback;
-                        }
                         rusterix.server.local_player_action(action);
                     } else {
                         let action = rusterix
@@ -254,12 +239,9 @@ impl Tool for GameTool {
                 let mut rusterix = crate::editor::RUSTERIX.write().unwrap();
                 if rusterix.server.state == rusterix::ServerState::Running {
                     if server_ctx.game_input_mode && !server_ctx.game_mode {
-                        let mut action = rusterix
+                        let action = rusterix
                             .client
                             .user_event("key_up".into(), Value::Str(char.to_string()));
-                        if matches!(action, EntityAction::Off) && key_to_action(*char).is_some() {
-                            action = EntityAction::Off;
-                        }
                         rusterix.server.local_player_action(action);
                         if let Some(prev) = self.editor_routed_prev_camera.take() {
                             rusterix

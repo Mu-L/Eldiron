@@ -8,7 +8,6 @@ This chapter lists all available **events** that can be received by characters a
 Events are categorized as:
 
 - **System Events** – sent by the engine to the `event()` handler
-- **User Events** – sent to the `user_event()` handler (usually from player input)
 
 ---
 
@@ -120,16 +119,4 @@ Events are categorized as:
 
 ---
 
-## User Events
-
-### `key_down`
-
-- **Value**: `string` (e.g. `"w"`, `"a"`, `"space"`)
-- **Description**: Triggered when a key is pressed.
-
----
-
-### `key_up`
-
-- **Value**: `string` (e.g. `"w"`, `"a"`, `"space"`)
-- **Description**: Triggered when a key is released.
+Player key input is configured via [Input Mapping](input_mapping), not via script events.

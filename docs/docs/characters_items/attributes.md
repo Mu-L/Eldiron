@@ -231,10 +231,29 @@ name = "Golden Key"
 
 *Character-only attribute.*
 
-Marks the character as a player-controlled character that receives input events.
+Marks the character as a player-controlled character.
 
 ```toml
 player = true
+```
+
+---
+
+## `input`
+
+*Player character input mapping (top-level table in character data).*
+
+Maps keys to player actions/intents. See [Input Mapping](input_mapping) for syntax and supported commands.
+
+```toml
+player = true
+
+[input]
+w = "action(forward)"
+a = "action(left)"
+s = "action(backward)"
+d = "action(right)"
+u = "intent(use)"
 ```
 
 ---

@@ -1442,6 +1442,22 @@ impl Client {
         self.curr_clicked_intent_cursor = None;
         self.hover_distance = f32::MAX;
 
+        // Base cursor comes from the currently selected intent button (if any),
+        // even when not hovering a specific world target yet.
+        for button_id in self.activated_widgets.iter().rev() {
+            if let Some(widget) = self.button_widgets.get(button_id) {
+                if widget.intent.as_deref().unwrap_or_default().is_empty() {
+                    continue;
+                }
+                self.curr_intent_cursor = widget.item_cursor_id;
+                self.curr_clicked_intent_cursor = widget.item_clicked_cursor_id;
+                if let Some(cursor_id) = widget.item_cursor_id {
+                    self.curr_cursor = Some(cursor_id);
+                }
+                break;
+            }
+        }
+
         // Drop intent targets inventory/equipped widgets, not world billboards/items.
         if drop_intent_active {
             for (_, widget) in self.button_widgets.iter() {
@@ -1857,13 +1873,18 @@ impl Client {
     }
 
     pub fn user_event(&mut self, event: String, value: Value) -> EntityAction {
+        let immediate_2d_intent = matches!(
+            self.active_game_widget_camera_mode(),
+            Some(crate::PlayerCamera::D2)
+        );
+
         // Make sure we do not send action events after a key down intent was handled
         // Otherwise the character would move a bit because "intent" is already cleared
         if event == "key_up" {
             self.key_down_intent = None;
         }
 
-        if event == "key_down" {
+        if immediate_2d_intent && event == "key_down" {
             if let Some(key_down_intent) = &self.key_down_intent {
                 if !key_down_intent.is_empty() {
                     return EntityAction::Off;
@@ -1871,7 +1892,7 @@ impl Client {
             }
         }
 
-        if self.key_down_intent.is_none() && event == "key_down" {
+        if immediate_2d_intent && self.key_down_intent.is_none() && event == "key_down" {
             self.key_down_intent = Some(self.intent.clone());
         }
 
@@ -1895,7 +1916,19 @@ impl Client {
 
         // ---
 
+        let is_key_down = event == "key_down";
         let action = self.client_action.lock().unwrap().user_event(event, value);
+
+        if is_key_down && let EntityAction::Intent(intent_name) = &action {
+            if immediate_2d_intent {
+                // 2D uses immediate intents (one-shot on next directional action),
+                // so shortcuts must not force sticky button activation.
+                self.intent = intent_name.clone();
+            } else {
+                // 3D uses intent as a persistent state (same behavior as clicking a button).
+                self.apply_intent_button_activation(intent_name);
+            }
+        }
 
         let action_str: String = action.to_string();
         if action_str == "none" {
@@ -1909,6 +1942,111 @@ impl Client {
         }
 
         action
+    }
+
+    /// Apply the same intent-button toggle behavior as clicking a button:
+    /// deactivate configured peers and keep the selected intent button active.
+    fn apply_intent_button_activation(&mut self, intent_name: &str) {
+        let intent_norm = intent_name.trim().to_ascii_lowercase();
+
+        let mut selected_button_id: Option<u32> = None;
+        let mut deactivate_names: Vec<String> = Vec::new();
+        let mut selected_intent: Option<String> = None;
+        let mut best_score: i32 = i32::MIN;
+
+        for (id, widget) in self.button_widgets.iter() {
+            let intent_match = widget
+                .intent
+                .as_ref()
+                .map(|s| s.trim().eq_ignore_ascii_case(&intent_norm))
+                .unwrap_or(false);
+
+            // Fallbacks for projects that encoded intent-ish data in action.
+            let action_norm = widget.action.trim().to_ascii_lowercase();
+            let action_match = action_norm == intent_norm
+                || action_norm == format!("intent({})", intent_norm)
+                || action_norm == format!("intent(\"{}\")", intent_norm)
+                || action_norm == format!("intent('{}')", intent_norm);
+
+            if intent_match || action_match {
+                // Prefer dedicated intent toggle buttons (e.g. UseIntent/LookIntent)
+                // over inventory/equipment widgets that may also carry an intent.
+                let mut score: i32 = 0;
+                if intent_match {
+                    score += 100;
+                }
+                if !widget.deactivate.is_empty() {
+                    score += 30;
+                }
+                if widget.inventory_index.is_none() && widget.equipped_slot.is_none() {
+                    score += 30;
+                } else {
+                    score -= 40;
+                }
+                if widget.drag_drop {
+                    score -= 20;
+                }
+                if widget.name.to_ascii_lowercase().ends_with("intent") {
+                    score += 20;
+                }
+                if action_match && !intent_match {
+                    score -= 10;
+                }
+                if score > best_score {
+                    best_score = score;
+                    selected_button_id = Some(*id);
+                    deactivate_names = widget.deactivate.clone();
+                    selected_intent = widget
+                        .intent
+                        .clone()
+                        .or_else(|| Some(intent_name.to_string()));
+                }
+            }
+        }
+
+        // Keep fallback intent state in sync with keyboard shortcuts.
+        self.intent = selected_intent.unwrap_or_else(|| intent_name.to_string());
+
+        let Some(button_id) = selected_button_id else {
+            return;
+        };
+
+        // Deactivate all other intent buttons so shortcut intent is authoritative.
+        for (id, widget) in self.button_widgets.iter() {
+            if *id != button_id
+                && let Some(intent) = &widget.intent
+                && !intent.is_empty()
+            {
+                self.activated_widgets.retain(|x| x != id);
+                self.permanently_activated_widgets.retain(|x| x != id);
+            }
+        }
+
+        // Also process explicit deactivate names for non-intent companion buttons.
+        if !deactivate_names.is_empty() {
+            for widget_to_deactivate in &deactivate_names {
+                for (id, widget) in self.button_widgets.iter() {
+                    if widget.name == *widget_to_deactivate {
+                        self.activated_widgets.retain(|x| x != id);
+                        self.permanently_activated_widgets.retain(|x| x != id);
+                    }
+                }
+            }
+        }
+
+        // Move selected button to the end so get_current_intent() resolves to it.
+        self.activated_widgets.retain(|x| *x != button_id);
+        self.permanently_activated_widgets
+            .retain(|x| *x != button_id);
+        self.activated_widgets.push(button_id);
+        self.permanently_activated_widgets.push(button_id);
+
+        // Sync cursors immediately to the newly selected intent button.
+        if let Some(widget) = self.button_widgets.get(&button_id) {
+            self.curr_intent_cursor = widget.item_cursor_id;
+            self.curr_clicked_intent_cursor = widget.item_clicked_cursor_id;
+            self.curr_cursor = widget.item_cursor_id.or(self.default_cursor);
+        }
     }
 
     // Init the screen

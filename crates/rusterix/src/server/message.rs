@@ -70,6 +70,10 @@ pub enum EntityAction {
     Forward,
     Right,
     Backward,
+    ForwardLeft,
+    ForwardRight,
+    BackwardLeft,
+    BackwardRight,
     // Item clicked, item id, click distance and optional explicit intent
     ItemClicked(u32, f32, Option<String>),
     // Entity clicked, entity id, click distance and optional explicit intent
@@ -121,6 +125,10 @@ impl FromStr for EntityAction {
             "forward" => Ok(EntityAction::Forward),
             "right" => Ok(EntityAction::Right),
             "backward" => Ok(EntityAction::Backward),
+            "forward_left" => Ok(EntityAction::ForwardLeft),
+            "forward_right" => Ok(EntityAction::ForwardRight),
+            "backward_left" => Ok(EntityAction::BackwardLeft),
+            "backward_right" => Ok(EntityAction::BackwardRight),
             _ => Err(()), // Return an error for invalid values
         }
     }
@@ -134,6 +142,10 @@ impl fmt::Display for EntityAction {
             EntityAction::Forward => "forward",
             EntityAction::Right => "right",
             EntityAction::Backward => "backward",
+            EntityAction::ForwardLeft => "forward_left",
+            EntityAction::ForwardRight => "forward_right",
+            EntityAction::BackwardLeft => "backward_left",
+            EntityAction::BackwardRight => "backward_right",
             _ => "none",
         };
         write!(f, "{}", s)
