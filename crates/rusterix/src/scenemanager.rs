@@ -12,6 +12,8 @@ pub enum SceneManagerCmd {
     SetMap(Map),
     UpdateMap(Map),
     SetBuilder2D(Option<Box<dyn ChunkBuilder>>),
+    SetFocusChunk(Option<(i32, i32)>),
+    ReplaceDirty(Vec<(i32, i32)>),
     AddDirty(Vec<(i32, i32)>),
     SetDirtyTerrainChunks(Vec<TerrainChunk>),
     SetTerrainModifierState(bool),
@@ -41,6 +43,7 @@ pub struct SceneManager {
     all: FxHashSet<(i32, i32)>,
     terrain_modifiers_update: FxHashSet<(i32, i32)>,
     total_chunks: i32,
+    focus_chunk: Option<(i32, i32)>,
 
     chunk_builder_d2: Option<Box<dyn ChunkBuilder>>,
     chunk_builder_d3: Option<Box<dyn ChunkBuilder>>,
@@ -72,6 +75,7 @@ impl SceneManager {
             all: FxHashSet::default(),
             terrain_modifiers_update: FxHashSet::default(),
             total_chunks: 0,
+            focus_chunk: None,
 
             chunk_builder_d2: Some(Box::new(D2ChunkBuilder::new())),
             chunk_builder_d3: Some(Box::new(D3ChunkBuilder::new())),
@@ -111,6 +115,18 @@ impl SceneManager {
                 self.chunk_builder_d2 = builder;
                 self.dirty = Self::generate_chunk_coords(&self.map.bbox(), self.chunk_size);
                 self.all = self.dirty.clone();
+            }
+            SceneManagerCmd::SetFocusChunk(chunk) => {
+                self.focus_chunk = chunk;
+            }
+            SceneManagerCmd::ReplaceDirty(dirty_chunks) => {
+                self.dirty.clear();
+                self.all.clear();
+                for d in dirty_chunks {
+                    self.dirty.insert(d);
+                    self.all.insert(d);
+                }
+                self.total_chunks = self.dirty.len() as i32;
             }
             SceneManagerCmd::SetMap(mut new_map) => {
                 if !self.apply_preview_filters {
@@ -207,6 +223,14 @@ impl SceneManager {
         self.send(SceneManagerCmd::AddDirty(dirty));
     }
 
+    pub fn set_focus_chunk(&mut self, chunk: Option<(i32, i32)>) {
+        self.send(SceneManagerCmd::SetFocusChunk(chunk));
+    }
+
+    pub fn replace_dirty(&mut self, dirty: Vec<(i32, i32)>) {
+        self.send(SceneManagerCmd::ReplaceDirty(dirty));
+    }
+
     pub fn set_dirty_terrain_chunks(&mut self, dirty: Vec<TerrainChunk>) {
         self.send(SceneManagerCmd::SetDirtyTerrainChunks(dirty));
     }
@@ -244,7 +268,20 @@ impl SceneManager {
         }
 
         // Process one dirty chunk
-        if let Some(&coord) = self.dirty.iter().next() {
+        let next_coord = if let Some(focus) = self.focus_chunk {
+            self.dirty
+                .iter()
+                .min_by_key(|(x, y)| {
+                    let dx = *x - focus.0;
+                    let dy = *y - focus.1;
+                    dx * dx + dy * dy
+                })
+                .copied()
+        } else {
+            self.dirty.iter().next().copied()
+        };
+
+        if let Some(coord) = next_coord {
             self.dirty.remove(&coord);
 
             let mut chunk = Chunk::new(Vec2::new(coord.0, coord.1), self.chunk_size);

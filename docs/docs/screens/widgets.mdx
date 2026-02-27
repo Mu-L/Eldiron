@@ -23,6 +23,12 @@ Use a widget with **role = "game"** to render the game inside a screen. The game
 - **role = "game"** draws the game output into this widget region.
 - **grid_size** (2D): pixel size of one tile (zoom level); if omitted, it falls back to **[viewport].grid_size**.
 - **upscale** (3D): render at **(widget size ÷ upscale)** and scale back up; **1** keeps native size, higher values soften, lower values sharpen.
+- **chunk_load_radius**: number of chunk rings around the player that should be loaded immediately. Default: **2**.
+- **chunk_prefetch_radius**: wider background streaming radius around the player. Chunks outside this radius are unloaded. Default: **5**.
+- **chunk_build_budget_near**: max chunk builds per frame while near chunks are still missing. Higher values reduce startup wait but can cost frame time. Default: **10**.
+- **chunk_build_budget_far**: max chunk builds per frame after near chunks are loaded (background streaming). Default: **2**.
+
+On startup, chunks around the player are built first. Farther chunks inside `chunk_prefetch_radius` are streamed in later.
 
 ### Camera Section
 
@@ -45,6 +51,10 @@ To define player camera behavior, see [set_player_camera](/docs/characters_items
 role = "game"
 grid_size = 40
 upscale = 1.5
+chunk_load_radius = 2
+chunk_prefetch_radius = 5
+chunk_build_budget_near = 10
+chunk_build_budget_far = 2
 
 [camera]
 type = "firstp"

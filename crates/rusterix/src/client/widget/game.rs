@@ -41,6 +41,11 @@ pub struct GameWidget {
     pub iso_sector_fade: FxHashMap<u32, f32>,
     pub force_dynamics_rebuild: bool,
     pub firstp_eye_level: f32,
+    pub loaded_chunks: FxHashSet<(i32, i32)>,
+    pub stream_load_radius_chunks: i32,
+    pub stream_prefetch_radius_chunks: i32,
+    pub chunk_build_budget_near: i32,
+    pub chunk_build_budget_far: i32,
 }
 
 impl Default for GameWidget {
@@ -84,6 +89,11 @@ impl GameWidget {
             iso_sector_fade: FxHashMap::default(),
             force_dynamics_rebuild: true,
             firstp_eye_level: 1.7,
+            loaded_chunks: FxHashSet::default(),
+            stream_load_radius_chunks: 2,
+            stream_prefetch_radius_chunks: 5,
+            chunk_build_budget_near: 10,
+            chunk_build_budget_far: 2,
         }
     }
 
@@ -131,6 +141,14 @@ impl GameWidget {
             if let Some(ui) = groups.get("ui") {
                 self.grid_size = ui.get_float_default("grid_size", self.grid_size);
                 self.upscale = ui.get_float_default("upscale", 1.0).max(1.0);
+                self.stream_load_radius_chunks =
+                    ui.get_int_default("chunk_load_radius", self.stream_load_radius_chunks);
+                self.stream_prefetch_radius_chunks =
+                    ui.get_int_default("chunk_prefetch_radius", self.stream_prefetch_radius_chunks);
+                self.chunk_build_budget_near =
+                    ui.get_int_default("chunk_build_budget_near", self.chunk_build_budget_near);
+                self.chunk_build_budget_far =
+                    ui.get_int_default("chunk_build_budget_far", self.chunk_build_budget_far);
             }
             self.table = groups;
             if let Some(camera) = self.table.get("camera") {
@@ -147,6 +165,83 @@ impl GameWidget {
         self.force_dynamics_rebuild = true;
     }
 
+    fn player_chunk_origin(&self, chunk_size: i32) -> (i32, i32) {
+        let px = self.player_pos.x.floor() as i32;
+        let py = self.player_pos.y.floor() as i32;
+        (
+            px.div_euclid(chunk_size) * chunk_size,
+            py.div_euclid(chunk_size) * chunk_size,
+        )
+    }
+
+    fn desired_stream_chunks(&self, map: &Map, radius_chunks: i32) -> FxHashSet<(i32, i32)> {
+        let chunk_size = map.terrain.chunk_size.max(1);
+        let mut bbox = map.bbox();
+        if let Some(tbbox) = map.terrain.compute_bounds() {
+            bbox.expand_bbox(tbbox);
+        }
+        let min_x = (bbox.min.x / chunk_size as f32).floor() as i32;
+        let min_y = (bbox.min.y / chunk_size as f32).floor() as i32;
+        let max_x = (bbox.max.x / chunk_size as f32).ceil() as i32;
+        let max_y = (bbox.max.y / chunk_size as f32).ceil() as i32;
+
+        let center = self.player_chunk_origin(chunk_size);
+        let center_cx = center.0.div_euclid(chunk_size);
+        let center_cy = center.1.div_euclid(chunk_size);
+
+        let mut desired = FxHashSet::default();
+        for cy in (center_cy - radius_chunks)..=(center_cy + radius_chunks) {
+            for cx in (center_cx - radius_chunks)..=(center_cx + radius_chunks) {
+                if cx < min_x || cy < min_y || cx >= max_x || cy >= max_y {
+                    continue;
+                }
+                desired.insert((cx * chunk_size, cy * chunk_size));
+            }
+        }
+        desired
+    }
+
+    fn update_streaming_chunks(&mut self, map: &Map, scene_handler: &mut SceneHandler) {
+        let chunk_size = map.terrain.chunk_size.max(1);
+        let focus = self.player_chunk_origin(chunk_size);
+        self.scenemanager.set_focus_chunk(Some(focus));
+
+        let load_radius = self.stream_load_radius_chunks.max(1);
+        let prefetch_radius = self.stream_prefetch_radius_chunks.max(load_radius);
+        let desired_load = self.desired_stream_chunks(map, load_radius);
+        let desired_prefetch = self.desired_stream_chunks(map, prefetch_radius);
+
+        // Unload chunks that are now outside the prefetch radius.
+        let unload: Vec<(i32, i32)> = self
+            .loaded_chunks
+            .iter()
+            .copied()
+            .filter(|c| !desired_prefetch.contains(c))
+            .collect();
+        for coord in unload {
+            scene_handler.vm.execute(scenevm::Atom::RemoveChunkAt {
+                origin: Vec2::new(coord.0, coord.1),
+            });
+            self.loaded_chunks.remove(&coord);
+        }
+
+        // Prioritize immediate neighborhood, then allow wider prefetch queue.
+        let mut to_request: Vec<(i32, i32)> = desired_load
+            .iter()
+            .copied()
+            .filter(|c| !self.loaded_chunks.contains(c))
+            .collect();
+        to_request.extend(
+            desired_prefetch
+                .iter()
+                .copied()
+                .filter(|c| !self.loaded_chunks.contains(c) && !desired_load.contains(c)),
+        );
+        if !to_request.is_empty() {
+            self.scenemanager.add_dirty(to_request);
+        }
+    }
+
     pub fn build(&mut self, map: &Map, assets: &Assets, scene_handler: &mut SceneHandler) {
         if let Some(bbox) = map.bounding_box() {
             self.map_bbox = bbox;
@@ -160,6 +255,14 @@ impl GameWidget {
             .set_tile_list(assets.tile_list.clone(), assets.tile_indices.clone());
 
         self.scenemanager.send(SceneManagerCmd::SetMap(map.clone()));
+        self.loaded_chunks.clear();
+        // Replace full-map queue with a player-centric startup queue.
+        let startup = self.desired_stream_chunks(map, self.stream_load_radius_chunks.max(1));
+        self.scenemanager
+            .replace_dirty(startup.iter().copied().collect::<Vec<_>>());
+        self.scenemanager.set_focus_chunk(Some(
+            self.player_chunk_origin(map.terrain.chunk_size.max(1)),
+        ));
         self.build_region_name = map.name.clone();
         self.iso_hidden_sectors.clear();
         self.iso_sector_fade.clear();
@@ -223,7 +326,19 @@ impl GameWidget {
         if map.name != self.build_region_name {
             self.build(map, assets, scene_handler);
         }
-        self.scenemanager.tick();
+        self.update_streaming_chunks(map, scene_handler);
+        // Process more chunks per frame while nearby chunks are still missing.
+        let desired_load = self.desired_stream_chunks(map, self.stream_load_radius_chunks.max(1));
+        let missing_nearby = desired_load
+            .iter()
+            .filter(|coord| !self.loaded_chunks.contains(coord))
+            .count();
+        let budget = if missing_nearby > 0 {
+            self.chunk_build_budget_near.max(1) as usize
+        } else {
+            self.chunk_build_budget_far.max(1) as usize
+        };
+        self.scenemanager.tick_batch(budget);
 
         // Apply scene manager chunks
         let mut geometry_changed = false;
@@ -231,6 +346,7 @@ impl GameWidget {
             match result {
                 SceneManagerResult::Chunk(chunk, _togo, _total, billboards) => {
                     geometry_changed = true;
+                    self.loaded_chunks.insert((chunk.origin.x, chunk.origin.y));
                     scene_handler.vm.execute(scenevm::Atom::RemoveChunkAt {
                         origin: chunk.origin,
                     });
@@ -247,6 +363,7 @@ impl GameWidget {
                 }
                 SceneManagerResult::Clear => {
                     geometry_changed = true;
+                    self.loaded_chunks.clear();
                     scene_handler.vm.execute(scenevm::Atom::ClearGeometry);
                     scene_handler.billboards.clear();
                     scene_handler.billboard_anim_states.clear();
