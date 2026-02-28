@@ -325,6 +325,14 @@ impl Default for Builtins {
             },
         );
         b.insert(
+            "cast_spell",
+            3,
+            NodeOp::HostCall {
+                name: "cast_spell".into(),
+                argc: 3,
+            },
+        );
+        b.insert(
             "play_audio",
             1,
             NodeOp::HostCall {

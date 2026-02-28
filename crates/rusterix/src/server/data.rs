@@ -228,6 +228,34 @@ fn apply_item_top_level(item: &mut Item, key: &str, value: &toml::Value) -> bool
         return true;
     }
 
+    // Allow spell configuration directly at top-level as well as inside [attributes].
+    if key.starts_with("spell_") || key == "on_cast" || key == "is_spell" || key == "reagents" {
+        if let Some(v) = value.as_float() {
+            item.set_attribute(key, Value::Float(v as f32));
+            return true;
+        }
+        if let Some(v) = value.as_integer() {
+            item.set_attribute(key, Value::Int(v as i32));
+            return true;
+        }
+        if let Some(v) = value.as_bool() {
+            item.set_attribute(key, Value::Bool(v));
+            return true;
+        }
+        if let Some(v) = value.as_str() {
+            item.set_attribute(key, Value::Str(v.to_string()));
+            return true;
+        }
+        if let Some(arr) = value.as_array() {
+            let mut values = vec![];
+            for v in arr {
+                values.push(v.to_string().replace("\"", ""));
+            }
+            item.set_attribute(key, Value::StrArray(values));
+            return true;
+        }
+    }
+
     false
 }
 

@@ -16,6 +16,7 @@ d = "action(right)"
 u = "intent(use)"
 t = "intent(attack)"
 k = "intent(take)"
+f = "spell(Fireball)"
 ```
 
 Key names are matched case-insensitively.
@@ -28,6 +29,7 @@ Each entry value supports one of:
 
 - `action(<type>)`
 - `intent(<name>)`
+- `spell(<template>)`
 - bare action alias (`"forward"`, `"left"`, `"right"`, `"backward"`)
 
 ---
@@ -59,3 +61,20 @@ Each entry value supports one of:
 `intent(<name>)` sets the player intent (for example `use`, `attack`, `take`).
 
 For UI-driven intents, you can also use [button widgets](/docs/screens/screens_widgets#button-widgets).
+
+## Spell Shortcuts
+
+`spell(<template>)` selects a specific spell intent button by template name.
+
+Example:
+
+```toml
+f = "spell(Fireball)"
+```
+
+This activates the button with:
+
+```toml
+intent = "spell"
+spell = "Fireball"
+```

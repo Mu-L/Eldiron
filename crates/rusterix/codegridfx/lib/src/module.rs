@@ -6,10 +6,11 @@ const BLOCKS: [&str; 3] = ["Event", "Var = ..", "If .. == .."];
 const VALUES: [&str; 1] = ["Value"];
 const OPERATORS: [&str; 4] = ["Arithmetic", "Assignment", "Comparison", "Else"];
 const USER_EVENTS: [&str; 2] = ["key_down", "key_up"];
-const FUNCTIONS: [&str; 38] = [
+const FUNCTIONS: [&str; 39] = [
     "action",
     "add_item",
     "block_events",
+    "cast_spell",
     "clear_audio",
     "clear_target",
     "close_in",

@@ -156,6 +156,20 @@ impl Default for Client {
 }
 
 impl Client {
+    fn deactivate_matches(widget: &Widget, token: &str) -> bool {
+        let t = token.trim();
+        if t.is_empty() {
+            return false;
+        }
+        if widget.name.eq_ignore_ascii_case(t) {
+            return true;
+        }
+        if let Some(group) = &widget.group {
+            return group.trim().eq_ignore_ascii_case(t);
+        }
+        false
+    }
+
     /// Returns the currently active game-widget camera mode if present.
     /// Prioritizes first-person over iso over 2D when multiple game widgets exist.
     pub fn active_game_widget_camera_mode(&self) -> Option<PlayerCamera> {
@@ -289,6 +303,9 @@ impl Client {
         self.animation_frame += 1;
 
         for widget in self.game_widgets.values_mut() {
+            widget.scene.animation_frame += 1;
+        }
+        if let Some(widget) = self.screen_widget.as_mut() {
             widget.scene.animation_frame += 1;
         }
     }
@@ -1442,22 +1459,6 @@ impl Client {
         self.curr_clicked_intent_cursor = None;
         self.hover_distance = f32::MAX;
 
-        // Base cursor comes from the currently selected intent button (if any),
-        // even when not hovering a specific world target yet.
-        for button_id in self.activated_widgets.iter().rev() {
-            if let Some(widget) = self.button_widgets.get(button_id) {
-                if widget.intent.as_deref().unwrap_or_default().is_empty() {
-                    continue;
-                }
-                self.curr_intent_cursor = widget.item_cursor_id;
-                self.curr_clicked_intent_cursor = widget.item_clicked_cursor_id;
-                if let Some(cursor_id) = widget.item_cursor_id {
-                    self.curr_cursor = Some(cursor_id);
-                }
-                break;
-            }
-        }
-
         // Drop intent targets inventory/equipped widgets, not world billboards/items.
         if drop_intent_active {
             for (_, widget) in self.button_widgets.iter() {
@@ -1585,7 +1586,7 @@ impl Client {
         let mut action = None;
         let mut camera_action = None;
         let mut render_camera_switches: Vec<(Option<String>, PlayerCamera)> = Vec::new();
-        let active_intent = self.get_current_intent();
+        let active_intent = self.get_current_intent_for_action();
         self.dragging_item_id = None;
         self.dragging_source_widget_id = None;
         self.dragging_started = false;
@@ -1602,7 +1603,7 @@ impl Client {
             return Some(EntityAction::EntityClicked(
                 entity_id,
                 self.hover_distance,
-                self.get_current_intent(),
+                self.get_current_intent_for_action(),
             ));
         }
 
@@ -1611,7 +1612,7 @@ impl Client {
             return Some(EntityAction::ItemClicked(
                 item_id,
                 self.hover_distance,
-                self.get_current_intent(),
+                self.get_current_intent_for_action(),
             ));
         }
 
@@ -1659,7 +1660,14 @@ impl Client {
                 if let Some(intent) = &widget.intent {
                     self.intent = intent.clone();
                     if parsed_action.is_none() && self.game_widget_is_2d() {
-                        action = Some(EntityAction::Intent(intent.clone()));
+                        if intent.eq_ignore_ascii_case("spell")
+                            && let Some(spell) = &widget.spell
+                            && !spell.trim().is_empty()
+                        {
+                            action = Some(EntityAction::Intent(format!("spell:{}", spell.trim())));
+                        } else {
+                            action = Some(EntityAction::Intent(intent.clone()));
+                        }
                     }
                 }
 
@@ -1714,7 +1722,7 @@ impl Client {
                 if !widget.deactivate.is_empty() {
                     for widget_to_deactivate in &widget.deactivate {
                         for (id, widget) in self.button_widgets.iter() {
-                            if *widget_to_deactivate == widget.name {
+                            if Self::deactivate_matches(widget, widget_to_deactivate) {
                                 self.activated_widgets.retain(|x| x != id);
                                 self.permanently_activated_widgets.retain(|x| x != id);
                             }
@@ -1773,7 +1781,7 @@ impl Client {
                                 return Some(EntityAction::EntityClicked(
                                     entity.id,
                                     distance,
-                                    self.get_current_intent(),
+                                    self.get_current_intent_for_action(),
                                 ));
                             }
                         }
@@ -1794,7 +1802,7 @@ impl Client {
                                 return Some(EntityAction::EntityClicked(
                                     entity.id,
                                     distance,
-                                    self.get_current_intent(),
+                                    self.get_current_intent_for_action(),
                                 ));
                             }
                         }
@@ -1825,7 +1833,7 @@ impl Client {
                     action = Some(EntityAction::ItemClicked(
                         item_id,
                         0.0,
-                        self.get_current_intent(),
+                        self.get_current_intent_for_action(),
                     ));
                 }
             } else {
@@ -1859,12 +1867,8 @@ impl Client {
 
         self.activated_widgets = self.permanently_activated_widgets.clone();
 
-        // Adjust cursor
-        if self.curr_intent_cursor.is_some() {
-            self.curr_cursor = self.curr_intent_cursor;
-        } else {
-            self.curr_cursor = self.default_cursor;
-        }
+        // Reset cursor after click release. Hover logic applies intent cursors contextually.
+        self.curr_cursor = self.default_cursor;
 
         for widget in self.messages_widget.iter_mut() {
             widget.touch_up();
@@ -1917,7 +1921,7 @@ impl Client {
         // ---
 
         let is_key_down = event == "key_down";
-        let action = self.client_action.lock().unwrap().user_event(event, value);
+        let mut action = self.client_action.lock().unwrap().user_event(event, value);
 
         if is_key_down && let EntityAction::Intent(intent_name) = &action {
             if immediate_2d_intent {
@@ -1927,6 +1931,9 @@ impl Client {
             } else {
                 // 3D uses intent as a persistent state (same behavior as clicking a button).
                 self.apply_intent_button_activation(intent_name);
+                // In 3D, keyboard intent shortcuts are UI state changes only.
+                // Do not forward intent actions to the server directly.
+                action = EntityAction::Off;
             }
         }
 
@@ -1947,7 +1954,18 @@ impl Client {
     /// Apply the same intent-button toggle behavior as clicking a button:
     /// deactivate configured peers and keep the selected intent button active.
     fn apply_intent_button_activation(&mut self, intent_name: &str) {
-        let intent_norm = intent_name.trim().to_ascii_lowercase();
+        let intent_raw = intent_name.trim();
+        let mut intent_norm = intent_raw.to_ascii_lowercase();
+        let mut spell_template_norm: Option<String> = None;
+        if let Some((prefix, value)) = intent_raw.split_once(':')
+            && prefix.trim().eq_ignore_ascii_case("spell")
+        {
+            let spell = value.trim();
+            if !spell.is_empty() {
+                intent_norm = "spell".to_string();
+                spell_template_norm = Some(spell.to_ascii_lowercase());
+            }
+        }
 
         let mut selected_button_id: Option<u32> = None;
         let mut deactivate_names: Vec<String> = Vec::new();
@@ -1955,11 +1973,18 @@ impl Client {
         let mut best_score: i32 = i32::MIN;
 
         for (id, widget) in self.button_widgets.iter() {
-            let intent_match = widget
+            let mut intent_match = widget
                 .intent
                 .as_ref()
                 .map(|s| s.trim().eq_ignore_ascii_case(&intent_norm))
                 .unwrap_or(false);
+            if intent_match && let Some(spell_template_norm) = &spell_template_norm {
+                intent_match = widget
+                    .spell
+                    .as_ref()
+                    .map(|s| s.trim().to_ascii_lowercase() == *spell_template_norm)
+                    .unwrap_or(false);
+            }
 
             // Fallbacks for projects that encoded intent-ish data in action.
             let action_norm = widget.action.trim().to_ascii_lowercase();
@@ -1974,6 +1999,9 @@ impl Client {
                 let mut score: i32 = 0;
                 if intent_match {
                     score += 100;
+                }
+                if spell_template_norm.is_some() {
+                    score += 50;
                 }
                 if !widget.deactivate.is_empty() {
                     score += 30;
@@ -1996,10 +2024,18 @@ impl Client {
                     best_score = score;
                     selected_button_id = Some(*id);
                     deactivate_names = widget.deactivate.clone();
-                    selected_intent = widget
-                        .intent
-                        .clone()
-                        .or_else(|| Some(intent_name.to_string()));
+                    selected_intent = if spell_template_norm.is_some() {
+                        widget
+                            .spell
+                            .as_ref()
+                            .map(|s| format!("spell:{}", s.trim()))
+                            .or_else(|| widget.intent.clone())
+                    } else {
+                        widget
+                            .intent
+                            .clone()
+                            .or_else(|| Some(intent_name.to_string()))
+                    };
                 }
             }
         }
@@ -2026,7 +2062,7 @@ impl Client {
         if !deactivate_names.is_empty() {
             for widget_to_deactivate in &deactivate_names {
                 for (id, widget) in self.button_widgets.iter() {
-                    if widget.name == *widget_to_deactivate {
+                    if Self::deactivate_matches(widget, widget_to_deactivate) {
                         self.activated_widgets.retain(|x| x != id);
                         self.permanently_activated_widgets.retain(|x| x != id);
                     }
@@ -2045,7 +2081,7 @@ impl Client {
         if let Some(widget) = self.button_widgets.get(&button_id) {
             self.curr_intent_cursor = widget.item_cursor_id;
             self.curr_clicked_intent_cursor = widget.item_clicked_cursor_id;
-            self.curr_cursor = widget.item_cursor_id.or(self.default_cursor);
+            self.curr_cursor = self.default_cursor;
         }
     }
 
@@ -2145,6 +2181,8 @@ impl Client {
                         } else if role == "button" {
                             let mut action = "";
                             let mut intent = None;
+                            let mut spell = None;
+                            let mut group = None;
                             let mut show: Option<Vec<String>> = None;
                             let mut hide: Option<Vec<String>> = None;
                             let mut deactivate: Vec<String> = vec![];
@@ -2174,6 +2212,22 @@ impl Client {
                                 if let Some(value) = ui.get("intent") {
                                     if let Some(v) = value.as_str() {
                                         intent = Some(v.to_string());
+                                    }
+                                }
+                                if let Some(value) = ui.get("spell")
+                                    && let Some(v) = value.as_str()
+                                {
+                                    let trimmed = v.trim();
+                                    if !trimmed.is_empty() {
+                                        spell = Some(trimmed.to_string());
+                                    }
+                                }
+                                if let Some(value) = ui.get("group")
+                                    && let Some(v) = value.as_str()
+                                {
+                                    let trimmed = v.trim();
+                                    if !trimmed.is_empty() {
+                                        group = Some(trimmed.to_string());
                                     }
                                 }
 
@@ -2302,6 +2356,8 @@ impl Client {
                                 rect: Rect::new(x, y, width, height),
                                 action: action.into(),
                                 intent,
+                                spell,
+                                group,
                                 show,
                                 hide,
                                 deactivate,
@@ -2400,6 +2456,32 @@ impl Client {
                 {
                     return Some(intent.clone());
                 }
+            }
+        }
+        if self.intent.is_empty() {
+            None
+        } else {
+            Some(self.intent.clone())
+        }
+    }
+
+    /// Returns the current intent payload for server actions.
+    /// Spell intent buttons encode their selected template as `spell:<template>`.
+    fn get_current_intent_for_action(&self) -> Option<String> {
+        for button_id in self.activated_widgets.iter().rev() {
+            if let Some(widget) = self.button_widgets.get(button_id)
+                && let Some(intent) = &widget.intent
+            {
+                if intent.is_empty() {
+                    continue;
+                }
+                if intent.eq_ignore_ascii_case("spell")
+                    && let Some(spell) = &widget.spell
+                    && !spell.trim().is_empty()
+                {
+                    return Some(format!("spell:{}", spell.trim()));
+                }
+                return Some(intent.clone());
             }
         }
         if self.intent.is_empty() {

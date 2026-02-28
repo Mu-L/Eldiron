@@ -286,20 +286,17 @@ impl ValueContainer {
     }
 
     pub fn get_float(&self, key: &str) -> Option<f32> {
-        self.values.get(key).and_then(|v| {
-            if let Value::Float(val) = v {
-                Some(*val)
-            } else {
-                None
-            }
+        self.values.get(key).and_then(|v| match v {
+            Value::Float(val) => Some(*val),
+            Value::Int(val) => Some(*val as f32),
+            Value::UInt(val) => Some(*val as f32),
+            Value::Int64(val) => Some(*val as f32),
+            _ => None,
         })
     }
 
     pub fn get_float_default(&self, key: &str, def: f32) -> f32 {
-        self.values
-            .get(key)
-            .map(|v| if let Value::Float(val) = v { *val } else { def })
-            .unwrap_or(def)
+        self.get_float(key).unwrap_or(def)
     }
 
     pub fn get_vec2(&self, key: &str) -> Option<[f32; 2]> {

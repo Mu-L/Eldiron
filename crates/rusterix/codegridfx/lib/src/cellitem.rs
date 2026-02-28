@@ -863,6 +863,40 @@ impl CellItem {
                 self.form = CellItemForm::LeftRounded;
                 grid.insert(pos, self)
             }
+            Cell::CastSpell => {
+                grid.insert(
+                    (pos.0 + 1, pos.1),
+                    CellItem::new_dependency(
+                        Cell::Value("\"Spell\"".into()),
+                        self.id,
+                        true,
+                        "Template",
+                        CellItemForm::Box,
+                    ),
+                );
+                grid.insert(
+                    (pos.0 + 2, pos.1),
+                    CellItem::new_dependency(
+                        Cell::Value("0".into()),
+                        self.id,
+                        true,
+                        "Target",
+                        CellItemForm::Box,
+                    ),
+                );
+                grid.insert(
+                    (pos.0 + 3, pos.1),
+                    CellItem::new_dependency(
+                        Cell::Value("100".into()),
+                        self.id,
+                        false,
+                        "Success % (optional)",
+                        CellItemForm::RightRounded,
+                    ),
+                );
+                self.form = CellItemForm::LeftRounded;
+                grid.insert(pos, self)
+            }
             Cell::ClearAudio => {
                 grid.insert(
                     (pos.0 + 1, pos.1),

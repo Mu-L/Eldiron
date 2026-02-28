@@ -540,8 +540,27 @@ impl D3Builder {
                 if let Some(Value::Source(source)) = item.attributes.get("source") {
                     if item.attributes.get_bool_default("visible", false) {
                         let size = 1.0;
+                        let pos_xz = item.get_pos_xz();
+                        let mut ground_y = map
+                            .find_sector_at(pos_xz)
+                            .map(|s| s.properties.get_float_default("floor_height", 0.0))
+                            .unwrap_or(0.0);
+                        if ground_y == 0.0 {
+                            let config =
+                                crate::chunkbuilder::terrain_generator::TerrainConfig::default();
+                            ground_y = crate::chunkbuilder::terrain_generator::TerrainGenerator::sample_height_at(
+                                map, pos_xz, &config,
+                            );
+                        }
+                        let is_spell_like = item.attributes.get_bool_default("is_spell", false)
+                            || item.attributes.get_bool_default("spell_impacting", false);
+                        let y = if is_spell_like {
+                            item.position.y + size * 0.5
+                        } else {
+                            ground_y + size * 0.5
+                        };
                         if let Some(tile) = source.tile_from_tile_list(assets) {
-                            let center3 = Vec3::new(item.position.x, size * 0.5, item.position.z);
+                            let center3 = Vec3::new(item.position.x, y, item.position.z);
 
                             let dynamic = DynamicObject::billboard_tile(
                                 GeoId::Item(item.id),
@@ -557,7 +576,7 @@ impl D3Builder {
                                 .execute(Atom::AddDynamic { object: dynamic });
                         }
 
-                        let center3 = Vec3::new(item.position.x, size * 0.5, item.position.z);
+                        let center3 = Vec3::new(item.position.x, y, item.position.z);
                         if let Some(tile) = source.tile_from_tile_list(assets) {
                             if let Some(texture_index) = assets.tile_index(&tile.id) {
                                 let mut batch = Batch3D::empty()
@@ -572,7 +591,11 @@ impl D3Builder {
                 } else if let Some(Value::Source(source)) = item.attributes.get("_source_seq") {
                     if item.attributes.get_bool_default("visible", false) {
                         let size = 2.0;
-                        let center3 = Vec3::new(item.position.x, size * 0.5, item.position.z);
+                        let center3 = Vec3::new(
+                            item.position.x,
+                            item.position.y + size * 0.5,
+                            item.position.z,
+                        );
                         if let Some(item_tile) = source.item_tile_id(item.id, assets) {
                             let mut batch = Batch3D::empty()
                                 .repeat_mode(crate::RepeatMode::RepeatXY)

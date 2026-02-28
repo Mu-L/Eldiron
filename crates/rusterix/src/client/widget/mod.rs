@@ -18,6 +18,8 @@ pub struct Widget {
     pub rect: Rect,
     pub action: String,
     pub intent: Option<String>,
+    pub spell: Option<String>,
+    pub group: Option<String>,
     pub show: Option<Vec<String>>,
     pub hide: Option<Vec<String>>,
     pub deactivate: Vec<String>,
@@ -50,6 +52,8 @@ impl Widget {
             rect: Rect::default(),
             action: String::new(),
             intent: None,
+            spell: None,
+            group: None,
             show: None,
             hide: None,
             deactivate: vec![],
@@ -133,7 +137,9 @@ impl Widget {
             );
         }
 
-        if self.border_size > 0 {
+        // Reuse existing button border syntax as a selected-state indicator.
+        // texture_index == 1 means active/selected visual state.
+        if self.border_size > 0 && texture_index == 1 {
             draw2d.rect_outline_thickness(
                 buffer.pixels_mut(),
                 &(

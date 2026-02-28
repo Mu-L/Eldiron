@@ -42,6 +42,7 @@ impl ScreenWidget {
     }
 
     pub fn build(&mut self, map: &Map, assets: &Assets) {
+        let animation_frame = self.scene.animation_frame;
         self.scene = self.builder_d2.build(
             map,
             assets,
@@ -50,6 +51,7 @@ impl ScreenWidget {
                 self.buffer.dim().height as f32,
             ),
         );
+        self.scene.animation_frame = animation_frame;
     }
 
     pub fn draw(&mut self, map: &Map, time: &TheTime, assets: &Assets) {

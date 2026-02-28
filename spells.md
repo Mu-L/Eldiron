@@ -54,6 +54,9 @@ Future extension:
 - `spell_mode = "projectile" | "instant" | "aoe_persistent"`
 - `spell_effect = "damage" | "heal" | "buff" | "debuff" | "custom"`
 - `spell_target_filter = "enemy" | "ally" | "self" | "any"`
+- `spell_target_filter` also supports numeric attribute expressions, for example:
+  - `"ALIGNMENT < 0"`
+  - operators: `<`, `<=`, `>`, `>=`, `==`, `!=`
 
 ## Common Optional Attributes
 
@@ -66,6 +69,9 @@ Future extension:
 - `spell_hit_policy = "first" | "pierce" | "explode"`
 - `spell_max_hits`
 - `spell_falloff = "none" | "linear"`
+- `effect_id` (optional impact tile UUID)
+- `effect_duration` (impact display seconds; default `0.25`)
+- `effect_height` (optional impact height override)
 - visuals: `tile`, animation attrs, `emit_light`, light attrs
 - audio: `cast_sfx`, `travel_sfx`, `impact_sfx`
 
@@ -98,6 +104,9 @@ Hooks can extend/override behavior for complex spells.
 2. Server validates template + target.
 3. Server rolls success check (`success_pct`).
 4. On success, spawn runtime item with `is_spell = true`.
+
+Comment: Should it not always spawned just miss (for projectiles ?)
+
 5. Spell system updates each tick:
    - movement/homing
    - collision/target checks

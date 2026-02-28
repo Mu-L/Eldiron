@@ -922,6 +922,18 @@ impl SceneHandler {
                         if item.attributes.get_bool_default("visible", false) {
                             let size = 1.0;
                             if let Some(tile) = source.tile_from_tile_list(assets) {
+                                let pos_xz = item.get_pos_xz();
+                                let mut ground_y = map
+                                    .find_sector_at(pos_xz)
+                                    .map(|s| s.properties.get_float_default("floor_height", 0.0))
+                                    .unwrap_or(0.0);
+                                if ground_y == 0.0 {
+                                    let config =
+                                        crate::chunkbuilder::terrain_generator::TerrainConfig::default();
+                                    ground_y = crate::chunkbuilder::terrain_generator::TerrainGenerator::sample_height_at(
+                                        map, pos_xz, &config,
+                                    );
+                                }
                                 let alignment = item
                                     .attributes
                                     .get_str_default("billboard_alignment", "upright".into())
@@ -931,14 +943,28 @@ impl SceneHandler {
                                 let (center3, view_right, view_up) = if floor_aligned {
                                     // Ground-aligned billboard for items that should lie on the floor.
                                     (
-                                        Vec3::new(item.position.x, 0.01, item.position.z),
+                                        Vec3::new(
+                                            item.position.x,
+                                            ground_y + 0.01,
+                                            item.position.z,
+                                        ),
                                         Vec3::unit_x(),
                                         Vec3::unit_z(),
                                     )
                                 } else {
+                                    let is_spell_like =
+                                        item.attributes.get_bool_default("is_spell", false)
+                                            || item
+                                                .attributes
+                                                .get_bool_default("spell_impacting", false);
+                                    let y = if is_spell_like {
+                                        item.position.y + size * 0.5
+                                    } else {
+                                        ground_y + size * 0.5
+                                    };
                                     // Default: camera-facing upright billboard.
                                     (
-                                        Vec3::new(item.position.x, size * 0.5, item.position.z),
+                                        Vec3::new(item.position.x, y, item.position.z),
                                         basis.1,
                                         basis.2,
                                     )

@@ -702,6 +702,25 @@ impl Visitor for CompileVisitor {
                             loc,
                         ));
                     }
+                } else if name == "cast_spell" {
+                    if args.len() == 2 || args.len() == 3 {
+                        for arg in args {
+                            _ = arg.accept(self, ctx)?;
+                        }
+                        ctx.emit(NodeOp::HostCall {
+                            name: "cast_spell".into(),
+                            argc: args.len() as u8,
+                        });
+                    } else {
+                        return Err(RuntimeError::new(
+                            format!(
+                                "Wrong amount of arguments for '{}', expected '2 or 3' got '{}'",
+                                name,
+                                args.len(),
+                            ),
+                            loc,
+                        ));
+                    }
                 } else {
                     if func.arguments as usize == args.len() {
                         for arg in args {

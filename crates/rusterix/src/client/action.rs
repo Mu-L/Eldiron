@@ -114,6 +114,13 @@ impl ClientAction {
         match func.as_str() {
             "action" => EntityAction::from_str(&arg).ok().map(InputCommand::Action),
             "intent" => Some(InputCommand::Intent(arg)),
+            "spell" => {
+                if arg.is_empty() {
+                    None
+                } else {
+                    Some(InputCommand::Intent(format!("spell:{}", arg)))
+                }
+            }
             _ => None,
         }
     }

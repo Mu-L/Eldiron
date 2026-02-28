@@ -103,6 +103,8 @@ deal_damage(random(2, 5)) // Uses current target.
 
 If called with one argument, `deal_damage(amount)` uses the current target (see [set_target](#set_target)).
 
+If the target character has [autodamage](attributes#autodamage) set to `true`, damage is applied directly by the server and no [take_damage](events#take_damage) event is sent.
+
 See also: [set_target](#set_target), [target](#target), [has_target](#has_target), [clear_target](#clear_target).
 
 :::note

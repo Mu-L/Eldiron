@@ -89,6 +89,7 @@ In the HUD you can select between two icons per sector:
 
 - **action** - Trigger a game action (mutually exclusive with **intent**).
 - **intent** - Send an intent such as **"use"**; empty string means walking intent.
+- **spell** - Spell template name used when `intent = "spell"`. Clicking a character casts that spell at the clicked target.
 - **inventory_index** - Draw and interact with the inventory item at that slot using the intent.
 - **equipped_slot** - Draw and interact with the equipped item in that slot (for example `main_hand`, `off_hand`) using the intent.
 - **drag_drop** - Enable drag-and-drop interaction for this inventory/equipped slot button.
@@ -182,6 +183,22 @@ role = "button"
 camera = "firstp"
 player_camera = "firstp"
 # camera_target = "Game View"
+```
+
+### Example 4
+
+Spell intent button.
+- In **3D**, select it and click a character to cast at that target.
+- In **2D**, select it and cast via directional intent input (like other directional intents such as `look`).
+
+```toml
+[ui]
+role = "button"
+intent = "spell"
+spell = "Fireball"
+deactivate = ["LookIntent", "UseIntent", "PickupIntent", "DropIntent"]
+border_size = 1
+border_color = "#ffff88"
 ```
 
 ---

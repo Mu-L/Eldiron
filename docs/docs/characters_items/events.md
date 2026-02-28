@@ -116,6 +116,7 @@ Events are categorized as:
 - **Value**: `dict`
 - **Description**: Triggered by the `deal_damage()` command.  
   The dictionary contains the damage payload sent by the attacker.
+  If the target has [autodamage](attributes#autodamage) enabled, this event is not triggered.
 
 ---
 

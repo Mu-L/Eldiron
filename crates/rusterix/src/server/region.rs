@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use theframework::prelude::*;
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use vek::Vec2;
+use vek::{Vec2, Vec3};
 
 use std::sync::{LazyLock, RwLock};
 
@@ -1224,8 +1224,23 @@ impl RegionInstance {
                             let intent_lower = intent.to_ascii_lowercase();
                             let mut handled_shortcut = false;
 
+                            if let Some(spell_template) = intent.strip_prefix("spell:") {
+                                let spell_template = spell_template.trim();
+                                if !spell_template.is_empty() {
+                                    let spell_id = cast_spell_for_entity(
+                                        ctx,
+                                        entity_id,
+                                        spell_template,
+                                        clicked_entity_id,
+                                        100.0,
+                                    );
+                                    handled_shortcut = spell_id >= 0;
+                                }
+                            }
+
                             // Optional character-level shortcuts for common intents.
-                            if intent_lower == "look"
+                            if !handled_shortcut
+                                && intent_lower == "look"
                                 && let Some(target) =
                                     ctx.map.entities.iter().find(|e| e.id == clicked_entity_id)
                                 && let Some(msg) = target.attributes.get_str("on_look")
@@ -1583,6 +1598,8 @@ impl RegionInstance {
             if ctx.paused {
                 return;
             }
+            ctx.delta_time = redraw_dt;
+            update_spell_cooldowns(ctx, redraw_dt);
             entities = ctx.map.entities.clone();
             let turn_speed_deg_per_sec =
                 get_config_i32_default(ctx, "game", "turn_speed_deg_per_sec", 120).max(1) as f32;
@@ -2048,7 +2065,14 @@ impl RegionInstance {
 
             // Keep avatar animation state in sync with actual movement this update.
             let moved = (entity.get_pos_xz() - action_start_pos).magnitude_squared() > 1e-6;
-            let desired_anim = if moved { "Walk" } else { "Idle" };
+            let is_casting = entity.attributes.get_bool_default("spell_casting", false);
+            let desired_anim = if is_casting {
+                "Cast"
+            } else if moved {
+                "Walk"
+            } else {
+                "Idle"
+            };
             let current_anim = entity
                 .attributes
                 .get_str_default("avatar_animation", String::new());
@@ -2064,6 +2088,7 @@ impl RegionInstance {
 
         with_regionctx(self.id, |ctx| {
             ctx.map.entities = entities;
+            update_spell_items(ctx);
 
             // Send the entity updates if non empty
             if !updates.is_empty() {
@@ -2728,6 +2753,34 @@ impl RegionInstance {
 
             let intent = entity.attributes.get_str_default("intent", "".into());
 
+            if let Some(spell_template) = intent.trim().strip_prefix("spell:") {
+                let spell_template = spell_template.trim();
+                if spell_template.is_empty() {
+                    return;
+                }
+
+                if let Some(target_entity_id) = target_entity_id {
+                    _ = cast_spell_for_entity(
+                        ctx,
+                        entity.id,
+                        spell_template,
+                        target_entity_id,
+                        100.0,
+                    );
+                } else {
+                    // In 2D directional intent mode, cast towards the chosen direction
+                    // even if no entity is currently at that tile.
+                    _ = cast_spell_for_entity_to_pos(
+                        ctx,
+                        entity.id,
+                        spell_template,
+                        position,
+                        100.0,
+                    );
+                }
+                return;
+            }
+
             if !found_target {
                 let message = format!("{{nothing_to_{}}}", intent);
                 entity.set_attribute("intent", Value::Str(String::new()));
@@ -3200,6 +3253,9 @@ fn take_item_for_entity(ctx: &mut RegionCtx, entity_id: u32, item_id: u32) -> bo
         .position(|item| item.id == item_id && !item.attributes.get_bool_default("static", false))
     {
         let item = ctx.map.items.remove(pos);
+        if item.attributes.get_bool_default("is_spell", false) {
+            return false;
+        }
 
         if let Some(entity) = ctx
             .map
@@ -3367,12 +3423,850 @@ fn send_message(ctx: &RegionCtx, id: u32, message: String, role: &str) {
     ctx.from_sender.get().unwrap().send(msg).unwrap();
 }
 
+pub(crate) fn spell_cooldown_key(template: &str) -> String {
+    format!("__spell_cd_{}", template.trim().to_ascii_lowercase())
+}
+
+pub(crate) fn is_spell_on_cooldown(ctx: &RegionCtx, caster_id: u32, template: &str) -> bool {
+    let key = spell_cooldown_key(template);
+    if let Some(state) = ctx.entity_state_data.get(&caster_id)
+        && let Some(value) = state.get(&key)
+    {
+        return match value {
+            Value::Float(left) => *left > 0.0,
+            Value::Int64(until_tick) => ctx.ticks < *until_tick,
+            Value::Int(until_tick) => ctx.ticks < *until_tick as i64,
+            _ => false,
+        };
+    }
+    false
+}
+
+pub(crate) fn set_spell_cooldown(
+    ctx: &mut RegionCtx,
+    caster_id: u32,
+    template: &str,
+    cooldown_seconds: f32,
+) {
+    if cooldown_seconds <= 0.0 {
+        return;
+    }
+    let key = spell_cooldown_key(template);
+    if let Some(state) = ctx.entity_state_data.get_mut(&caster_id) {
+        state.set(&key, Value::Float(cooldown_seconds));
+    } else {
+        let mut vc = ValueContainer::default();
+        vc.set(&key, Value::Float(cooldown_seconds));
+        ctx.entity_state_data.insert(caster_id, vc);
+    }
+}
+
+fn update_spell_cooldowns(ctx: &mut RegionCtx, dt: f32) {
+    if dt <= 0.0 {
+        return;
+    }
+    for state in ctx.entity_state_data.values_mut() {
+        let keys: Vec<String> = state
+            .keys()
+            .filter(|k| k.starts_with("__spell_cd_"))
+            .cloned()
+            .collect();
+        for key in keys {
+            if let Some(Value::Float(left)) = state.get(&key).cloned() {
+                state.set(&key, Value::Float((left - dt).max(0.0)));
+            }
+        }
+    }
+}
+
+pub(crate) fn apply_spell_default_attrs(spell_item: &mut Item) {
+    if spell_item.attributes.get("spell_mode").is_none() {
+        spell_item.set_attribute("spell_mode", Value::Str("projectile".into()));
+    }
+    if spell_item.attributes.get("spell_effect").is_none() {
+        spell_item.set_attribute("spell_effect", Value::Str("damage".into()));
+    }
+    if spell_item.attributes.get("spell_target_filter").is_none() {
+        spell_item.set_attribute("spell_target_filter", Value::Str("any".into()));
+    }
+    if spell_item.attributes.get("spell_amount").is_none() {
+        spell_item.set_attribute("spell_amount", Value::Int(1));
+    }
+    if spell_item.attributes.get("spell_speed").is_none() {
+        spell_item.set_attribute("spell_speed", Value::Float(6.0));
+    }
+    if spell_item.attributes.get("spell_cast_time").is_none() {
+        spell_item.set_attribute("spell_cast_time", Value::Float(0.0));
+    }
+    if spell_item.attributes.get("spell_cast_offset").is_none() {
+        spell_item.set_attribute("spell_cast_offset", Value::Float(0.6));
+    }
+    if spell_item.attributes.get("spell_cast_height").is_none() {
+        spell_item.set_attribute("spell_cast_height", Value::Float(0.5));
+    }
+    if spell_item.attributes.get("spell_flight_height").is_none() {
+        spell_item.set_attribute("spell_flight_height", Value::Float(0.5));
+    }
+    if spell_item.attributes.get("spell_cooldown").is_none() {
+        spell_item.set_attribute("spell_cooldown", Value::Float(0.0));
+    }
+    if spell_item.attributes.get("spell_max_range").is_none() {
+        spell_item.set_attribute("spell_max_range", Value::Float(0.0));
+    }
+    if spell_item.attributes.get("spell_lifetime").is_none() {
+        spell_item.set_attribute("spell_lifetime", Value::Float(3.0));
+    }
+    if spell_item.attributes.get("spell_radius").is_none() {
+        spell_item.set_attribute("spell_radius", Value::Float(0.4));
+    }
+}
+
+fn parse_filter_expr(filter: &str) -> Option<(&str, &str, f32)> {
+    let ops = ["<=", ">=", "==", "!=", "<", ">"];
+    let trimmed = filter.trim();
+    for op in ops {
+        if let Some(idx) = trimmed.find(op) {
+            let lhs = trimmed[..idx].trim();
+            let rhs = trimmed[idx + op.len()..].trim();
+            if lhs.is_empty() || rhs.is_empty() {
+                return None;
+            }
+            if let Ok(v) = rhs.parse::<f32>() {
+                return Some((lhs, op, v));
+            }
+        }
+    }
+    None
+}
+
+fn numeric_attr(attrs: &ValueContainer, key: &str) -> Option<f32> {
+    match attrs.get(key) {
+        Some(Value::Float(v)) => Some(*v),
+        Some(Value::Int(v)) => Some(*v as f32),
+        Some(Value::UInt(v)) => Some(*v as f32),
+        Some(Value::Int64(v)) => Some(*v as f32),
+        Some(Value::Bool(v)) => Some(if *v { 1.0 } else { 0.0 }),
+        _ => None,
+    }
+}
+
+fn cast_spell_for_entity(
+    ctx: &mut RegionCtx,
+    caster_id: u32,
+    template: &str,
+    target_id: u32,
+    success_pct: f32,
+) -> i32 {
+    if is_spell_on_cooldown(ctx, caster_id, template) {
+        return -1;
+    }
+
+    let success_pct = success_pct.clamp(0.0, 100.0);
+    let mut rng = rand::rng();
+    let roll = rng.random_range(0.0..100.0);
+    if roll >= success_pct {
+        ctx.to_execute_entity
+            .push((caster_id, "cast_failed".into(), VMValue::zero()));
+        return -1;
+    }
+
+    let Some(mut spell_item) = ctx.create_item(template.to_string()) else {
+        return -1;
+    };
+    let Some(caster) = ctx.map.entities.iter().find(|e| e.id == caster_id) else {
+        return -1;
+    };
+    let Some(target) = ctx.map.entities.iter().find(|e| e.id == target_id) else {
+        return -1;
+    };
+    let caster_pos = caster.position;
+    let caster_orientation = caster.orientation;
+    let caster_is_firstp = matches!(
+        caster.attributes.get("player_camera"),
+        Some(Value::PlayerCamera(PlayerCamera::D3FirstP))
+    );
+    let target_pos = target.position;
+    let had_cast_offset = spell_item.attributes.contains("spell_cast_offset");
+    let had_cast_height = spell_item.attributes.contains("spell_cast_height");
+
+    spell_item.set_attribute("is_spell", Value::Bool(true));
+    if spell_item.attributes.get("visible").is_none() {
+        spell_item.set_attribute("visible", Value::Bool(true));
+    }
+    apply_spell_default_attrs(&mut spell_item);
+    spell_item.set_attribute("spell_caster_id", Value::UInt(caster_id));
+    spell_item.set_attribute("spell_target_id", Value::UInt(target_id));
+
+    let flight_height = spell_item
+        .attributes
+        .get_float_default("spell_flight_height", 0.5);
+    let spawn_pos = Vec3::new(caster_pos.x, flight_height, caster_pos.z);
+    let cast_time = spell_item
+        .attributes
+        .get_float_default("spell_cast_time", 0.0)
+        .max(0.0);
+    let mut cast_offset = spell_item
+        .attributes
+        .get_float_default("spell_cast_offset", 0.6)
+        .max(0.0);
+    let mut cast_height = spell_item
+        .attributes
+        .get_float_default("spell_cast_height", flight_height);
+    if caster_is_firstp {
+        if !had_cast_offset {
+            cast_offset = cast_offset.max(1.6);
+        }
+        if !had_cast_height {
+            cast_height = cast_height.max(1.4);
+        }
+    }
+    let mut dir = Vec2::new(target_pos.x - spawn_pos.x, target_pos.z - spawn_pos.z);
+    if dir.magnitude_squared() <= 1e-6 {
+        dir = caster_orientation;
+    }
+    if dir.magnitude_squared() <= 1e-6 {
+        dir = Vec2::new(1.0, 0.0);
+    } else {
+        dir = dir.normalized();
+    }
+    if let Some(caster_mut) = ctx.map.entities.iter_mut().find(|e| e.id == caster_id) {
+        caster_mut.set_orientation(dir);
+    }
+
+    spell_item.set_attribute("spell_dir_x", Value::Float(dir.x));
+    spell_item.set_attribute("spell_dir_z", Value::Float(dir.y));
+    spell_item.set_attribute("spell_travel", Value::Float(0.0));
+    let lifetime = spell_item
+        .attributes
+        .get_float_default("spell_lifetime", 3.0);
+    spell_item.set_attribute("spell_lifetime_left", Value::Float(lifetime));
+    if cast_time > 0.0 {
+        let hold_pos = Vec3::new(
+            spawn_pos.x + dir.x * cast_offset,
+            cast_height,
+            spawn_pos.z + dir.y * cast_offset,
+        );
+        spell_item.set_attribute("spell_casting", Value::Bool(true));
+        spell_item.set_attribute("spell_cast_left", Value::Float(cast_time));
+        spell_item.set_attribute("spell_cast_height", Value::Float(cast_height));
+        spell_item.set_attribute("spell_cast_offset", Value::Float(cast_offset));
+        spell_item.set_position(hold_pos);
+        if let Some(caster_mut) = ctx.map.entities.iter_mut().find(|e| e.id == caster_id) {
+            caster_mut.set_attribute("spell_casting", Value::Bool(true));
+        }
+    } else {
+        spell_item.set_position(spawn_pos);
+    }
+    spell_item.mark_all_dirty();
+    let spell_id = spell_item.id as i32;
+    let cooldown = spell_item
+        .attributes
+        .get_float_default("spell_cooldown", 0.0)
+        .max(0.0);
+    let on_cast_message = spell_item
+        .attributes
+        .get_str("on_cast")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    ctx.map.items.push(spell_item);
+    set_spell_cooldown(ctx, caster_id, template, cooldown);
+    if let Some(message) = on_cast_message {
+        send_message(ctx, caster_id, message, "system");
+    }
+    spell_id
+}
+
+fn cast_spell_for_entity_to_pos(
+    ctx: &mut RegionCtx,
+    caster_id: u32,
+    template: &str,
+    target_pos_2d: Vec2<f32>,
+    success_pct: f32,
+) -> i32 {
+    if is_spell_on_cooldown(ctx, caster_id, template) {
+        return -1;
+    }
+
+    let success_pct = success_pct.clamp(0.0, 100.0);
+    let mut rng = rand::rng();
+    let roll = rng.random_range(0.0..100.0);
+    if roll >= success_pct {
+        ctx.to_execute_entity
+            .push((caster_id, "cast_failed".into(), VMValue::zero()));
+        return -1;
+    }
+
+    let Some(mut spell_item) = ctx.create_item(template.to_string()) else {
+        return -1;
+    };
+    let Some(caster) = ctx.map.entities.iter().find(|e| e.id == caster_id) else {
+        return -1;
+    };
+    let caster_pos = caster.position;
+    let caster_orientation = caster.orientation;
+    let caster_is_firstp = matches!(
+        caster.attributes.get("player_camera"),
+        Some(Value::PlayerCamera(PlayerCamera::D3FirstP))
+    );
+    let had_cast_offset = spell_item.attributes.contains("spell_cast_offset");
+    let had_cast_height = spell_item.attributes.contains("spell_cast_height");
+
+    spell_item.set_attribute("is_spell", Value::Bool(true));
+    if spell_item.attributes.get("visible").is_none() {
+        spell_item.set_attribute("visible", Value::Bool(true));
+    }
+    apply_spell_default_attrs(&mut spell_item);
+    spell_item.set_attribute("spell_caster_id", Value::UInt(caster_id));
+    spell_item.set_attribute("spell_target_x", Value::Float(target_pos_2d.x));
+    let flight_height = spell_item
+        .attributes
+        .get_float_default("spell_flight_height", 0.5);
+    spell_item.set_attribute("spell_target_y", Value::Float(flight_height));
+    spell_item.set_attribute("spell_target_z", Value::Float(target_pos_2d.y));
+
+    let spawn_pos = Vec3::new(caster_pos.x, flight_height, caster_pos.z);
+    let cast_time = spell_item
+        .attributes
+        .get_float_default("spell_cast_time", 0.0)
+        .max(0.0);
+    let mut cast_offset = spell_item
+        .attributes
+        .get_float_default("spell_cast_offset", 0.6)
+        .max(0.0);
+    let mut cast_height = spell_item
+        .attributes
+        .get_float_default("spell_cast_height", flight_height);
+    if caster_is_firstp {
+        if !had_cast_offset {
+            cast_offset = cast_offset.max(1.6);
+        }
+        if !had_cast_height {
+            cast_height = cast_height.max(1.4);
+        }
+    }
+    let mut dir = Vec2::new(target_pos_2d.x - spawn_pos.x, target_pos_2d.y - spawn_pos.z);
+    if dir.magnitude_squared() <= 1e-6 {
+        dir = caster_orientation;
+    }
+    if dir.magnitude_squared() <= 1e-6 {
+        dir = Vec2::new(1.0, 0.0);
+    } else {
+        dir = dir.normalized();
+    }
+    if let Some(caster_mut) = ctx.map.entities.iter_mut().find(|e| e.id == caster_id) {
+        caster_mut.set_orientation(dir);
+    }
+
+    spell_item.set_attribute("spell_dir_x", Value::Float(dir.x));
+    spell_item.set_attribute("spell_dir_z", Value::Float(dir.y));
+    spell_item.set_attribute("spell_travel", Value::Float(0.0));
+    let lifetime = spell_item
+        .attributes
+        .get_float_default("spell_lifetime", 3.0);
+    spell_item.set_attribute("spell_lifetime_left", Value::Float(lifetime));
+    if cast_time > 0.0 {
+        let hold_pos = Vec3::new(
+            spawn_pos.x + dir.x * cast_offset,
+            cast_height,
+            spawn_pos.z + dir.y * cast_offset,
+        );
+        spell_item.set_attribute("spell_casting", Value::Bool(true));
+        spell_item.set_attribute("spell_cast_left", Value::Float(cast_time));
+        spell_item.set_attribute("spell_cast_height", Value::Float(cast_height));
+        spell_item.set_attribute("spell_cast_offset", Value::Float(cast_offset));
+        spell_item.set_position(hold_pos);
+        if let Some(caster_mut) = ctx.map.entities.iter_mut().find(|e| e.id == caster_id) {
+            caster_mut.set_attribute("spell_casting", Value::Bool(true));
+        }
+    } else {
+        spell_item.set_position(spawn_pos);
+    }
+    spell_item.mark_all_dirty();
+    let spell_id = spell_item.id as i32;
+    let cooldown = spell_item
+        .attributes
+        .get_float_default("spell_cooldown", 0.0)
+        .max(0.0);
+    let on_cast_message = spell_item
+        .attributes
+        .get_str("on_cast")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    ctx.map.items.push(spell_item);
+    set_spell_cooldown(ctx, caster_id, template, cooldown);
+    if let Some(message) = on_cast_message {
+        send_message(ctx, caster_id, message, "system");
+    }
+    spell_id
+}
+
+fn spell_target_filter_allows(
+    filter: &str,
+    caster_id: u32,
+    target_id: u32,
+    entity_attrs: &FxHashMap<u32, ValueContainer>,
+    alignment: &FxHashMap<u32, i32>,
+) -> bool {
+    let trimmed = filter.trim();
+    let filter = trimmed.to_ascii_lowercase();
+    match filter.as_str() {
+        "self" => caster_id == target_id,
+        "ally" => {
+            if caster_id == 0 {
+                return false;
+            }
+            let caster_alignment = alignment.get(&caster_id).copied().unwrap_or(0);
+            let target_alignment = alignment.get(&target_id).copied().unwrap_or(0);
+            caster_alignment != 0 && caster_alignment == target_alignment
+        }
+        "enemy" => {
+            if caster_id == 0 {
+                return true;
+            }
+            let caster_alignment = alignment.get(&caster_id).copied().unwrap_or(0);
+            let target_alignment = alignment.get(&target_id).copied().unwrap_or(0);
+            caster_alignment == 0 || target_alignment == 0 || caster_alignment != target_alignment
+        }
+        _ => {
+            if let Some((lhs, op, rhs)) = parse_filter_expr(trimmed)
+                && let Some(attrs) = entity_attrs.get(&target_id)
+                && let Some(lhs_v) = numeric_attr(attrs, lhs)
+            {
+                return match op {
+                    "<" => lhs_v < rhs,
+                    "<=" => lhs_v <= rhs,
+                    ">" => lhs_v > rhs,
+                    ">=" => lhs_v >= rhs,
+                    "==" => (lhs_v - rhs).abs() <= f32::EPSILON,
+                    "!=" => (lhs_v - rhs).abs() > f32::EPSILON,
+                    _ => false,
+                };
+            }
+            true // "any" and unknown values
+        }
+    }
+}
+
+pub(crate) fn apply_damage_direct(
+    ctx: &mut RegionCtx,
+    target_id: u32,
+    from_id: u32,
+    amount: i32,
+) -> bool {
+    if amount <= 0 {
+        return false;
+    }
+
+    let health_attr = ctx.health_attr.clone();
+    let mut kill = false;
+    let mut enqueue_death = false;
+    let mut should_autodrop = false;
+
+    if let Some(entity) = ctx.map.entities.iter_mut().find(|e| e.id == target_id)
+        && let Some(mut health) = entity.attributes.get_int(&health_attr)
+    {
+        health -= amount;
+        health = health.max(0);
+        entity.set_attribute(&health_attr, Value::Int(health));
+
+        let mode = entity.attributes.get_str_default("mode", "".into());
+        if health <= 0 && mode != "dead" {
+            enqueue_death = true;
+            entity.set_attribute("mode", Value::Str("dead".into()));
+            entity.set_attribute("visible", Value::Bool(false));
+            entity.action = EntityAction::Off;
+            ctx.entity_proximity_alerts.remove(&target_id);
+            should_autodrop = entity.attributes.get_bool_default("autodrop", false);
+            kill = true;
+        }
+    }
+
+    if kill && should_autodrop {
+        drop_all_items_for_entity(ctx, target_id);
+    }
+
+    if enqueue_death {
+        ctx.to_execute_entity
+            .push((target_id, "death".into(), VMValue::zero()));
+    }
+
+    if kill {
+        ctx.to_execute_entity
+            .push((from_id, "kill".into(), VMValue::broadcast(target_id as f32)));
+    }
+
+    kill
+}
+
+pub(crate) fn drop_all_items_for_entity(ctx: &mut RegionCtx, entity_id: u32) {
+    let removed_items = if let Some(entity) = get_entity_mut(&mut ctx.map, entity_id) {
+        let mut removed_items = Vec::new();
+
+        let slots: Vec<usize> = entity
+            .inventory
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, item)| item.as_ref().map(|_| slot))
+            .collect();
+
+        for slot in slots {
+            if let Some(mut item) = entity.remove_item_from_slot(slot) {
+                item.position = entity.position;
+                item.mark_all_dirty();
+                removed_items.push(item);
+            }
+        }
+
+        let equipped_slots: Vec<String> = entity.equipped.keys().cloned().collect();
+        for slot in equipped_slots {
+            if let Ok(mut item) = entity.unequip_item(&slot) {
+                item.position = entity.position;
+                item.mark_all_dirty();
+                removed_items.push(item);
+            }
+        }
+
+        removed_items
+    } else {
+        Vec::new()
+    };
+
+    if !removed_items.is_empty() {
+        ctx.map.items.extend(removed_items);
+    }
+}
+
+fn update_spell_items(ctx: &mut RegionCtx) {
+    let dt = ctx.delta_time.max(0.0);
+    if dt <= 0.0 || ctx.map.items.is_empty() {
+        return;
+    }
+
+    let mut entity_pos: FxHashMap<u32, Vec2<f32>> = FxHashMap::default();
+    let mut entity_dead: FxHashMap<u32, bool> = FxHashMap::default();
+    let mut entity_alignment: FxHashMap<u32, i32> = FxHashMap::default();
+    let mut entity_orientation: FxHashMap<u32, Vec2<f32>> = FxHashMap::default();
+    let mut entity_attrs: FxHashMap<u32, ValueContainer> = FxHashMap::default();
+    for entity in &ctx.map.entities {
+        entity_pos.insert(entity.id, entity.get_pos_xz());
+        entity_dead.insert(
+            entity.id,
+            entity.attributes.get_str_default("mode", "active".into()) == "dead",
+        );
+        entity_alignment.insert(entity.id, entity.attributes.get_int_default("ALIGNMENT", 0));
+        entity_orientation.insert(entity.id, entity.orientation);
+        entity_attrs.insert(entity.id, entity.attributes.clone());
+    }
+
+    let mut despawn_item_ids: Vec<u32> = Vec::new();
+    let mut casting_casters: FxHashSet<u32> = FxHashSet::default();
+    let mut pending_damage: Vec<(u32, u32, i32)> = Vec::new(); // (target_id, caster_id, amount)
+    let mut pending_heal: Vec<(u32, i32)> = Vec::new(); // (target_id, amount)
+    let mut pending_item_events: Vec<(u32, String, VMValue)> = Vec::new();
+
+    for item in &mut ctx.map.items {
+        if !item.attributes.get_bool_default("is_spell", false) {
+            continue;
+        }
+
+        let mode = item
+            .attributes
+            .get_str_default("spell_mode", "projectile".into())
+            .to_ascii_lowercase();
+        if mode != "projectile" {
+            continue;
+        }
+
+        // Impact phase: keep the projectile alive for a short effect display
+        // after a hit (same item, switched to effect_id tile/source).
+        if item.attributes.get_bool_default("spell_impacting", false) {
+            let mut impact_left = item.attributes.get_float_default(
+                "spell_impact_left",
+                item.attributes.get_float_default("effect_duration", 0.25),
+            );
+            impact_left -= dt;
+            item.set_attribute("spell_impact_left", Value::Float(impact_left));
+            if impact_left <= 0.0 {
+                despawn_item_ids.push(item.id);
+            }
+            continue;
+        }
+
+        if item.attributes.get_bool_default("spell_casting", false) {
+            let caster_id = item.attributes.get_uint("spell_caster_id").unwrap_or(0);
+            let cast_height = item.attributes.get_float_default("spell_cast_height", 0.5);
+            let cast_offset = item
+                .attributes
+                .get_float_default("spell_cast_offset", 0.6)
+                .max(0.0);
+            let flight_height = item
+                .attributes
+                .get_float_default("spell_flight_height", 0.5);
+
+            if let Some(caster_pos) = entity_pos.get(&caster_id) {
+                let mut dir = entity_orientation
+                    .get(&caster_id)
+                    .copied()
+                    .unwrap_or(Vec2::new(1.0, 0.0));
+                if dir.magnitude_squared() <= 1e-6 {
+                    dir = Vec2::new(1.0, 0.0);
+                } else {
+                    dir = dir.normalized();
+                }
+                item.set_attribute("spell_dir_x", Value::Float(dir.x));
+                item.set_attribute("spell_dir_z", Value::Float(dir.y));
+                item.set_position(Vec3::new(
+                    caster_pos.x + dir.x * cast_offset,
+                    cast_height,
+                    caster_pos.y + dir.y * cast_offset,
+                ));
+            }
+
+            let mut cast_left = item.attributes.get_float_default("spell_cast_left", 0.0);
+            cast_left -= dt;
+            item.set_attribute("spell_cast_left", Value::Float(cast_left));
+            if cast_left > 0.0 {
+                if caster_id != 0 {
+                    casting_casters.insert(caster_id);
+                }
+                continue;
+            }
+            item.set_attribute("spell_casting", Value::Bool(false));
+            item.set_position(Vec3::new(item.position.x, flight_height, item.position.z));
+        }
+
+        let mut lifetime_left = item.attributes.get_float_default(
+            "spell_lifetime_left",
+            item.attributes.get_float_default("spell_lifetime", 3.0),
+        );
+        lifetime_left -= dt;
+        item.set_attribute("spell_lifetime_left", Value::Float(lifetime_left));
+        if lifetime_left <= 0.0 {
+            pending_item_events.push((item.id, "expire".into(), VMValue::zero()));
+            despawn_item_ids.push(item.id);
+            continue;
+        }
+
+        let speed = item
+            .attributes
+            .get_float_default("spell_speed", 6.0)
+            .max(0.0);
+
+        let target_id = item.attributes.get_uint("spell_target_id");
+        let mut target_pos = target_id.and_then(|id| entity_pos.get(&id).copied());
+        if target_pos.is_none() {
+            let tx = item
+                .attributes
+                .get_float_default("spell_target_x", item.position.x);
+            let tz = item
+                .attributes
+                .get_float_default("spell_target_z", item.position.z);
+            target_pos = Some(Vec2::new(tx, tz));
+        }
+
+        let mut direction = Vec2::new(
+            item.attributes.get_float_default("spell_dir_x", 1.0),
+            item.attributes.get_float_default("spell_dir_z", 0.0),
+        );
+        if let Some(tp) = target_pos {
+            let to_target = tp - item.get_pos_xz();
+            if to_target.magnitude_squared() > 1e-6 {
+                direction = to_target.normalized();
+            }
+        }
+        if direction.magnitude_squared() <= 1e-6 {
+            direction = Vec2::new(1.0, 0.0);
+        } else {
+            direction = direction.normalized();
+        }
+        item.set_attribute("spell_dir_x", Value::Float(direction.x));
+        item.set_attribute("spell_dir_z", Value::Float(direction.y));
+
+        let step = speed * dt;
+        let flight_height = item
+            .attributes
+            .get_float_default("spell_flight_height", 0.5);
+        if step > 0.0 {
+            item.set_position(Vec3::new(
+                item.position.x + direction.x * step,
+                flight_height,
+                item.position.z + direction.y * step,
+            ));
+        }
+
+        let travel = item.attributes.get_float_default("spell_travel", 0.0) + step;
+        item.set_attribute("spell_travel", Value::Float(travel));
+        let max_range = item.attributes.get_float_default("spell_max_range", 0.0);
+        if max_range > 0.0 && travel >= max_range {
+            pending_item_events.push((item.id, "expire".into(), VMValue::zero()));
+            despawn_item_ids.push(item.id);
+            continue;
+        }
+
+        let caster_id = item.attributes.get_uint("spell_caster_id").unwrap_or(0);
+        let filter = item
+            .attributes
+            .get_str_default("spell_target_filter", "any".into());
+        let hit_radius = item
+            .attributes
+            .get_float_default("spell_radius", 0.4)
+            .max(0.05);
+
+        let mut hit_target: Option<u32> = None;
+        if let Some(tid) = target_id {
+            if !entity_dead.get(&tid).copied().unwrap_or(true)
+                && spell_target_filter_allows(
+                    &filter,
+                    caster_id,
+                    tid,
+                    &entity_attrs,
+                    &entity_alignment,
+                )
+                && let Some(tp) = entity_pos.get(&tid)
+                && tp.distance(item.get_pos_xz()) <= hit_radius
+            {
+                hit_target = Some(tid);
+            }
+        } else {
+            for (eid, pos) in &entity_pos {
+                if *eid == caster_id {
+                    continue;
+                }
+                if entity_dead.get(eid).copied().unwrap_or(true) {
+                    continue;
+                }
+                if !spell_target_filter_allows(
+                    &filter,
+                    caster_id,
+                    *eid,
+                    &entity_attrs,
+                    &entity_alignment,
+                ) {
+                    continue;
+                }
+                if pos.distance(item.get_pos_xz()) <= hit_radius {
+                    hit_target = Some(*eid);
+                    break;
+                }
+            }
+        }
+
+        if let Some(target_id) = hit_target {
+            let effect = item
+                .attributes
+                .get_str_default("spell_effect", "damage".into())
+                .to_ascii_lowercase();
+            let amount = item.attributes.get_int_default("spell_amount", 1).max(0);
+
+            if effect == "heal" {
+                pending_heal.push((target_id, amount));
+            } else {
+                pending_damage.push((target_id, caster_id, amount));
+            }
+
+            pending_item_events.push((item.id, "hit".into(), VMValue::broadcast(target_id as f32)));
+            // Optional impact visual on the same projectile item.
+            // If effect_id is present and valid, switch source and hold for effect_duration.
+            let effect_uuid = item.attributes.get_id("effect_id").or_else(|| {
+                item.attributes
+                    .get_str("effect_id")
+                    .and_then(|s| Uuid::parse_str(s).ok())
+            });
+            if let Some(uuid) = effect_uuid {
+                item.set_attribute("source", Value::Source(PixelSource::TileId(uuid)));
+                item.set_attribute("tile_id", Value::Id(uuid));
+                item.set_attribute("spell_impacting", Value::Bool(true));
+                item.set_attribute("spell_speed", Value::Float(0.0));
+                item.set_attribute("spell_dir_x", Value::Float(0.0));
+                item.set_attribute("spell_dir_z", Value::Float(0.0));
+                let impact_duration = item
+                    .attributes
+                    .get_float_default("effect_duration", 0.25)
+                    .max(0.0);
+                item.set_attribute("spell_impact_left", Value::Float(impact_duration));
+                let impact_height = item
+                    .attributes
+                    .get_float_default("effect_height", item.position.y);
+                item.set_position(Vec3::new(item.position.x, impact_height, item.position.z));
+                item.mark_dirty_attribute("source");
+            } else {
+                despawn_item_ids.push(item.id);
+            }
+        }
+    }
+
+    if !pending_heal.is_empty() {
+        let health_attr = ctx.health_attr.clone();
+        for (target_id, amount) in pending_heal {
+            if amount <= 0 {
+                continue;
+            }
+            if let Some(entity) = ctx.map.entities.iter_mut().find(|e| e.id == target_id) {
+                let hp = entity.attributes.get_int_default(&health_attr, 0);
+                let max_hp = entity.attributes.get_int_default("max_health", hp.max(1));
+                entity.set_attribute(&health_attr, Value::Int((hp + amount).min(max_hp)));
+            }
+        }
+    }
+
+    for entity in &mut ctx.map.entities {
+        let is_casting = casting_casters.contains(&entity.id);
+        let was_casting = entity.attributes.get_bool_default("spell_casting", false);
+        if is_casting != was_casting {
+            entity.set_attribute("spell_casting", Value::Bool(is_casting));
+        }
+    }
+
+    for (target_id, caster_id, amount) in pending_damage {
+        if amount <= 0 {
+            continue;
+        }
+        let autodamage = ctx
+            .map
+            .entities
+            .iter()
+            .find(|e| e.id == target_id)
+            .map(|e| e.attributes.get_bool_default("autodamage", false))
+            .unwrap_or(false);
+
+        if autodamage {
+            _ = apply_damage_direct(ctx, target_id, caster_id, amount);
+        } else {
+            ctx.to_execute_entity.push((
+                target_id,
+                "take_damage".into(),
+                VMValue::new(caster_id as f32, amount as f32, 0.0),
+            ));
+        }
+    }
+
+    ctx.to_execute_item.extend(pending_item_events);
+
+    if !despawn_item_ids.is_empty() {
+        ctx.map
+            .items
+            .retain(|item| !despawn_item_ids.iter().any(|id| *id == item.id));
+        for item_id in despawn_item_ids {
+            ctx.item_classes.remove(&item_id);
+            ctx.item_state_data.remove(&item_id);
+            let _ = ctx
+                .from_sender
+                .get()
+                .unwrap()
+                .send(RegionMessage::RemoveItem(ctx.region_id, item_id));
+        }
+    }
+}
+
 fn drop_item_for_entity(ctx: &mut RegionCtx, entity_id: u32, item_id: u32) -> bool {
     if let Some(entity) = get_entity_mut(&mut ctx.map, entity_id) {
         // Drop from inventory.
         if let Some(slot) = entity.get_item_slot(item_id)
             && let Some(mut item) = entity.remove_item_from_slot(slot)
         {
+            if item.attributes.get_bool_default("is_spell", false) {
+                return false;
+            }
             item.position = entity.position;
             item.mark_all_dirty();
             ctx.map.items.push(item);
@@ -3390,6 +4284,9 @@ fn drop_item_for_entity(ctx: &mut RegionCtx, entity_id: u32, item_id: u32) -> bo
         if let Some(slot) = equipped_slot
             && let Ok(mut item) = entity.unequip_item(&slot)
         {
+            if item.attributes.get_bool_default("is_spell", false) {
+                return false;
+            }
             item.position = entity.position;
             item.mark_all_dirty();
             ctx.map.items.push(item);
@@ -3442,6 +4339,23 @@ fn move_item_for_entity(
             .and_then(|item| item.attributes.get_str("slot"))
             .map(|slot| slot.trim().to_ascii_lowercase()),
     };
+
+    let moving_is_spell = match &source {
+        Source::Inventory(source_index) => entity
+            .inventory
+            .get(*source_index)
+            .and_then(|item| item.as_ref())
+            .map(|item| item.attributes.get_bool_default("is_spell", false))
+            .unwrap_or(false),
+        Source::Equipped(source_slot) => entity
+            .equipped
+            .get(source_slot)
+            .map(|item| item.attributes.get_bool_default("is_spell", false))
+            .unwrap_or(false),
+    };
+    if moving_is_spell {
+        return false;
+    }
 
     if let Some(target_index) = to_inventory_index {
         if target_index >= entity.inventory.len() {
@@ -3536,6 +4450,9 @@ fn take_item_for_entity(ctx: &mut RegionCtx, entity_id: u32, item_id: u32) -> bo
         })
     {
         let item = ctx.map.items.remove(pos);
+        if item.attributes.get_bool_default("is_spell", false) {
+            return false;
+        }
 
         if let Some(entity) = ctx
             .map

@@ -1,5 +1,8 @@
 use crate::server::message::{AudioCommand, RegionMessage};
-use crate::server::region::add_debug_value;
+use crate::server::region::{
+    add_debug_value, apply_damage_direct, apply_spell_default_attrs, is_spell_on_cooldown,
+    set_spell_cooldown,
+};
 use crate::vm::*;
 use crate::{
     Choice, EntityAction, Item, MultipleChoice, PixelSource, PlayerCamera, RegionCtx, Value,
@@ -7,10 +10,15 @@ use crate::{
 use rand::Rng;
 use scenevm::GeoId;
 use theframework::prelude::TheValue;
-use vek::Vec2;
+use vek::{Vec2, Vec3};
 
 struct RegionHost<'a> {
     ctx: &'a mut RegionCtx,
+}
+
+enum SpellTargetArg {
+    Entity(u32),
+    Position(Vec3<f32>),
 }
 
 const COMBAT_DEBUG_CALLS: &[&str] = &[
@@ -27,6 +35,7 @@ const COMBAT_DEBUG_CALLS: &[&str] = &[
     "took_damage",
     "goto",
     "close_in",
+    "cast_spell",
 ];
 
 fn opening_geo_for_item(item: &Item) -> Option<GeoId> {
@@ -171,6 +180,23 @@ impl<'a> RegionHost<'a> {
                 .unwrap_or(false);
         }
         COMBAT_DEBUG_CALLS.contains(&name)
+    }
+
+    fn parse_spell_target_arg(arg: &VMValue) -> Option<SpellTargetArg> {
+        if let Some(s) = arg.as_string() {
+            if let Ok(id) = s.parse::<u32>() {
+                return Some(SpellTargetArg::Entity(id));
+            }
+            return None;
+        }
+
+        // Existing VM style encodes vectors in x/y/z.
+        // If y/z are non-zero, treat it as a world position.
+        if arg.y != 0.0 || arg.z != 0.0 {
+            return Some(SpellTargetArg::Position(Vec3::new(arg.x, arg.y, arg.z)));
+        }
+
+        Some(SpellTargetArg::Entity(arg.x.max(0.0) as u32))
     }
 
     fn debug_log_call(&self, name: &str, args: &[VMValue]) {
@@ -364,6 +390,181 @@ impl<'a> HostHandler for RegionHost<'a> {
                         let _ = sender.send(RegionMessage::AudioCmd(self.ctx.region_id, cmd));
                     }
                 }
+            }
+            "cast_spell" => {
+                if let (Some(template), Some(target_arg)) =
+                    (args.first().and_then(|v| v.as_string()), args.get(1))
+                {
+                    let caster_id = self.ctx.curr_entity_id;
+                    if is_spell_on_cooldown(self.ctx, caster_id, template) {
+                        return Some(VMValue::from_i32(-1));
+                    }
+
+                    let success_pct = args.get(2).map(|v| v.x).unwrap_or(100.0).clamp(0.0, 100.0);
+                    let mut rng = rand::rng();
+                    let roll = rng.random_range(0.0..100.0);
+                    if roll >= success_pct {
+                        // Optional event for scripts reacting to failed casts.
+                        if let Some(item_id) = self.ctx.curr_item_id {
+                            self.ctx.to_execute_item.push((
+                                item_id,
+                                "cast_failed".into(),
+                                VMValue::zero(),
+                            ));
+                        } else {
+                            self.ctx.to_execute_entity.push((
+                                self.ctx.curr_entity_id,
+                                "cast_failed".into(),
+                                VMValue::zero(),
+                            ));
+                        }
+                        return Some(VMValue::from_i32(-1));
+                    }
+
+                    let Some(mut spell_item) = self.ctx.create_item(template.to_string()) else {
+                        return Some(VMValue::from_i32(-1));
+                    };
+                    let had_cast_offset = spell_item.attributes.contains("spell_cast_offset");
+                    let had_cast_height = spell_item.attributes.contains("spell_cast_height");
+                    spell_item.set_attribute("is_spell", Value::Bool(true));
+                    if spell_item.attributes.get("visible").is_none() {
+                        spell_item.set_attribute("visible", Value::Bool(true));
+                    }
+                    apply_spell_default_attrs(&mut spell_item);
+
+                    spell_item.set_attribute("spell_caster_id", Value::UInt(caster_id));
+
+                    let mut spawn_pos = Vec3::new(0.0, 0.0, 0.0);
+                    let mut caster_dir = Vec2::new(1.0, 0.0);
+                    let mut is_firstp = false;
+                    if let Some(item_id) = self.ctx.curr_item_id {
+                        if let Some(item) = self.ctx.get_item_mut(item_id) {
+                            spawn_pos = item.position;
+                        }
+                    } else if let Some(entity) = self.ctx.get_current_entity_mut() {
+                        spawn_pos = entity.position;
+                        caster_dir = entity.orientation;
+                        is_firstp = matches!(
+                            entity.attributes.get("player_camera"),
+                            Some(Value::PlayerCamera(PlayerCamera::D3FirstP))
+                        );
+                    }
+                    let flight_height = spell_item
+                        .attributes
+                        .get_float_default("spell_flight_height", 0.5);
+                    spawn_pos.y = flight_height;
+                    let cast_time = spell_item
+                        .attributes
+                        .get_float_default("spell_cast_time", 0.0)
+                        .max(0.0);
+                    let mut cast_offset = spell_item
+                        .attributes
+                        .get_float_default("spell_cast_offset", 0.6)
+                        .max(0.0);
+                    let mut cast_height = spell_item
+                        .attributes
+                        .get_float_default("spell_cast_height", flight_height);
+                    if is_firstp {
+                        if !had_cast_offset {
+                            cast_offset = cast_offset.max(1.6);
+                        }
+                        if !had_cast_height {
+                            cast_height = cast_height.max(1.4);
+                        }
+                    }
+
+                    let Some(target_arg) = Self::parse_spell_target_arg(target_arg) else {
+                        return Some(VMValue::from_i32(-1));
+                    };
+
+                    let target_pos = match target_arg {
+                        SpellTargetArg::Entity(target_id) => {
+                            if let Some(target) =
+                                self.ctx.map.entities.iter().find(|e| e.id == target_id)
+                            {
+                                spell_item.set_attribute("spell_target_id", Value::UInt(target_id));
+                                target.position
+                            } else {
+                                return Some(VMValue::from_i32(-1));
+                            }
+                        }
+                        SpellTargetArg::Position(pos) => {
+                            spell_item.set_attribute("spell_target_x", Value::Float(pos.x));
+                            spell_item.set_attribute("spell_target_y", Value::Float(flight_height));
+                            spell_item.set_attribute("spell_target_z", Value::Float(pos.z));
+                            pos
+                        }
+                    };
+
+                    let mut dir = Vec2::new(target_pos.x - spawn_pos.x, target_pos.z - spawn_pos.z);
+                    if dir.magnitude_squared() <= 1e-6 {
+                        dir = caster_dir;
+                    }
+                    if dir.magnitude_squared() <= 1e-6 {
+                        dir = Vec2::new(1.0, 0.0);
+                    }
+                    dir = dir.normalized();
+                    if self.ctx.curr_item_id.is_none()
+                        && let Some(entity) = self.ctx.get_current_entity_mut()
+                    {
+                        entity.set_orientation(dir);
+                    }
+
+                    spell_item.set_attribute("spell_dir_x", Value::Float(dir.x));
+                    spell_item.set_attribute("spell_dir_z", Value::Float(dir.y));
+                    spell_item.set_attribute("spell_travel", Value::Float(0.0));
+
+                    let lifetime = spell_item
+                        .attributes
+                        .get_float_default("spell_lifetime", 3.0);
+                    spell_item.set_attribute("spell_lifetime_left", Value::Float(lifetime));
+                    if cast_time > 0.0 {
+                        let hold_pos = Vec3::new(
+                            spawn_pos.x + dir.x * cast_offset,
+                            cast_height,
+                            spawn_pos.z + dir.y * cast_offset,
+                        );
+                        spell_item.set_attribute("spell_casting", Value::Bool(true));
+                        spell_item.set_attribute("spell_cast_left", Value::Float(cast_time));
+                        spell_item.set_attribute("spell_cast_height", Value::Float(cast_height));
+                        spell_item.set_attribute("spell_cast_offset", Value::Float(cast_offset));
+                        spell_item.set_position(hold_pos);
+                        if let Some(caster_mut) =
+                            self.ctx.map.entities.iter_mut().find(|e| e.id == caster_id)
+                        {
+                            caster_mut.set_attribute("spell_casting", Value::Bool(true));
+                        }
+                    } else {
+                        spell_item.set_position(spawn_pos);
+                    }
+                    spell_item.mark_all_dirty();
+                    let spell_id = spell_item.id;
+                    let cooldown = spell_item
+                        .attributes
+                        .get_float_default("spell_cooldown", 0.0)
+                        .max(0.0);
+                    let on_cast_message = spell_item
+                        .attributes
+                        .get_str("on_cast")
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    self.ctx.map.items.push(spell_item);
+                    if let Some(message) = on_cast_message
+                        && let Some(sender) = self.ctx.from_sender.get()
+                    {
+                        let _ = sender.send(RegionMessage::Message(
+                            self.ctx.region_id,
+                            Some(caster_id),
+                            None,
+                            caster_id,
+                            message,
+                            "system".into(),
+                        ));
+                    }
+                    set_spell_cooldown(self.ctx, caster_id, template, cooldown);
+                    return Some(VMValue::from_i32(spell_id as i32));
+                }
+                return Some(VMValue::from_i32(-1));
             }
             "set_player_camera" => {
                 if let Some(entity) = self.ctx.get_current_entity_mut() {
@@ -1030,11 +1231,24 @@ impl<'a> HostHandler for RegionHost<'a> {
                     } else {
                         self.ctx.curr_entity_id
                     };
-                    self.ctx.to_execute_entity.push((
-                        id,
-                        "take_damage".into(),
-                        VMValue::new(subject_id as f32, dmg as f32, 0.0),
-                    ));
+                    let autodamage = self
+                        .ctx
+                        .map
+                        .entities
+                        .iter()
+                        .find(|e| e.id == id)
+                        .map(|e| e.attributes.get_bool_default("autodamage", false))
+                        .unwrap_or(false);
+
+                    if autodamage {
+                        _ = apply_damage_direct(self.ctx, id, subject_id, dmg);
+                    } else {
+                        self.ctx.to_execute_entity.push((
+                            id,
+                            "take_damage".into(),
+                            VMValue::new(subject_id as f32, dmg as f32, 0.0),
+                        ));
+                    }
                     if self.ctx.debug_mode {
                         if let Some(sender) = self.ctx.from_sender.get() {
                             let _ = sender.send(RegionMessage::LogMessage(format!(
@@ -1047,8 +1261,6 @@ impl<'a> HostHandler for RegionHost<'a> {
             }
             "took_damage" => {
                 if let (Some(from), Some(amount_val)) = (args.get(0), args.get(1)) {
-                    let mut kill = false;
-
                     let from = from.x as u32;
                     // Make sure we don't heal by accident
                     let amount = amount_val.x.max(0.0) as i32;
@@ -1059,47 +1271,7 @@ impl<'a> HostHandler for RegionHost<'a> {
 
                     let id = self.ctx.curr_entity_id;
                     let health_attr = self.ctx.health_attr.clone();
-
-                    let mut enqueue_death = false;
-
-                    // Check for death
-                    {
-                        if let Some(entity) = self.ctx.get_entity_mut(id) {
-                            if let Some(mut health) = entity.attributes.get_int(&health_attr) {
-                                // Reduce the health of the target
-                                health -= amount;
-                                health = health.max(0);
-                                // Set the new health
-                                entity.set_attribute(&health_attr, Value::Int(health));
-
-                                let mode = entity.attributes.get_str_default("mode", "".into());
-                                if health <= 0 && mode != "dead" {
-                                    enqueue_death = true;
-
-                                    entity.set_attribute("mode", Value::Str("dead".into()));
-                                    entity.action = EntityAction::Off;
-                                    self.ctx.entity_proximity_alerts.remove(&id);
-
-                                    kill = true;
-                                }
-                            }
-                        }
-                    }
-
-                    if enqueue_death {
-                        self.ctx
-                            .to_execute_entity
-                            .push((id, "death".into(), VMValue::zero()));
-                    }
-
-                    // if receiver got killed, send a "kill" event to the attacker
-                    if kill {
-                        self.ctx.to_execute_entity.push((
-                            from,
-                            "kill".into(),
-                            VMValue::broadcast(id as f32),
-                        ));
-                    }
+                    let kill = apply_damage_direct(self.ctx, id, from, amount);
 
                     if self.ctx.debug_mode {
                         if let Some(sender) = self.ctx.from_sender.get() {
