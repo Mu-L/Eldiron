@@ -1111,8 +1111,12 @@ impl SceneHandler {
                 state.start_frame = clock_frame;
             }
 
-            // Skip fully open (invisible) state after animation completes.
-            if open_amount >= 0.999 && desired_open > 0.5 {
+            // Skip fully open for slide/open animations.
+            // Fade keeps geometry alive at opacity=0 so it can still occlude sky/sun in Raster3D.
+            if open_amount >= 0.999
+                && desired_open > 0.5
+                && !matches!(animation, BillboardAnimation::Fade)
+            {
                 continue;
             }
 

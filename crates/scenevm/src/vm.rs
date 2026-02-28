@@ -1055,8 +1055,12 @@ struct VsShadowOut {
 const TILE_INDEX_AVATAR_FLAG: u32 = 0x80000000u;
 const TILE_INDEX_CLAMP_UV_FLAG: u32 = 0x40000000u;
 const TILE_INDEX_BILLBOARD_FLAG: u32 = 0x20000000u;
+const TILE_INDEX_BLOCK_SUN_FLAG: u32 = 0x10000000u;
 const TILE_INDEX_FLAGS_MASK: u32 =
-    TILE_INDEX_AVATAR_FLAG | TILE_INDEX_CLAMP_UV_FLAG | TILE_INDEX_BILLBOARD_FLAG;
+    TILE_INDEX_AVATAR_FLAG
+    | TILE_INDEX_CLAMP_UV_FLAG
+    | TILE_INDEX_BILLBOARD_FLAG
+    | TILE_INDEX_BLOCK_SUN_FLAG;
 
 fn camera_to_clip(world_pos: vec3<f32>) -> vec4<f32> {
     let rel = world_pos - UBO.cam_pos.xyz;
@@ -1389,8 +1393,8 @@ fn fs_shadow(in: VsShadowOut) {
     let mat = select(mix(m0, m1, in.blend_factor), m0, is_avatar);
     let color = select(mix(c0, c1, in.blend_factor), c0, is_avatar);
     let intrinsic_alpha = clamp(color.a * mat.z, 0.0, 1.0);
-    let coverage = clamp(intrinsic_alpha * in.opacity, 0.0, 1.0);
-    if (coverage <= 0.5) {
+    // Shadow occlusion should not follow per-geometry fade opacity; only texture/material alpha.
+    if (intrinsic_alpha <= 0.5) {
         discard;
     }
 }
@@ -4627,7 +4631,7 @@ impl VM {
         if self.cached_i3.is_empty() || self.cached_tri_visibility.is_empty() {
             return (Vec::new(), Vec::new(), Vec::new());
         }
-        const TILE_INDEX_FLAGS_MASK_CPU: u32 = 0xE000_0000;
+        const TILE_INDEX_FLAGS_MASK_CPU: u32 = 0xF000_0000;
         let base_tile_index = |idx: u32| idx & !TILE_INDEX_FLAGS_MASK_CPU;
         let mut translucent_tile_cache: FxHashMap<u32, bool> = FxHashMap::default();
         let mut tile_is_translucent = |idx: u32| -> bool {
@@ -6000,6 +6004,9 @@ impl VM {
                     tile_index2 |= 0x4000_0000u32;
                 }
                 tile_index2 |= 0x2000_0000u32;
+                if matches!(obj.id, GeoId::Hole(_, _)) {
+                    tile_index2 |= 0x1000_0000u32;
+                }
                 let right = obj.view_right * (obj.width * 0.5);
                 let up = obj.view_up * (obj.height * 0.5);
                 let p0 = obj.center - right - up;
