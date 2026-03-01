@@ -2053,6 +2053,125 @@ impl RegionInstance {
                         }
                     }
                 }
+                EntityAction::Patrol {
+                    points,
+                    route_wait,
+                    route_speed,
+                    route_mode,
+                    point_index,
+                    forward,
+                    wait_until_tick,
+                } => {
+                    if points.is_empty() {
+                        entity.action = EntityAction::Off;
+                    } else {
+                        with_regionctx(self.id, |ctx| {
+                            let points = points.clone();
+                            if points.is_empty() {
+                                entity.action = EntityAction::Off;
+                                return;
+                            }
+
+                            let len = points.len();
+                            let mut idx = (*point_index).min(len - 1);
+                            let mut fwd = *forward;
+                            let mut wait_until = *wait_until_tick;
+
+                            if wait_until > ctx.ticks {
+                                entity.action = EntityAction::Patrol {
+                                    points,
+                                    route_wait: *route_wait,
+                                    route_speed: *route_speed,
+                                    route_mode: route_mode.clone(),
+                                    point_index: idx,
+                                    forward: fwd,
+                                    wait_until_tick: wait_until,
+                                };
+                                return;
+                            }
+
+                            let target = points[idx];
+                            let position = entity.get_pos_xz();
+                            let radius = entity.attributes.get_float_default("radius", 0.5) - 0.01;
+                            let speed = self.movement_units_per_sec * *route_speed * ctx.delta_time;
+
+                            let use_3d_nav = self.collision_mode == CollisionMode::Mesh
+                                && ctx.collision_world.has_collision_data();
+                            let (new_position, arrived) = if use_3d_nav {
+                                ctx.collision_world
+                                    .move_towards_on_floors(position, target, speed, radius, 1.0)
+                                    .unwrap_or_else(|| {
+                                        let to_target = target - position;
+                                        let dist = to_target.magnitude();
+                                        if dist <= 0.05 {
+                                            (position, true)
+                                        } else if dist <= f32::EPSILON {
+                                            (position, false)
+                                        } else {
+                                            let step = to_target.normalized() * speed.min(dist);
+                                            let start_3d = vek::Vec3::new(
+                                                position.x,
+                                                entity.position.y,
+                                                position.y,
+                                            );
+                                            let step_3d = vek::Vec3::new(step.x, 0.0, step.y);
+                                            let (end_3d, _) = ctx
+                                                .collision_world
+                                                .move_distance(start_3d, step_3d, radius);
+                                            let end_2d = vek::Vec2::new(end_3d.x, end_3d.z);
+                                            let arrived = (target - end_2d).magnitude() <= 0.05;
+                                            (end_2d, arrived)
+                                        }
+                                    })
+                            } else {
+                                ctx.mapmini
+                                    .move_towards(position, target, speed, radius, 1.0)
+                            };
+
+                            let move_delta = new_position - position;
+                            if move_delta.magnitude_squared() > 1e-6 {
+                                entity.set_orientation(move_delta.normalized());
+                            }
+                            entity.set_pos_xz(new_position);
+                            if arrived {
+                                let wait_ticks =
+                                    (*route_wait * ctx.ticks_per_minute as f32).max(0.0) as i64;
+                                wait_until = ctx.ticks + wait_ticks;
+                                if len > 1 {
+                                    let pingpong = route_mode.eq_ignore_ascii_case("pingpong");
+                                    if pingpong {
+                                        if fwd {
+                                            if idx + 1 >= len {
+                                                fwd = false;
+                                                idx = idx.saturating_sub(1);
+                                            } else {
+                                                idx += 1;
+                                            }
+                                        } else if idx == 0 {
+                                            fwd = true;
+                                            idx = (idx + 1).min(len - 1);
+                                        } else {
+                                            idx -= 1;
+                                        }
+                                    } else {
+                                        idx = (idx + 1) % len;
+                                    }
+                                }
+                            }
+
+                            ctx.check_player_for_section_change(entity);
+                            entity.action = EntityAction::Patrol {
+                                points,
+                                route_wait: *route_wait,
+                                route_speed: *route_speed,
+                                route_mode: route_mode.clone(),
+                                point_index: idx,
+                                forward: fwd,
+                                wait_until_tick: wait_until,
+                            };
+                        });
+                    }
+                }
                 SleepAndSwitch(tick, action) => {
                     with_regionctx(self.id, |ctx| {
                         if *tick <= ctx.ticks {
@@ -2065,8 +2184,18 @@ impl RegionInstance {
 
             // Keep avatar animation state in sync with actual movement this update.
             let moved = (entity.get_pos_xz() - action_start_pos).magnitude_squared() > 1e-6;
+            let mut attack_left = entity
+                .attributes
+                .get_float_default("avatar_attack_left", 0.0);
+            if attack_left > 0.0 {
+                attack_left = (attack_left - redraw_dt).max(0.0);
+                entity.set_attribute("avatar_attack_left", Value::Float(attack_left));
+            }
+            let is_attacking = attack_left > 0.0;
             let is_casting = entity.attributes.get_bool_default("spell_casting", false);
-            let desired_anim = if is_casting {
+            let desired_anim = if is_attacking {
+                "Attack"
+            } else if is_casting {
                 "Cast"
             } else if moved {
                 "Walk"
@@ -3942,6 +4071,13 @@ fn update_spell_items(ctx: &mut RegionCtx) {
         return;
     }
 
+    let target_fps = get_config_i32_default(ctx, "game", "target_fps", 30).max(1) as f32;
+    let default_effect_frame_time = 1.0 / target_fps;
+    let mut tile_frame_counts: FxHashMap<Uuid, usize> = FxHashMap::default();
+    for (tile_id, tile) in &ctx.assets.tiles {
+        tile_frame_counts.insert(*tile_id, tile.textures.len().max(1));
+    }
+
     let mut entity_pos: FxHashMap<u32, Vec2<f32>> = FxHashMap::default();
     let mut entity_dead: FxHashMap<u32, bool> = FxHashMap::default();
     let mut entity_alignment: FxHashMap<u32, i32> = FxHashMap::default();
@@ -3980,10 +4116,30 @@ fn update_spell_items(ctx: &mut RegionCtx) {
         // Impact phase: keep the projectile alive for a short effect display
         // after a hit (same item, switched to effect_id tile/source).
         if item.attributes.get_bool_default("spell_impacting", false) {
-            let mut impact_left = item.attributes.get_float_default(
-                "spell_impact_left",
-                item.attributes.get_float_default("effect_duration", 0.25),
-            );
+            let impact_tile_id = item.attributes.get_id("tile_id").or_else(|| {
+                item.attributes
+                    .get_str("tile_id")
+                    .and_then(|s| Uuid::parse_str(s).ok())
+            });
+            let impact_default = if item.attributes.contains("effect_duration") {
+                item.attributes.get_float_default("effect_duration", 0.25)
+            } else {
+                let frame_time = if item.attributes.contains("effect_frame_time") {
+                    item.attributes
+                        .get_float_default("effect_frame_time", default_effect_frame_time)
+                } else {
+                    default_effect_frame_time
+                }
+                .max(0.01);
+                let frames = impact_tile_id
+                    .and_then(|id| tile_frame_counts.get(&id).copied())
+                    .unwrap_or(1) as f32;
+                (frames * frame_time).max(frame_time)
+            }
+            .max(0.0);
+            let mut impact_left = item
+                .attributes
+                .get_float_default("spell_impact_left", impact_default);
             impact_left -= dt;
             item.set_attribute("spell_impact_left", Value::Float(impact_left));
             if impact_left <= 0.0 {
@@ -4179,10 +4335,20 @@ fn update_spell_items(ctx: &mut RegionCtx) {
                 item.set_attribute("spell_speed", Value::Float(0.0));
                 item.set_attribute("spell_dir_x", Value::Float(0.0));
                 item.set_attribute("spell_dir_z", Value::Float(0.0));
-                let impact_duration = item
-                    .attributes
-                    .get_float_default("effect_duration", 0.25)
-                    .max(0.0);
+                let impact_duration = if item.attributes.contains("effect_duration") {
+                    item.attributes.get_float_default("effect_duration", 0.25)
+                } else {
+                    let frame_time = if item.attributes.contains("effect_frame_time") {
+                        item.attributes
+                            .get_float_default("effect_frame_time", default_effect_frame_time)
+                    } else {
+                        default_effect_frame_time
+                    }
+                    .max(0.01);
+                    let frames = tile_frame_counts.get(&uuid).copied().unwrap_or(1) as f32;
+                    (frames * frame_time).max(frame_time)
+                }
+                .max(0.0);
                 item.set_attribute("spell_impact_left", Value::Float(impact_duration));
                 let impact_height = item
                     .attributes

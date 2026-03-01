@@ -1211,6 +1211,31 @@ impl CellItem {
                 self.form = CellItemForm::LeftRounded;
                 grid.insert(pos, self)
             }
+            Cell::Patrol => {
+                grid.insert(
+                    (pos.0 + 1, pos.1),
+                    CellItem::new_dependency(
+                        Cell::Value("1.0".into()),
+                        self.id,
+                        false,
+                        "Wait",
+                        CellItemForm::Box,
+                    ),
+                );
+                grid.insert(
+                    (pos.0 + 2, pos.1),
+                    CellItem::new_dependency(
+                        Cell::Value("1.0".into()),
+                        self.id,
+                        false,
+                        "Speed",
+                        CellItemForm::RightRounded,
+                    ),
+                );
+
+                self.form = CellItemForm::LeftRounded;
+                grid.insert(pos, self)
+            }
             Cell::PlayAudio => {
                 grid.insert(
                     (pos.0 + 1, pos.1),

@@ -61,6 +61,8 @@ pub struct DynamicObject {
     pub alpha_mode: AlphaMode,
     /// Per-billboard opacity (1.0 = fully opaque).
     pub opacity: f32,
+    /// Optional animation start counter. When set, animated tiles can start at frame 0 for this instance.
+    pub anim_start_counter: Option<u32>,
 }
 
 impl Default for DynamicObject {
@@ -77,6 +79,7 @@ impl Default for DynamicObject {
             repeat_mode: RepeatMode::Scale,
             alpha_mode: AlphaMode::Texture,
             opacity: 1.0,
+            anim_start_counter: None,
         }
     }
 }
@@ -104,6 +107,7 @@ impl DynamicObject {
             repeat_mode: RepeatMode::Scale,
             alpha_mode: AlphaMode::Texture,
             opacity: 1.0,
+            anim_start_counter: None,
         }
     }
 
@@ -148,6 +152,7 @@ impl DynamicObject {
             repeat_mode: RepeatMode::Scale,
             alpha_mode: AlphaMode::Texture,
             opacity: 1.0,
+            anim_start_counter: None,
         }
     }
 
@@ -178,6 +183,12 @@ impl DynamicObject {
     /// Set per-billboard opacity (1.0 = opaque).
     pub fn with_opacity(mut self, opacity: f32) -> Self {
         self.opacity = opacity;
+        self
+    }
+
+    /// Set an optional animation start counter for this billboard.
+    pub fn with_anim_start_counter(mut self, counter: Option<u32>) -> Self {
+        self.anim_start_counter = counter;
         self
     }
 }

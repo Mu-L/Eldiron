@@ -317,6 +317,27 @@ offer_inventory(entity, "Torch") // Offer only items named Torch.
 
 ---
 
+## `patrol`
+
+*This command can only be used with characters.*
+
+Starts patrol behavior using the character route configuration from [route](attributes#route).
+
+```eldrin
+patrol()
+patrol(wait_minutes)
+patrol(wait_minutes, speed)
+```
+
+- `wait_minutes` default: `1.0`
+- `speed` default: `1.0`
+
+`route_mode` is read from [route_mode](attributes#route_mode) and defaults to `"loop"`.
+
+See also: [route](attributes#route), [route_mode](attributes#route_mode), [goto](#goto), [random_walk_in_sector](#random_walk_in_sector).
+
+---
+
 ## `play_audio`
 
 *This command can be used with both characters and items.*

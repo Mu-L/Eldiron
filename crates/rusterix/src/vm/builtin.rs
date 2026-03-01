@@ -213,6 +213,14 @@ impl Default for Builtins {
             },
         );
         b.insert(
+            "patrol",
+            0,
+            NodeOp::HostCall {
+                name: "patrol".into(),
+                argc: 0,
+            },
+        );
+        b.insert(
             "debug",
             1,
             NodeOp::HostCall {

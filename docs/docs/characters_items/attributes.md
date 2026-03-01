@@ -161,6 +161,43 @@ set_attr("mode", "active")
 
 ---
 
+## `route`
+
+*Character-only attribute.*
+
+Patrol route definition used by [patrol](server_commands#patrol).
+Each entry is a linedef `name` that belongs to the patrol path.
+
+```toml
+route = ["GuardRouteA", "GuardRouteB"]
+```
+
+You can also use a single route name:
+
+```toml
+route = "GuardRouteA"
+```
+
+---
+
+## `route_mode`
+
+*Character-only attribute.*
+
+Controls route traversal mode for [patrol](server_commands#patrol).
+Default is `"loop"`.
+
+```toml
+route_mode = "loop"
+```
+
+Supported values:
+
+- `loop`: restart from the first point after the last point.
+- `pingpong`: reverse direction at the route ends.
+
+---
+
 ## Spell Attributes
 
 These are *item-only attributes* used by spell templates/items (`is_spell = true`).

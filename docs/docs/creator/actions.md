@@ -313,6 +313,22 @@ Remove tile sources from selected sectors (clears the `source` property).
 
 Assign the selected tile to the selected sectors. Param: *mode* = repeat or scale. This applies to floor or ceiling depending on the active HUD icon.
 
-### Import VCode / Export VCode
+## Visual Code
 
-Round-trip tile and pixel-editor data via VCode modules using the file requester.
+### Import Visual Code
+
+Imports Visual Code module JSON via the file requester.
+
+### Export Visual Code
+
+Exports the current Visual Code module JSON via the file requester.
+
+### Copy Visual Code
+
+Copies the current Visual Code module JSON to the clipboard.
+Writes to both the internal app clipboard and the system clipboard.
+
+### Paste Visual Code
+
+Pastes Visual Code module JSON from the clipboard into the current Visual Code dock.
+Works with either internal app clipboard content or system clipboard text.

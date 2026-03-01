@@ -5,7 +5,8 @@ use crate::server::region::{
 };
 use crate::vm::*;
 use crate::{
-    Choice, EntityAction, Item, MultipleChoice, PixelSource, PlayerCamera, RegionCtx, Value,
+    Choice, EntityAction, Item, Map, MultipleChoice, PixelSource, PlayerCamera, RegionCtx, Value,
+    ValueContainer,
 };
 use rand::Rng;
 use scenevm::GeoId;
@@ -35,6 +36,7 @@ const COMBAT_DEBUG_CALLS: &[&str] = &[
     "took_damage",
     "goto",
     "close_in",
+    "patrol",
     "cast_spell",
 ];
 
@@ -83,6 +85,142 @@ fn convert_attr_value(key: &str, val: &VMValue, hint: Option<&Value>, health_att
 }
 
 impl<'a> RegionHost<'a> {
+    fn parse_route_names(attrs: &ValueContainer) -> Vec<String> {
+        if let Some(Value::StrArray(values)) = attrs.get("route") {
+            return values
+                .iter()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+                .collect();
+        }
+        if let Some(value) = attrs.get_str("route") {
+            let value = value.trim();
+            if !value.is_empty() {
+                return vec![value.to_string()];
+            }
+        }
+        Vec::new()
+    }
+
+    fn resolve_route_points(
+        map: &Map,
+        route_names: &[String],
+        start_pos: Vec2<f32>,
+    ) -> Vec<Vec2<f32>> {
+        #[derive(Clone)]
+        struct Segment {
+            start_id: u32,
+            end_id: u32,
+            start: Vec2<f32>,
+            end: Vec2<f32>,
+        }
+
+        let mut points: Vec<Vec2<f32>> = Vec::new();
+        let mut anchor = start_pos;
+
+        for route_name in route_names {
+            let name = route_name.trim();
+            if name.is_empty() {
+                continue;
+            }
+
+            let mut segments: Vec<Segment> = map
+                .linedefs
+                .iter()
+                .filter(|ld| ld.name.eq_ignore_ascii_case(name))
+                .filter_map(|ld| {
+                    let a = map.get_vertex(ld.start_vertex)?;
+                    let b = map.get_vertex(ld.end_vertex)?;
+                    Some(Segment {
+                        start_id: ld.start_vertex,
+                        end_id: ld.end_vertex,
+                        start: a,
+                        end: b,
+                    })
+                })
+                .collect();
+
+            while !segments.is_empty() {
+                let mut best_idx = 0usize;
+                let mut best_dist = f32::MAX;
+                let mut best_from_start = true;
+
+                for (idx, seg) in segments.iter().enumerate() {
+                    let ds = seg.start.distance_squared(anchor);
+                    if ds < best_dist {
+                        best_dist = ds;
+                        best_idx = idx;
+                        best_from_start = true;
+                    }
+                    let de = seg.end.distance_squared(anchor);
+                    if de < best_dist {
+                        best_dist = de;
+                        best_idx = idx;
+                        best_from_start = false;
+                    }
+                }
+
+                let seed = segments.swap_remove(best_idx);
+                let (mut current_vid, seed_start, seed_end) = if best_from_start {
+                    (seed.end_id, seed.start, seed.end)
+                } else {
+                    (seed.start_id, seed.end, seed.start)
+                };
+
+                if points
+                    .last()
+                    .is_none_or(|last| last.distance_squared(seed_start) > 1e-8)
+                {
+                    points.push(seed_start);
+                }
+                points.push(seed_end);
+                anchor = seed_end;
+
+                loop {
+                    let Some(next_idx) = segments
+                        .iter()
+                        .position(|seg| seg.start_id == current_vid || seg.end_id == current_vid)
+                    else {
+                        break;
+                    };
+
+                    let seg = segments.swap_remove(next_idx);
+                    let next_point;
+                    if seg.start_id == current_vid {
+                        current_vid = seg.end_id;
+                        next_point = seg.end;
+                    } else {
+                        current_vid = seg.start_id;
+                        next_point = seg.start;
+                    }
+                    if points
+                        .last()
+                        .is_none_or(|last| last.distance_squared(next_point) > 1e-8)
+                    {
+                        points.push(next_point);
+                    }
+                    anchor = next_point;
+                }
+            }
+        }
+
+        points
+    }
+
+    fn nearest_point_index(from: Vec2<f32>, points: &[Vec2<f32>]) -> usize {
+        let mut best_idx = 0usize;
+        let mut best_dist = f32::MAX;
+        for (idx, point) in points.iter().enumerate() {
+            let d = from.distance_squared(*point);
+            if d < best_dist {
+                best_dist = d;
+                best_idx = idx;
+            }
+        }
+        best_idx
+    }
+
     fn parse_target_arg_id(arg: &VMValue) -> Option<u32> {
         if let Some(s) = arg.as_string() {
             if let Ok(id) = s.parse::<u32>() {
@@ -671,6 +809,17 @@ impl<'a> HostHandler for RegionHost<'a> {
                         let converted =
                             convert_attr_value(key, val, entity.attributes.get(key), &health_attr);
                         entity.set_attribute(key, converted);
+                        if key == "mode" {
+                            let mode = entity
+                                .attributes
+                                .get_str_default("mode", String::new())
+                                .to_ascii_lowercase();
+                            if mode == "dead" {
+                                entity.set_attribute("visible", Value::Bool(false));
+                            } else if mode == "active" {
+                                entity.set_attribute("visible", Value::Bool(true));
+                            }
+                        }
                     }
                 }
             }
@@ -793,6 +942,45 @@ impl<'a> HostHandler for RegionHost<'a> {
                         0,
                         Vec2::zero(),
                     );
+                }
+            }
+            "patrol" => {
+                let route_wait = args.first().map(|v| v.x).unwrap_or(1.0).max(0.0);
+                let route_speed = args.get(1).map(|v| v.x).unwrap_or(1.0).max(0.0);
+                let entity_id = self.ctx.curr_entity_id;
+                let (route_mode, route_names, current_pos) = self
+                    .ctx
+                    .map
+                    .entities
+                    .iter()
+                    .find(|e| e.id == entity_id)
+                    .map(|entity| {
+                        (
+                            entity
+                                .attributes
+                                .get_str_default("route_mode", "loop".to_string())
+                                .to_ascii_lowercase(),
+                            Self::parse_route_names(&entity.attributes),
+                            entity.get_pos_xz(),
+                        )
+                    })
+                    .unwrap_or_else(|| ("loop".to_string(), Vec::new(), Vec2::zero()));
+                let points = Self::resolve_route_points(&self.ctx.map, &route_names, current_pos);
+                if let Some(entity) = self.ctx.get_current_entity_mut() {
+                    if points.is_empty() {
+                        entity.action = EntityAction::Off;
+                    } else {
+                        let point_index = Self::nearest_point_index(current_pos, &points);
+                        entity.action = EntityAction::Patrol {
+                            points,
+                            route_wait,
+                            route_speed,
+                            route_mode,
+                            point_index,
+                            forward: true,
+                            wait_until_tick: 0,
+                        };
+                    }
                 }
             }
             "set_proximity_tracking" => {
@@ -1231,6 +1419,15 @@ impl<'a> HostHandler for RegionHost<'a> {
                     } else {
                         self.ctx.curr_entity_id
                     };
+                    if self.ctx.curr_item_id.is_none() && dmg > 0 {
+                        if let Some(attacker) = self.ctx.get_current_entity_mut() {
+                            let attack_time = attacker
+                                .attributes
+                                .get_float_default("avatar_attack_time", 0.35)
+                                .max(0.05);
+                            attacker.set_attribute("avatar_attack_left", Value::Float(attack_time));
+                        }
+                    }
                     let autodamage = self
                         .ctx
                         .map

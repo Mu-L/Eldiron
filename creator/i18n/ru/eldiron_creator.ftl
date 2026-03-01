@@ -231,3 +231,7 @@ avatar_anchor_main = Anchor: Main Hand
 avatar_anchor_off = Anchor: Off Hand
 action_duplicate = Duplicate
 action_duplicate_desc = Duplicate selected geometry with an XYZ offset.
+action_copy_vcode = Copy Visual Code
+action_copy_vcode_desc = Copies the current visual code module to the clipboard.
+action_paste_vcode = Paste Visual Code
+action_paste_vcode_desc = Imports a visual code module from the clipboard.

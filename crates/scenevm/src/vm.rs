@@ -545,7 +545,7 @@ struct VsOut {
   @location(3) blend_factor: f32,
 };
 
-fn tile_frame(tile_index: u32) -> TileFrame {
+fn tile_frame(tile_index: u32, phase_start_counter: u32) -> TileFrame {
   let meta_len = arrayLength(&tile_anims.data);
   if (meta_len == 0u) {
     return TileFrame(vec2<f32>(0.0), vec2<f32>(0.0));
@@ -557,14 +557,14 @@ fn tile_frame(tile_index: u32) -> TileFrame {
   if (frames_len == 0u) {
     return TileFrame(vec2<f32>(0.0), vec2<f32>(0.0));
   }
-  let anim_counter = u32(max(UBO.misc0.z, 0.0));
-  let frame_offset = anim.first_frame + (anim_counter % count);
+  let anim_counter = max(u32(max(UBO.misc0.z, 0.0)), phase_start_counter);
+  let frame_offset = anim.first_frame + ((anim_counter - phase_start_counter) % count);
   let frame_idx = min(frame_offset, frames_len - 1u);
   return tile_frames.data[frame_idx];
 }
 
-fn atlas_uv(tile_index: u32, uv_obj: vec2<f32>) -> vec2<f32> {
-  let frame = tile_frame(tile_index);
+fn atlas_uv(tile_index: u32, uv_obj: vec2<f32>, phase_start_counter: u32) -> vec2<f32> {
+  let frame = tile_frame(tile_index, phase_start_counter);
   let uv_wrapped = fract(uv_obj);
   return frame.ofs + uv_wrapped * frame.scale;
 }
@@ -745,14 +745,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     return vec4<f32>(apply_post(apply_scene_lighting(col.rgb, world)), col.a);
   }
 
-  let uv0 = atlas_uv(in.tile_index, in.uv);
+  let phase_start = select(0u, u32(max(in.blend_factor, 0.0)), in.blend_factor > 1.0);
+  let uv0 = atlas_uv(in.tile_index, in.uv, phase_start);
   let col0_srgb = textureSampleLevel(atlas_tex, atlas_smp, uv0, 0.0);
   let col0 = vec4<f32>(srgb_to_linear(col0_srgb.rgb), col0_srgb.a);
   var col = col0;
 
   let blend = clamp(in.blend_factor, 0.0, 1.0);
   if (in.tile_index2 != in.tile_index && blend > 0.0) {
-    let uv1 = atlas_uv(in.tile_index2, in.uv);
+    let uv1 = atlas_uv(in.tile_index2, in.uv, phase_start);
     let col1_srgb = textureSampleLevel(atlas_tex, atlas_smp, uv1, 0.0);
     let col1 = vec4<f32>(srgb_to_linear(col1_srgb.rgb), col1_srgb.a);
     let overlay_a = clamp(blend * col1.a, 0.0, 1.0);
@@ -1092,7 +1093,7 @@ fn camera_to_clip(world_pos: vec3<f32>) -> vec4<f32> {
     return vec4<f32>(cx * (f / aspect), cy * f, a * z + b, z);
 }
 
-fn tile_frame(tile_idx: u32) -> TileFrame {
+fn tile_frame(tile_idx: u32, phase_start_counter: u32) -> TileFrame {
     if (arrayLength(&tile_meta.data) == 0u || arrayLength(&tile_frames.data) == 0u) {
         return TileFrame(vec2<f32>(0.0), vec2<f32>(0.0));
     }
@@ -1103,14 +1104,15 @@ fn tile_frame(tile_idx: u32) -> TileFrame {
     }
     var frame_offset: u32 = 0u;
     if (tile_anim.frame_count > 1u) {
-        frame_offset = UBO.anim_counter % tile_anim.frame_count;
+        let anim_counter = max(UBO.anim_counter, phase_start_counter);
+        frame_offset = (anim_counter - phase_start_counter) % tile_anim.frame_count;
     }
     let frame_idx = min(tile_anim.first_frame + frame_offset, arrayLength(&tile_frames.data) - 1u);
     return tile_frames.data[frame_idx];
 }
 
-fn sample_tile(tile_idx: u32, uv: vec2<f32>, clamp_uv: bool) -> vec4<f32> {
-    let frame = tile_frame(tile_idx);
+fn sample_tile(tile_idx: u32, uv: vec2<f32>, clamp_uv: bool, phase_start_counter: u32) -> vec4<f32> {
+    let frame = tile_frame(tile_idx, phase_start_counter);
     var uv_wrapped = fract(uv);
     if (clamp_uv) {
         uv_wrapped = clamp(uv, vec2<f32>(0.0), vec2<f32>(0.9999));
@@ -1135,8 +1137,8 @@ fn sample_tile(tile_idx: u32, uv: vec2<f32>, clamp_uv: bool) -> vec4<f32> {
     return textureSampleLevel(atlas_tex, atlas_smp, atlas_uv, lod_clamped);
 }
 
-fn sample_tile_lod0(tile_idx: u32, uv: vec2<f32>, clamp_uv: bool) -> vec4<f32> {
-    let frame = tile_frame(tile_idx);
+fn sample_tile_lod0(tile_idx: u32, uv: vec2<f32>, clamp_uv: bool, phase_start_counter: u32) -> vec4<f32> {
+    let frame = tile_frame(tile_idx, phase_start_counter);
     var uv_wrapped = fract(uv);
     if (clamp_uv) {
         uv_wrapped = clamp(uv, vec2<f32>(0.0), vec2<f32>(0.9999));
@@ -1150,8 +1152,8 @@ fn sample_tile_lod0(tile_idx: u32, uv: vec2<f32>, clamp_uv: bool) -> vec4<f32> {
     return textureSampleLevel(atlas_tex, atlas_smp, atlas_uv, 0.0);
 }
 
-fn sample_tile_material(tile_idx: u32, uv: vec2<f32>, clamp_uv: bool) -> vec4<f32> {
-    let frame = tile_frame(tile_idx);
+fn sample_tile_material(tile_idx: u32, uv: vec2<f32>, clamp_uv: bool, phase_start_counter: u32) -> vec4<f32> {
+    let frame = tile_frame(tile_idx, phase_start_counter);
     var uv_wrapped = fract(uv);
     if (clamp_uv) {
         uv_wrapped = clamp(uv, vec2<f32>(0.0), vec2<f32>(0.9999));
@@ -1345,7 +1347,7 @@ fn vs_main(in: VsIn) -> VsOut {
     out.uv = in.uv;
     out.tile_index = in.tile_index;
     out.tile_index2 = in.tile_index2;
-    out.blend_factor = clamp(in.blend_factor, 0.0, 1.0);
+    out.blend_factor = in.blend_factor;
     out.opacity = clamp(in.opacity, 0.0, 1.0);
     out.normal = normalize(in.normal);
     out.world_pos = in.pos;
@@ -1370,7 +1372,7 @@ fn vs_shadow(in: VsIn) -> VsShadowOut {
     out.uv = in.uv;
     out.tile_index = in.tile_index;
     out.tile_index2 = in.tile_index2;
-    out.blend_factor = clamp(in.blend_factor, 0.0, 1.0);
+    out.blend_factor = in.blend_factor;
     out.opacity = clamp(in.opacity, 0.0, 1.0);
     return out;
 }
@@ -1380,18 +1382,21 @@ fn fs_shadow(in: VsShadowOut) {
     let clamp_uv = (in.tile_index2 & TILE_INDEX_CLAMP_UV_FLAG) != 0u;
     let tile_index2 = in.tile_index2 & (~TILE_INDEX_FLAGS_MASK);
     let is_avatar = (in.tile_index2 & TILE_INDEX_AVATAR_FLAG) != 0u;
-    let c0 = select(sample_tile_lod0(in.tile_index, in.uv, clamp_uv), sample_avatar(in.tile_index, in.uv), is_avatar);
-    let c1 = sample_tile_lod0(tile_index2, in.uv, clamp_uv);
-    let m0_raw = sample_tile_material(in.tile_index, in.uv, clamp_uv);
-    let m1_raw = sample_tile_material(tile_index2, in.uv, clamp_uv);
+    let is_billboard = (in.tile_index2 & TILE_INDEX_BILLBOARD_FLAG) != 0u;
+    let phase_start = select(0u, u32(max(in.blend_factor, 0.0)), is_billboard);
+    let blend = clamp(in.blend_factor, 0.0, 1.0);
+    let c0 = select(sample_tile_lod0(in.tile_index, in.uv, clamp_uv, phase_start), sample_avatar(in.tile_index, in.uv), is_avatar);
+    let c1 = sample_tile_lod0(tile_index2, in.uv, clamp_uv, phase_start);
+    let m0_raw = sample_tile_material(in.tile_index, in.uv, clamp_uv, phase_start);
+    let m1_raw = sample_tile_material(tile_index2, in.uv, clamp_uv, phase_start);
     let m0 = select(
         unpack_material_nibbles(m0_raw),
         vec4<f32>(1.0, 0.0, 1.0, 0.0),
         is_avatar
     );
     let m1 = unpack_material_nibbles(m1_raw);
-    let mat = select(mix(m0, m1, in.blend_factor), m0, is_avatar);
-    let color = select(mix(c0, c1, in.blend_factor), c0, is_avatar);
+    let mat = select(mix(m0, m1, blend), m0, is_avatar);
+    let color = select(mix(c0, c1, blend), c0, is_avatar);
     let intrinsic_alpha = clamp(color.a * mat.z, 0.0, 1.0);
     // Shadow occlusion should not follow per-geometry fade opacity; only texture/material alpha.
     if (intrinsic_alpha <= 0.5) {
@@ -1404,24 +1409,27 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let clamp_uv = (in.tile_index2 & TILE_INDEX_CLAMP_UV_FLAG) != 0u;
     let tile_index2 = in.tile_index2 & (~TILE_INDEX_FLAGS_MASK);
     let is_avatar = (in.tile_index2 & TILE_INDEX_AVATAR_FLAG) != 0u;
-    let c0 = select(sample_tile(in.tile_index, in.uv, clamp_uv), sample_avatar(in.tile_index, in.uv), is_avatar);
-    let c1 = sample_tile(tile_index2, in.uv, clamp_uv);
-    let c0_base = select(sample_tile_lod0(in.tile_index, in.uv, clamp_uv), sample_avatar(in.tile_index, in.uv), is_avatar);
-    let c1_base = sample_tile_lod0(tile_index2, in.uv, clamp_uv);
-    let m0_raw = sample_tile_material(in.tile_index, in.uv, clamp_uv);
-    let m1_raw = sample_tile_material(tile_index2, in.uv, clamp_uv);
+    let is_billboard = (in.tile_index2 & TILE_INDEX_BILLBOARD_FLAG) != 0u;
+    let phase_start = select(0u, u32(max(in.blend_factor, 0.0)), is_billboard);
+    let blend = clamp(in.blend_factor, 0.0, 1.0);
+    let c0 = select(sample_tile(in.tile_index, in.uv, clamp_uv, phase_start), sample_avatar(in.tile_index, in.uv), is_avatar);
+    let c1 = sample_tile(tile_index2, in.uv, clamp_uv, phase_start);
+    let c0_base = select(sample_tile_lod0(in.tile_index, in.uv, clamp_uv, phase_start), sample_avatar(in.tile_index, in.uv), is_avatar);
+    let c1_base = sample_tile_lod0(tile_index2, in.uv, clamp_uv, phase_start);
+    let m0_raw = sample_tile_material(in.tile_index, in.uv, clamp_uv, phase_start);
+    let m1_raw = sample_tile_material(tile_index2, in.uv, clamp_uv, phase_start);
     let m0 = select(
         unpack_material_nibbles(m0_raw),
         vec4<f32>(1.0, 0.0, 1.0, 0.0),
         is_avatar
     );
     let m1 = unpack_material_nibbles(m1_raw);
-    let mat = select(mix(m0, m1, in.blend_factor), m0, is_avatar);
+    let mat = select(mix(m0, m1, blend), m0, is_avatar);
     let n0_ts = select(unpack_material_normal_ts(m0_raw), vec3<f32>(0.0, 0.0, 1.0), is_avatar);
     let n1_ts = unpack_material_normal_ts(m1_raw);
-    let n_ts = normalize(select(mix(n0_ts, n1_ts, in.blend_factor), n0_ts, is_avatar));
-    var color = select(mix(c0, c1, in.blend_factor), c0, is_avatar);
-    let color_base = select(mix(c0_base, c1_base, in.blend_factor), c0_base, is_avatar);
+    let n_ts = normalize(select(mix(n0_ts, n1_ts, blend), n0_ts, is_avatar));
+    var color = select(mix(c0, c1, blend), c0, is_avatar);
+    let color_base = select(mix(c0_base, c1_base, blend), c0_base, is_avatar);
     // Keep first-person nearby surfaces crisp by blending from LOD0 near the camera.
     var alpha_sample = color.a;
     if (!is_avatar && UBO.cam_kind == 2u) {
@@ -4825,7 +4833,7 @@ impl VM {
                         uv: uvs[i],
                         tile_index,
                         tile_index2,
-                        blend_factor: 0.0,
+                        blend_factor: obj.anim_start_counter.map(|v| v as f32).unwrap_or(0.0),
                         _pad0: 0,
                     });
                 }

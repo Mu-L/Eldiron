@@ -86,6 +86,16 @@ pub enum EntityAction {
     RandomWalk(f32, f32, i32, i32, Vec2<f32>),
     /// User: Distance, Speed, Max Min Sleep. System: State, Target
     RandomWalkInSector(f32, f32, i32, i32, Vec2<f32>),
+    /// Patrol along resolved route points.
+    Patrol {
+        points: Vec<Vec2<f32>>,
+        route_wait: f32,
+        route_speed: f32,
+        route_mode: String,
+        point_index: usize,
+        forward: bool,
+        wait_until_tick: i64,
+    },
     /// Intent: A string that represents an intent, e.g. "attack", "talk", etc.
     Intent(String),
     /// Goto: Move to a specific position with a given speed

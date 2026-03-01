@@ -11,12 +11,19 @@ struct CachedAvatarFrames {
     last_uploaded: Option<(String, AvatarDirection, usize)>,
 }
 
+struct AvatarPlaybackState {
+    animation_name: String,
+    started_at_frame: usize,
+}
+
 #[derive(Default)]
 pub struct AvatarRuntimeBuilder {
     // Latch for update_avatar=true edge detection.
     avatar_rebuild_latch: FxHashSet<GeoId>,
     // Per-entity built avatar frames (all anims/perspectives/frames).
     avatar_frame_cache: FxHashMap<GeoId, CachedAvatarFrames>,
+    // Per-entity playback phase so animation switches (e.g. Attack) can start from frame 0.
+    avatar_playback_state: FxHashMap<GeoId, AvatarPlaybackState>,
     shading_options: AvatarShadingOptions,
 }
 
@@ -887,11 +894,32 @@ impl AvatarRuntimeBuilder {
             .or_else(|| anim.perspectives.first())
             .map(|p| p.frames.len().max(1))
             .unwrap_or(1);
+
+        let started_at = {
+            let state =
+                self.avatar_playback_state
+                    .entry(geo_id)
+                    .or_insert_with(|| AvatarPlaybackState {
+                        animation_name: anim_name.to_string(),
+                        started_at_frame: frame_index,
+                    });
+            if !state.animation_name.eq_ignore_ascii_case(anim_name) {
+                state.animation_name = anim_name.to_string();
+                state.started_at_frame = frame_index;
+            }
+            state.started_at_frame
+        };
+
         // Apply per-animation playback speed:
         // speed = 1.0 normal, >1.0 slower, <1.0 faster.
         let speed = anim.speed.max(0.01);
-        let scaled_frame = (frame_index as f32 / speed).floor() as usize;
-        let frame_idx = scaled_frame % frame_count;
+        let local_frame = frame_index.saturating_sub(started_at);
+        let scaled_frame = (local_frame as f32 / speed).floor() as usize;
+        let frame_idx = if anim_name.eq_ignore_ascii_case("attack") {
+            scaled_frame.min(frame_count.saturating_sub(1))
+        } else {
+            scaled_frame % frame_count
+        };
         let key = (anim_name.to_string(), persp_dir, frame_idx);
 
         let Some(cache) = self.avatar_frame_cache.get_mut(&geo_id) else {
@@ -932,6 +960,7 @@ impl AvatarRuntimeBuilder {
         for id in stale {
             self.avatar_frame_cache.remove(&id);
             self.avatar_rebuild_latch.remove(&id);
+            self.avatar_playback_state.remove(&id);
             vm.execute(Atom::RemoveAvatarBillboardData { id });
         }
     }

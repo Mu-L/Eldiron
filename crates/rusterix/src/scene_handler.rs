@@ -75,6 +75,8 @@ pub struct SceneHandler {
 
     // Animation state per billboard
     pub(crate) billboard_anim_states: FxHashMap<GeoId, BillboardAnimState>,
+    // Per-item animation phase starts for one-shot impact effects.
+    impact_anim_starts: FxHashMap<GeoId, u32>,
 
     // Local render-frame counter for timing animations at fixed FPS
     frame_counter: usize,
@@ -98,6 +100,18 @@ impl Default for SceneHandler {
 }
 
 impl SceneHandler {
+    #[inline]
+    fn impact_anim_start_for_item(&mut self, geo_id: GeoId, item: &Item) -> Option<u32> {
+        if item.attributes.get_bool_default("spell_impacting", false) {
+            let frame = self.frame_counter as u32;
+            let start = self.impact_anim_starts.entry(geo_id).or_insert(frame);
+            Some(*start)
+        } else {
+            self.impact_anim_starts.remove(&geo_id);
+            None
+        }
+    }
+
     /// Invalidate dynamic entity/item/light caches so next frame rebuilds overlays.
     pub fn mark_dynamics_dirty(&mut self) {
         self.last_dynamics_hash_2d = None;
@@ -173,6 +187,7 @@ impl SceneHandler {
 
             billboards: FxHashMap::default(),
             billboard_anim_states: FxHashMap::default(),
+            impact_anim_starts: FxHashMap::default(),
             frame_counter: 0,
             avatar_builder: AvatarRuntimeBuilder::default(),
             last_dynamics_hash_2d: None,
@@ -632,6 +647,7 @@ impl SceneHandler {
     pub fn build_dynamics_2d(&mut self, map: &Map, animation_frame: usize, assets: &Assets) {
         // Dynamics must always be built into base layer 0.
         self.vm.set_active_vm(0);
+        self.frame_counter = self.frame_counter.wrapping_add(1);
         self.avatar_builder
             .set_shading_options(AvatarShadingOptions {
                 enabled: self.settings.avatar_shading_enabled,
@@ -643,6 +659,7 @@ impl SceneHandler {
         self.vm.execute(Atom::ClearDynamics);
         self.vm.execute(Atom::ClearLights);
         let mut active_avatar_geo: FxHashSet<GeoId> = FxHashSet::default();
+        let mut active_impact_geo: FxHashSet<GeoId> = FxHashSet::default();
 
         for item in &map.items {
             let item_pos = Vec2::new(item.position.x, item.position.z);
@@ -664,13 +681,14 @@ impl SceneHandler {
             if let Some(Value::Source(source)) = item.attributes.get("source") {
                 if item.attributes.get_bool_default("visible", false) {
                     if let Some(tile) = source.tile_from_tile_list(assets) {
-                        let dynamic = DynamicObject::billboard_tile_2d(
-                            GeoId::Item(item.id),
-                            tile.id,
-                            pos,
-                            1.0,
-                            1.0,
-                        );
+                        let geo_id = GeoId::Item(item.id);
+                        let anim_start = self.impact_anim_start_for_item(geo_id, item);
+                        if anim_start.is_some() {
+                            active_impact_geo.insert(geo_id);
+                        }
+                        let dynamic =
+                            DynamicObject::billboard_tile_2d(geo_id, tile.id, pos, 1.0, 1.0)
+                                .with_anim_start_counter(anim_start);
                         self.vm.execute(Atom::AddDynamic { object: dynamic });
                     }
                 }
@@ -757,6 +775,8 @@ impl SceneHandler {
 
         self.avatar_builder
             .remove_stale_avatars(&mut self.vm, &active_avatar_geo);
+        self.impact_anim_starts
+            .retain(|geo_id, _| active_impact_geo.contains(geo_id));
         self.dynamics_ready_2d = true;
     }
 
@@ -791,6 +811,7 @@ impl SceneHandler {
         self.vm.execute(Atom::ClearDynamics);
         self.vm.execute(Atom::ClearLights);
         let mut active_avatar_geo: FxHashSet<GeoId> = FxHashSet::default();
+        let mut active_impact_geo: FxHashSet<GeoId> = FxHashSet::default();
 
         let basis = camera.basis_vectors();
 
@@ -978,7 +999,15 @@ impl SceneHandler {
                                     view_up,
                                     size,
                                     size,
-                                );
+                                )
+                                .with_anim_start_counter({
+                                    let geo_id = GeoId::Item(item.id);
+                                    let anim_start = self.impact_anim_start_for_item(geo_id, item);
+                                    if anim_start.is_some() {
+                                        active_impact_geo.insert(geo_id);
+                                    }
+                                    anim_start
+                                });
                                 self.vm.execute(Atom::AddDynamic { object: dynamic });
                             }
                         }
@@ -1170,6 +1199,8 @@ impl SceneHandler {
 
         self.avatar_builder
             .remove_stale_avatars(&mut self.vm, &active_avatar_geo);
+        self.impact_anim_starts
+            .retain(|geo_id, _| active_impact_geo.contains(geo_id));
         self.dynamics_ready_3d = true;
     }
 }
