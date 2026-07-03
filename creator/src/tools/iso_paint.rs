@@ -4,6 +4,10 @@ use MapEvent::*;
 use ToolEvent::*;
 use rusterix::material_library::MaterialDefinition;
 
+const ISO_PAINT_MIN_BRUSH_SIZE: f32 = 0.05;
+const ISO_PAINT_MAX_PAINT_BRUSH_SIZE: f32 = 16.0;
+const ISO_PAINT_MAX_STAMP_BRUSH_SIZE: f32 = 8.0;
+
 pub struct IsoPaintTool {
     id: TheId,
     painting: bool,
@@ -16,6 +20,14 @@ pub struct IsoPaintTool {
 }
 
 impl IsoPaintTool {
+    fn active_size_max(layer: &IsoPaintLayer) -> f32 {
+        if Self::is_stamp_mode(layer) {
+            ISO_PAINT_MAX_STAMP_BRUSH_SIZE
+        } else {
+            ISO_PAINT_MAX_PAINT_BRUSH_SIZE
+        }
+    }
+
     fn neutral_material_palette(project: &Project) -> (u16, [u8; 4]) {
         let target = [132i32, 132i32, 128i32];
         let mut best: Option<(u16, [u8; 4], i32)> = None;
@@ -180,18 +192,21 @@ impl IsoPaintTool {
         {
             region.iso_paint.active_opacity = opacity.clamp(0.0, 1.0);
         }
-        if let Some(size) = ui
-            .get_widget_value("Iso Paint Tool Size")
-            .and_then(|value| value.to_f32())
-        {
-            region.iso_paint.active_size = size.clamp(0.05, 8.0);
-        }
         if let Some(TheValue::Int(index)) = ui.get_widget_value("Iso Paint Material Mode") {
             region.iso_paint.active_material_mode = match index {
                 1 => "replace".to_string(),
                 2 => "stamp".to_string(),
                 _ => "coat".to_string(),
             };
+        }
+        if let Some(size) = ui
+            .get_widget_value("Iso Paint Tool Size")
+            .and_then(|value| value.to_f32())
+        {
+            region.iso_paint.active_size = size.clamp(
+                ISO_PAINT_MIN_BRUSH_SIZE,
+                Self::active_size_max(&region.iso_paint),
+            );
         }
         if let Some(size_jitter) = ui
             .get_widget_value("Iso Paint Stamp Size Jitter")

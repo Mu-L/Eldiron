@@ -107,6 +107,8 @@ struct IsoPaintStrokeRenderCache {
     pattern_mortar: f32,
     pattern_detail: f32,
     pattern_variation: f32,
+    path_points: Vec<[f32; 2]>,
+    path_lengths: Vec<f32>,
     erase: bool,
     buffer: TheRGBABuffer,
 }
@@ -761,6 +763,78 @@ impl Editor {
         )
     }
 
+    fn iso_paint_arch_pattern_coord(
+        screen: [i32; 2],
+        path_points: &[[f32; 2]],
+        path_lengths: &[f32],
+        origin: [i32; 2],
+        scale: f32,
+    ) -> Option<[f32; 2]> {
+        if path_points.len() < 2 || path_lengths.len() != path_points.len() {
+            return None;
+        }
+
+        let px = screen[0] as f32;
+        let py = screen[1] as f32;
+        let scale = scale.clamp(0.05, 20.0);
+        let mut best: Option<(f32, f32, f32)> = None;
+
+        for index in 0..path_points.len().saturating_sub(1) {
+            let a = path_points[index];
+            let b = path_points[index + 1];
+            let ax = origin[0] as f32 + a[0] * scale;
+            let ay = origin[1] as f32 + a[1] * scale;
+            let bx = origin[0] as f32 + b[0] * scale;
+            let by = origin[1] as f32 + b[1] * scale;
+            let vx = bx - ax;
+            let vy = by - ay;
+            let len2 = vx * vx + vy * vy;
+            if len2 <= f32::EPSILON {
+                continue;
+            }
+            let t = (((px - ax) * vx + (py - ay) * vy) / len2).clamp(0.0, 1.0);
+            let qx = ax + vx * t;
+            let qy = ay + vy * t;
+            let dx = px - qx;
+            let dy = py - qy;
+            let dist2 = dx * dx + dy * dy;
+            let segment_len = len2.sqrt();
+            let along = path_lengths[index] * scale + segment_len * t;
+            let signed_across = (vx * dy - vy * dx).signum() * dist2.sqrt();
+            if best.map_or(true, |(best_dist2, _, _)| dist2 < best_dist2) {
+                best = Some((dist2, along, signed_across));
+            }
+        }
+
+        best.map(|(_, along, across)| [along, across + 8192.0])
+    }
+
+    fn iso_paint_sample_arch_brick_color(
+        screen: [i32; 2],
+        path_points: &[[f32; 2]],
+        path_lengths: &[f32],
+        origin: [i32; 2],
+        scale: f32,
+        base: [u8; 4],
+        pattern_scale: f32,
+        pattern_mortar: f32,
+        pattern_detail: f32,
+        pattern_variation: f32,
+    ) -> Option<[u8; 4]> {
+        let coord =
+            Self::iso_paint_arch_pattern_coord(screen, path_points, path_lengths, origin, scale)?;
+        Some(Self::iso_paint_sample_brick_color(
+            coord[0],
+            coord[1],
+            base,
+            "brick",
+            pattern_scale,
+            pattern_mortar,
+            pattern_detail,
+            pattern_variation,
+        ))
+    }
+
     fn iso_paint_geo_object_matches(a: scenevm::GeoId, b: scenevm::GeoId) -> bool {
         match (a, b) {
             (scenevm::GeoId::GeometryObject(a), scenevm::GeoId::GeometryObject(b)) => a == b,
@@ -1047,6 +1121,8 @@ impl Editor {
         pattern_mortar: f32,
         pattern_detail: f32,
         pattern_variation: f32,
+        path_points: &[[f32; 2]],
+        path_lengths: &[f32],
     ) {
         let target_dim = *target.dim();
         let mask_dim = *mask.dim();
@@ -1126,15 +1202,41 @@ impl Editor {
                         else {
                             continue;
                         };
-                        let mut color = Self::iso_paint_sample_brick_surface_color(
-                            surface_pixel.uv,
-                            base,
-                            pattern_kind,
-                            pattern_scale,
-                            pattern_mortar,
-                            pattern_detail,
-                            pattern_variation,
-                        );
+                        let mut color = if matches!(pattern_kind, "arch" | "trim") {
+                            Self::iso_paint_sample_arch_brick_color(
+                                [dx, dy],
+                                path_points,
+                                path_lengths,
+                                [x, y],
+                                scale,
+                                base,
+                                pattern_scale,
+                                pattern_mortar,
+                                pattern_detail,
+                                pattern_variation,
+                            )
+                            .unwrap_or_else(|| {
+                                Self::iso_paint_sample_brick_surface_color(
+                                    surface_pixel.uv,
+                                    base,
+                                    "brick",
+                                    pattern_scale,
+                                    pattern_mortar,
+                                    pattern_detail,
+                                    pattern_variation,
+                                )
+                            })
+                        } else {
+                            Self::iso_paint_sample_brick_surface_color(
+                                surface_pixel.uv,
+                                base,
+                                pattern_kind,
+                                pattern_scale,
+                                pattern_mortar,
+                                pattern_detail,
+                                pattern_variation,
+                            )
+                        };
                         let color_alpha = ((color[3] as u16 * mask_alpha as u16) / 255) as u8;
                         color[3] = if replace_material {
                             ((color_alpha as u16 * replace_opacity as u16) / 254) as u8
@@ -1199,15 +1301,41 @@ impl Editor {
                 else {
                     continue;
                 };
-                let mut color = Self::iso_paint_sample_brick_surface_color(
-                    surface_pixel.uv,
-                    base,
-                    pattern_kind,
-                    pattern_scale,
-                    pattern_mortar,
-                    pattern_detail,
-                    pattern_variation,
-                );
+                let mut color = if matches!(pattern_kind, "arch" | "trim") {
+                    Self::iso_paint_sample_arch_brick_color(
+                        [dx, dy],
+                        path_points,
+                        path_lengths,
+                        [x, y],
+                        scale,
+                        base,
+                        pattern_scale,
+                        pattern_mortar,
+                        pattern_detail,
+                        pattern_variation,
+                    )
+                    .unwrap_or_else(|| {
+                        Self::iso_paint_sample_brick_surface_color(
+                            surface_pixel.uv,
+                            base,
+                            "brick",
+                            pattern_scale,
+                            pattern_mortar,
+                            pattern_detail,
+                            pattern_variation,
+                        )
+                    })
+                } else {
+                    Self::iso_paint_sample_brick_surface_color(
+                        surface_pixel.uv,
+                        base,
+                        pattern_kind,
+                        pattern_scale,
+                        pattern_mortar,
+                        pattern_detail,
+                        pattern_variation,
+                    )
+                };
                 let color_alpha = ((color[3] as u16 * mask_alpha as u16) / 255) as u8;
                 color[3] = if replace_material {
                     ((color_alpha as u16 * replace_opacity as u16) / 254) as u8
@@ -2404,6 +2532,129 @@ impl Editor {
         (min, max)
     }
 
+    fn iso_paint_stroke_screen_points(stroke: &IsoPaintStroke) -> Vec<[i32; 2]> {
+        stroke.points.iter().map(|point| point.screen).collect()
+    }
+
+    fn iso_paint_resampled_point(points: &[[f32; 2]], distance: f32) -> [f32; 2] {
+        if points.is_empty() {
+            return [0.0, 0.0];
+        }
+        if points.len() == 1 || distance <= 0.0 {
+            return points[0];
+        }
+
+        let mut travelled = 0.0;
+        for pair in points.windows(2) {
+            let a = pair[0];
+            let b = pair[1];
+            let dx = b[0] - a[0];
+            let dy = b[1] - a[1];
+            let segment = (dx * dx + dy * dy).sqrt();
+            if segment <= f32::EPSILON {
+                continue;
+            }
+            if travelled + segment >= distance {
+                let t = ((distance - travelled) / segment).clamp(0.0, 1.0);
+                return [a[0] + dx * t, a[1] + dy * t];
+            }
+            travelled += segment;
+        }
+
+        *points.last().unwrap_or(&points[0])
+    }
+
+    fn iso_paint_stabilized_arch_points(stroke: &IsoPaintStroke) -> Vec<[i32; 2]> {
+        let mut raw = Vec::new();
+        for point in &stroke.points {
+            let candidate = [point.screen[0] as f32, point.screen[1] as f32];
+            if raw.last().is_none_or(|last: &[f32; 2]| {
+                let dx = candidate[0] - last[0];
+                let dy = candidate[1] - last[1];
+                dx * dx + dy * dy >= 4.0
+            }) {
+                raw.push(candidate);
+            }
+        }
+
+        if raw.len() < 3 {
+            return raw
+                .into_iter()
+                .map(|point| [point[0].round() as i32, point[1].round() as i32])
+                .collect();
+        }
+
+        let mut total = 0.0;
+        for pair in raw.windows(2) {
+            let dx = pair[1][0] - pair[0][0];
+            let dy = pair[1][1] - pair[0][1];
+            total += (dx * dx + dy * dy).sqrt();
+        }
+        if total <= f32::EPSILON {
+            return Self::iso_paint_stroke_screen_points(stroke);
+        }
+
+        let spacing = (stroke.size * 0.65).clamp(3.0, 8.0);
+        let count = (total / spacing).ceil().max(2.0) as usize + 1;
+        let mut points = Vec::with_capacity(count);
+        for index in 0..count {
+            let t = index as f32 / (count.saturating_sub(1).max(1)) as f32;
+            points.push(Self::iso_paint_resampled_point(&raw, total * t));
+        }
+
+        for _ in 0..5 {
+            if points.len() < 3 {
+                break;
+            }
+            let mut smoothed = points.clone();
+            for index in 1..points.len() - 1 {
+                smoothed[index][0] = points[index - 1][0] * 0.25
+                    + points[index][0] * 0.5
+                    + points[index + 1][0] * 0.25;
+                smoothed[index][1] = points[index - 1][1] * 0.25
+                    + points[index][1] * 0.5
+                    + points[index + 1][1] * 0.25;
+            }
+            points = smoothed;
+        }
+
+        points
+            .into_iter()
+            .map(|point| [point[0].round() as i32, point[1].round() as i32])
+            .collect()
+    }
+
+    fn iso_paint_screen_path_local(
+        screen_points: &[[i32; 2]],
+        origin: [i32; 2],
+    ) -> (Vec<[f32; 2]>, Vec<f32>) {
+        let mut points = Vec::new();
+        for point in screen_points {
+            let local = [(point[0] - origin[0]) as f32, (point[1] - origin[1]) as f32];
+            if points
+                .last()
+                .is_none_or(|last: &[f32; 2]| last[0] != local[0] || last[1] != local[1])
+            {
+                points.push(local);
+            }
+        }
+
+        let mut lengths = Vec::with_capacity(points.len());
+        let mut total = 0.0;
+        for index in 0..points.len() {
+            if index > 0 {
+                let previous = points[index - 1];
+                let current = points[index];
+                let dx = current[0] - previous[0];
+                let dy = current[1] - previous[1];
+                total += (dx * dx + dy * dy).sqrt();
+            }
+            lengths.push(total);
+        }
+
+        (points, lengths)
+    }
+
     fn iso_paint_stroke_cache_key(stroke: &IsoPaintStroke) -> u64 {
         let mut hasher = DefaultHasher::new();
         stroke.id.hash(&mut hasher);
@@ -2528,15 +2779,22 @@ impl Editor {
         stroke.brush_shape.hash(&mut shape_hasher);
         let shape_seed = shape_hasher.finish() as u32;
         let pixels = paint.pixels_mut();
+        let arch_pattern =
+            stroke.brush == "brick" && matches!(stroke.pattern_kind.as_str(), "arch" | "trim");
+        let render_points = if arch_pattern {
+            Self::iso_paint_stabilized_arch_points(stroke)
+        } else {
+            Self::iso_paint_stroke_screen_points(stroke)
+        };
 
-        if stroke.points.len() == 1 {
-            let point = &stroke.points[0];
+        if render_points.len() == 1 {
+            let point = render_points[0];
             Self::iso_paint_stamp_coverage(
                 pixels,
                 paint_w,
                 paint_h,
-                point.screen[0] - origin[0],
-                point.screen[1] - origin[1],
+                point[0] - origin[0],
+                point[1] - origin[1],
                 radius,
                 color,
                 &stroke.palette_colors,
@@ -2545,13 +2803,13 @@ impl Editor {
                 shape_seed,
             );
         } else {
-            for pair in stroke.points.windows(2) {
+            for pair in render_points.windows(2) {
                 Self::iso_paint_stamp_coverage(
                     pixels,
                     paint_w,
                     paint_h,
-                    pair[0].screen[0] - origin[0],
-                    pair[0].screen[1] - origin[1],
+                    pair[0][0] - origin[0],
+                    pair[0][1] - origin[1],
                     radius,
                     color,
                     &stroke.palette_colors,
@@ -2563,8 +2821,8 @@ impl Editor {
                     pixels,
                     paint_w,
                     paint_h,
-                    pair[0].screen,
-                    pair[1].screen,
+                    pair[0],
+                    pair[1],
                     origin,
                     radius,
                     color,
@@ -2575,6 +2833,8 @@ impl Editor {
                 );
             }
         }
+
+        let (path_points, path_lengths) = Self::iso_paint_screen_path_local(&render_points, origin);
 
         vec![IsoPaintStrokeRenderCache {
             origin,
@@ -2595,6 +2855,8 @@ impl Editor {
             pattern_mortar: stroke.pattern_mortar,
             pattern_detail: stroke.pattern_detail,
             pattern_variation: stroke.pattern_variation,
+            path_points,
+            path_lengths,
             erase,
             buffer: paint,
         }]
@@ -2824,6 +3086,8 @@ impl Editor {
                             stroke.pattern_mortar,
                             stroke.pattern_detail,
                             stroke.pattern_variation,
+                            &stroke.path_points,
+                            &stroke.path_lengths,
                         );
                     } else {
                         Self::iso_paint_composite_overlay_scaled_at(

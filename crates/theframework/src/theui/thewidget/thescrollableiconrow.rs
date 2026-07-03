@@ -30,6 +30,7 @@ pub struct TheScrollableIconRow {
     drag_start_scroll: i32,
     is_dragging: bool,
     tile_width: i32,
+    icon_padding: i32,
     gap: i32,
     is_dirty: bool,
 }
@@ -85,6 +86,7 @@ impl TheWidget for TheScrollableIconRow {
             drag_start_scroll: 0,
             is_dragging: false,
             tile_width: 64,
+            icon_padding: 3,
             gap: 5,
             is_dirty: true,
         }
@@ -222,7 +224,7 @@ impl TheWidget for TheScrollableIconRow {
         );
         self.rectangles.clear();
 
-        let tile_h = (self.dim.height - 8).clamp(30, 38);
+        let tile_h = (self.dim.height - 8).clamp(20, 38);
         for (index, item) in self.items.iter().enumerate() {
             let x = 7 + index as i32 * (self.tile_width + self.gap) - self.scroll_offset;
             let y = 4;
@@ -243,7 +245,13 @@ impl TheWidget for TheScrollableIconRow {
             ctx.draw
                 .rect(tile_buffer.pixels_mut(), &outer, tile_stride, bg);
             if let Some(icon) = item.icon.as_ref() {
-                let preview = (3, 3, (self.tile_width - 6) as usize, (tile_h - 6) as usize);
+                let padding = self.icon_padding.min(self.tile_width / 2).min(tile_h / 2);
+                let preview = (
+                    padding as usize,
+                    padding as usize,
+                    (self.tile_width - padding * 2).max(1) as usize,
+                    (tile_h - padding * 2).max(1) as usize,
+                );
                 ctx.draw.blend_scale_chunk(
                     tile_buffer.pixels_mut(),
                     &preview,
@@ -293,6 +301,7 @@ pub trait TheScrollableIconRowTrait {
     fn set_selected(&mut self, selected: usize);
     fn selected(&self) -> usize;
     fn set_tile_width(&mut self, width: i32);
+    fn set_icon_padding(&mut self, padding: i32);
 }
 
 impl TheScrollableIconRowTrait for TheScrollableIconRow {
@@ -315,6 +324,11 @@ impl TheScrollableIconRowTrait for TheScrollableIconRow {
     fn set_tile_width(&mut self, width: i32) {
         self.tile_width = width.clamp(24, 160);
         self.clamp_scroll();
+        self.is_dirty = true;
+    }
+
+    fn set_icon_padding(&mut self, padding: i32) {
+        self.icon_padding = padding.clamp(0, 24);
         self.is_dirty = true;
     }
 }

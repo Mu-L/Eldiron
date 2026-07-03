@@ -33,6 +33,12 @@ const ISO_PAINT_STAMP_ROTATION_JITTER: &str = "Iso Paint Stamp Rotation Jitter";
 const ISO_PAINT_FLOWER_TYPE: &str = "Iso Paint Flower Type";
 const ISO_PAINT_ACTIVE_BRUSH_COLOR: &str = "Iso Paint Active Brush Color";
 const ISO_PAINT_BRUSH_COUNT: usize = 12;
+const ISO_PAINT_SHAPE_STRIP_TILE_WIDTH: i32 = 44;
+const ISO_PAINT_SHAPE_STRIP_ICON_PADDING: i32 = 2;
+const ISO_PAINT_SHAPE_STRIP_TILE_HEIGHT: i32 = 24;
+const ISO_PAINT_MIN_BRUSH_SIZE: f32 = 0.05;
+const ISO_PAINT_MAX_PAINT_BRUSH_SIZE: f32 = 16.0;
+const ISO_PAINT_MAX_STAMP_BRUSH_SIZE: f32 = 8.0;
 
 #[derive(Clone, Copy, PartialEq)]
 enum IsoPaintOperation {
@@ -51,6 +57,7 @@ enum IsoPaintClipMode {
 enum IsoPaintPatternKind {
     Tiles,
     Bricks,
+    Arch,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1223,14 +1230,8 @@ impl IsoPaintBrushShapeStrip {
         }
     }
 
-    fn set_selected(&mut self, selected: usize) {
-        self.selected = selected.min(IsoPaintDock::brush_shape_values().len().saturating_sub(1));
-        self.is_dirty = true;
-    }
-
     fn draw_shape_icon(
         buffer: &mut TheRGBABuffer,
-        _ctx: &mut TheContext,
         rect: &(usize, usize, usize, usize),
         stride: usize,
         shape: &str,
@@ -1260,15 +1261,23 @@ impl IsoPaintBrushShapeStrip {
                 if index + 3 >= pixels.len() {
                     continue;
                 }
-                let alpha = color[3] as u32;
-                let inv_alpha = 255 - alpha;
-                pixels[index] =
-                    ((color[0] as u32 * alpha + pixels[index] as u32 * inv_alpha) / 255) as u8;
-                pixels[index + 1] =
-                    ((color[1] as u32 * alpha + pixels[index + 1] as u32 * inv_alpha) / 255) as u8;
-                pixels[index + 2] =
-                    ((color[2] as u32 * alpha + pixels[index + 2] as u32 * inv_alpha) / 255) as u8;
-                pixels[index + 3] = 255;
+                let src_alpha = color[3] as u32;
+                let dst_alpha = pixels[index + 3] as u32;
+                let inv_src_alpha = 255 - src_alpha;
+                let out_alpha = src_alpha + (dst_alpha * inv_src_alpha) / 255;
+                if out_alpha == 0 {
+                    continue;
+                }
+                pixels[index] = ((color[0] as u32 * src_alpha
+                    + pixels[index] as u32 * dst_alpha * inv_src_alpha / 255)
+                    / out_alpha) as u8;
+                pixels[index + 1] = ((color[1] as u32 * src_alpha
+                    + pixels[index + 1] as u32 * dst_alpha * inv_src_alpha / 255)
+                    / out_alpha) as u8;
+                pixels[index + 2] = ((color[2] as u32 * src_alpha
+                    + pixels[index + 2] as u32 * dst_alpha * inv_src_alpha / 255)
+                    / out_alpha) as u8;
+                pixels[index + 3] = out_alpha as u8;
             }
         }
     }
@@ -1419,7 +1428,6 @@ impl TheWidget for IsoPaintBrushShapeStrip {
             );
             Self::draw_shape_icon(
                 buffer,
-                ctx,
                 &icon,
                 stride,
                 IsoPaintDock::brush_shape_key_from_index(index),
@@ -2325,6 +2333,33 @@ impl IsoPaintDock {
         Self::brush_shape_key(Self::brush_shape_from_index(index))
     }
 
+    fn brush_shape_icon_items() -> Vec<TheScrollableIconRowItem> {
+        Self::brush_shape_values()
+            .iter()
+            .enumerate()
+            .map(|(index, shape)| {
+                let label = Self::brush_shape_label(*shape);
+                let icon_w =
+                    ISO_PAINT_SHAPE_STRIP_TILE_WIDTH - ISO_PAINT_SHAPE_STRIP_ICON_PADDING * 2;
+                let icon_h =
+                    ISO_PAINT_SHAPE_STRIP_TILE_HEIGHT - ISO_PAINT_SHAPE_STRIP_ICON_PADDING * 2;
+                let mut icon = TheRGBABuffer::new(TheDim::sized(icon_w, icon_h));
+                let stride = icon.stride();
+                IsoPaintBrushShapeStrip::draw_shape_icon(
+                    &mut icon,
+                    &(0, 0, icon_w as usize, icon_h as usize),
+                    stride,
+                    Self::brush_shape_key_from_index(index),
+                );
+                TheScrollableIconRowItem {
+                    label: label.clone(),
+                    status: label,
+                    icon: Some(icon),
+                }
+            })
+            .collect()
+    }
+
     fn brush_color_slot_from_id(name: &str) -> Option<usize> {
         if name == ISO_PAINT_ACTIVE_BRUSH_COLOR {
             return Some(0);
@@ -2466,12 +2501,30 @@ impl IsoPaintDock {
         match pattern_kind {
             IsoPaintPatternKind::Tiles => "tile",
             IsoPaintPatternKind::Bricks => "brick",
+            IsoPaintPatternKind::Arch => "arch",
         }
     }
 
     fn pattern_kind_from_key(key: &str) -> IsoPaintPatternKind {
         match key {
             "tile" | "tiles" => IsoPaintPatternKind::Tiles,
+            "arch" | "trim" => IsoPaintPatternKind::Arch,
+            _ => IsoPaintPatternKind::Bricks,
+        }
+    }
+
+    fn pattern_kind_index(pattern_kind: IsoPaintPatternKind) -> i32 {
+        match pattern_kind {
+            IsoPaintPatternKind::Tiles => 0,
+            IsoPaintPatternKind::Bricks => 1,
+            IsoPaintPatternKind::Arch => 2,
+        }
+    }
+
+    fn pattern_kind_from_index(index: i32) -> IsoPaintPatternKind {
+        match index {
+            0 => IsoPaintPatternKind::Tiles,
+            2 => IsoPaintPatternKind::Arch,
             _ => IsoPaintPatternKind::Bricks,
         }
     }
@@ -2546,6 +2599,7 @@ impl IsoPaintDock {
         vec![
             fl!("iso_paint_pattern_tiles"),
             fl!("iso_paint_pattern_bricks"),
+            fl!("iso_paint_pattern_arch"),
         ]
     }
 
@@ -2736,14 +2790,16 @@ impl IsoPaintDock {
 
     fn build_nodeui(&self, project: &Project) -> TheNodeUI {
         let mut nodeui = TheNodeUI::default();
+        let brush = self.selected_preset();
+        let size_max = self.selected_size_max();
 
         nodeui.add_item(TheNodeUIItem::Separator(fl!("iso_paint_section_brush")));
         nodeui.add_item(TheNodeUIItem::FloatEditSlider(
             ISO_PAINT_TOOL_SIZE.into(),
             fl!("iso_paint_size"),
             fl!("status_iso_paint_size"),
-            self.size,
-            0.05..=8.0,
+            self.size.clamp(ISO_PAINT_MIN_BRUSH_SIZE, size_max),
+            ISO_PAINT_MIN_BRUSH_SIZE..=size_max,
             true,
         ));
         nodeui.add_item(TheNodeUIItem::FloatEditSlider(
@@ -2755,7 +2811,6 @@ impl IsoPaintDock {
             true,
         ));
 
-        let brush = self.selected_preset();
         let color_count = Self::brush_color_slot_count(brush.key);
         if color_count > 0 {
             nodeui.add_item(TheNodeUIItem::PaletteIndexRowPicker(
@@ -2776,11 +2831,7 @@ impl IsoPaintDock {
                 fl!("iso_paint_pattern_kind"),
                 fl!("status_iso_paint_pattern_kind"),
                 Self::pattern_kind_labels(),
-                if self.pattern_kind == IsoPaintPatternKind::Tiles {
-                    0
-                } else {
-                    1
-                },
+                Self::pattern_kind_index(self.pattern_kind),
             ));
             nodeui.add_item(TheNodeUIItem::FloatEditSlider(
                 ISO_PAINT_PATTERN_SCALE.into(),
@@ -2935,6 +2986,22 @@ impl IsoPaintDock {
         )
     }
 
+    fn size_max_for(brush: &str, material_mode: IsoPaintMaterialMode) -> f32 {
+        if material_mode == IsoPaintMaterialMode::Stamp && Self::brush_supports_stamp(brush) {
+            ISO_PAINT_MAX_STAMP_BRUSH_SIZE
+        } else {
+            ISO_PAINT_MAX_PAINT_BRUSH_SIZE
+        }
+    }
+
+    fn selected_size_max(&self) -> f32 {
+        Self::size_max_for(self.selected_preset().key, self.material_mode)
+    }
+
+    fn clamp_size_for_selection(&self, size: f32) -> f32 {
+        size.clamp(ISO_PAINT_MIN_BRUSH_SIZE, self.selected_size_max())
+    }
+
     fn brush_index_from_key(key: &str) -> usize {
         let key = match key {
             "screen" => "dirt",
@@ -2974,7 +3041,7 @@ impl IsoPaintDock {
             editor.set_preview_mode(editor_preview_mode);
         }
         if let Some(widget) = ui.get_widget(ISO_PAINT_BRUSH_SHAPE_GROUP)
-            && let Some(strip) = widget.as_any().downcast_mut::<IsoPaintBrushShapeStrip>()
+            && let Some(strip) = widget.as_any().downcast_mut::<TheScrollableIconRow>()
         {
             strip.set_selected(Self::brush_shape_index(self.brush_shape).max(0) as usize);
         }
@@ -3032,6 +3099,8 @@ impl IsoPaintDock {
         ) {
             self.material_mode = IsoPaintMaterialMode::Stamp;
         }
+        self.size = self.clamp_size_for_selection(self.size);
+        self.brush_sizes[self.selected_brush] = self.size;
         self.enforce_special_brush_settings();
         self.sync_inspector(ui, ctx, project);
         ctx.ui.send(TheEvent::SetStatusText(
@@ -3280,8 +3349,15 @@ impl Dock for IsoPaintDock {
         let mut shape_canvas = TheCanvas::new();
         shape_canvas.limiter_mut().set_min_height(32);
         shape_canvas.limiter_mut().set_max_height(32);
-        let mut shape_strip =
-            IsoPaintBrushShapeStrip::new(TheId::named(ISO_PAINT_BRUSH_SHAPE_GROUP));
+        let mut shape_strip = TheScrollableIconRow::new(TheId::named(ISO_PAINT_BRUSH_SHAPE_GROUP));
+        shape_strip.limiter_mut().set_min_height(32);
+        shape_strip.limiter_mut().set_max_height(32);
+        shape_strip
+            .limiter_mut()
+            .set_max_size(Vec2::new(i32::MAX, 32));
+        shape_strip.set_tile_width(ISO_PAINT_SHAPE_STRIP_TILE_WIDTH);
+        shape_strip.set_icon_padding(ISO_PAINT_SHAPE_STRIP_ICON_PADDING);
+        shape_strip.set_items(Self::brush_shape_icon_items());
         shape_strip.set_selected(Self::brush_shape_index(self.brush_shape).max(0) as usize);
         shape_canvas.set_widget(shape_strip);
         brush_panel.set_bottom(shape_canvas);
@@ -3353,7 +3429,10 @@ impl Dock for IsoPaintDock {
                 {
                     preset.size
                 } else {
-                    region.iso_paint.active_size.max(0.05)
+                    region
+                        .iso_paint
+                        .active_size
+                        .clamp(ISO_PAINT_MIN_BRUSH_SIZE, self.selected_size_max())
                 };
                 self.opacity = region.iso_paint.active_opacity.clamp(0.0, 1.0);
                 self.brush_sizes[self.selected_brush] = self.size;
@@ -3527,7 +3606,7 @@ impl Dock for IsoPaintDock {
                         match id.name.as_str() {
                             ISO_PAINT_TOOL_SIZE => {
                                 if let Some(value) = value.to_f32() {
-                                    self.size = value.clamp(0.05, 8.0);
+                                    self.size = self.clamp_size_for_selection(value);
                                     self.brush_sizes[self.selected_brush] = self.size;
                                 }
                             }
@@ -3549,6 +3628,8 @@ impl Dock for IsoPaintDock {
                                         }
                                         _ => IsoPaintMaterialMode::Coat,
                                     };
+                                    self.size = self.clamp_size_for_selection(self.size);
+                                    self.brush_sizes[self.selected_brush] = self.size;
                                     refresh_inspector = true;
                                 }
                             }
@@ -3582,11 +3663,7 @@ impl Dock for IsoPaintDock {
                             }
                             ISO_PAINT_PATTERN_KIND => {
                                 if let TheValue::Int(index) = value {
-                                    self.pattern_kind = if *index == 0 {
-                                        IsoPaintPatternKind::Tiles
-                                    } else {
-                                        IsoPaintPatternKind::Bricks
-                                    };
+                                    self.pattern_kind = Self::pattern_kind_from_index(*index);
                                 }
                             }
                             ISO_PAINT_PATTERN_SCALE => {
