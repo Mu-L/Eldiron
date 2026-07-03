@@ -8,11 +8,86 @@ pub struct IsoPaintTool {
     painting: bool,
     previous_dock: Option<String>,
     active_stroke: Option<Uuid>,
+    last_stamp_screen: Option<[i32; 2]>,
+    stamp_clip_owner: Option<IsoPaintOwner>,
     stroke_before: Option<Region>,
     stroke_changed: bool,
 }
 
 impl IsoPaintTool {
+    fn is_stamp_mode(layer: &IsoPaintLayer) -> bool {
+        matches!(
+            layer.active_brush.as_str(),
+            "grass" | "rubble" | "leaves" | "footprints" | "mud"
+        ) && layer.active_material_mode == "stamp"
+    }
+
+    fn stamp_label(layer: &IsoPaintLayer) -> &'static str {
+        match layer.active_brush.as_str() {
+            "rubble" => "rubble",
+            "leaves" => "leaves",
+            "footprints" => "footprints",
+            "mud" => "mud",
+            _ => "grass",
+        }
+    }
+
+    fn should_place_stamp(
+        last: Option<[i32; 2]>,
+        coord: Vec2<i32>,
+        size: f32,
+        density: f32,
+    ) -> bool {
+        let Some(last) = last else {
+            return true;
+        };
+        let density = density.clamp(0.0, 1.0);
+        let spacing_scale = 1.55 - density * 0.9;
+        let spacing = (size * 9.0 * spacing_scale).round().clamp(5.0, 42.0) as i32;
+        let dx = coord.x - last[0];
+        let dy = coord.y - last[1];
+        dx * dx + dy * dy >= spacing * spacing
+    }
+
+    fn stamp_clip_owner(layer: &IsoPaintLayer, point: &IsoPaintPoint) -> Option<IsoPaintOwner> {
+        (layer.active_clip == "object")
+            .then(|| point.owner.clone())
+            .flatten()
+    }
+
+    fn stamp_point_matches_clip(point: &IsoPaintPoint, clip_owner: Option<&IsoPaintOwner>) -> bool {
+        clip_owner.is_none_or(|clip_owner| {
+            point
+                .owner
+                .as_ref()
+                .is_some_and(|owner| clip_owner.same_paint_object(owner))
+        })
+    }
+
+    fn apply_stamp_at(
+        region: &mut Region,
+        point: IsoPaintPoint,
+        clip_owner: Option<&IsoPaintOwner>,
+    ) -> bool {
+        if !Self::stamp_point_matches_clip(&point, clip_owner) {
+            return false;
+        }
+        if region.iso_paint.active_operation == "erase" {
+            let active_brush = region.iso_paint.active_brush.clone();
+            region.iso_paint.erase_stamps_near_owner_kind(
+                point.screen,
+                region.iso_paint.active_size,
+                clip_owner,
+                Some(active_brush.as_str()),
+            )
+        } else if region.iso_paint.active_operation == "draw" {
+            region.iso_paint.add_stamp(point);
+            true
+        } else {
+            false
+        }
+    }
+
     fn sync_live_paint_settings(ui: &mut TheUI, region: &mut Region) {
         if let Some(opacity) = ui
             .get_widget_value("Iso Paint Tool Opacity")
@@ -27,11 +102,23 @@ impl IsoPaintTool {
             region.iso_paint.active_size = size.clamp(0.05, 8.0);
         }
         if let Some(TheValue::Int(index)) = ui.get_widget_value("Iso Paint Material Mode") {
-            region.iso_paint.active_material_mode = if index == 1 {
-                "replace".to_string()
-            } else {
-                "coat".to_string()
+            region.iso_paint.active_material_mode = match index {
+                1 => "replace".to_string(),
+                2 => "stamp".to_string(),
+                _ => "coat".to_string(),
             };
+        }
+        if let Some(size_jitter) = ui
+            .get_widget_value("Iso Paint Stamp Size Jitter")
+            .and_then(|value| value.to_f32())
+        {
+            region.iso_paint.active_stamp_size_jitter = size_jitter.clamp(0.0, 1.0);
+        }
+        if let Some(rotation_jitter) = ui
+            .get_widget_value("Iso Paint Stamp Rotation Jitter")
+            .and_then(|value| value.to_f32())
+        {
+            region.iso_paint.active_stamp_rotation_jitter = rotation_jitter.clamp(0.0, 1.0);
         }
     }
 
@@ -98,6 +185,8 @@ impl IsoPaintTool {
     fn reset_stroke(&mut self) {
         self.painting = false;
         self.active_stroke = None;
+        self.last_stamp_screen = None;
+        self.stamp_clip_owner = None;
         self.stroke_before = None;
         self.stroke_changed = false;
     }
@@ -113,6 +202,8 @@ impl Tool for IsoPaintTool {
             painting: false,
             previous_dock: None,
             active_stroke: None,
+            last_stamp_screen: None,
+            stamp_clip_owner: None,
             stroke_before: None,
             stroke_changed: false,
         }
@@ -278,6 +369,25 @@ impl Tool for IsoPaintTool {
                 server_ctx.iso_paint_hover_screen = Some(coord);
                 self.stroke_before = Some(region.clone());
                 Self::sync_live_paint_settings(_ui, region);
+                if Self::is_stamp_mode(&region.iso_paint) {
+                    let point = Self::paint_point(coord, server_ctx);
+                    self.stamp_clip_owner = Self::stamp_clip_owner(&region.iso_paint, &point);
+                    let clip_owner = self.stamp_clip_owner.clone();
+                    let changed = Self::apply_stamp_at(region, point, clip_owner.as_ref());
+                    self.active_stroke = None;
+                    self.last_stamp_screen = Some([coord.x, coord.y]);
+                    self.stroke_changed = changed;
+                    Self::request_paint_redraw(ctx);
+                    ctx.ui.send(TheEvent::SetStatusText(
+                        TheId::empty(),
+                        format!(
+                            "{} {} stamp",
+                            Self::hit_status(server_ctx),
+                            Self::stamp_label(&region.iso_paint)
+                        ),
+                    ));
+                    return None;
+                }
                 let stroke_id = region
                     .iso_paint
                     .begin_stroke(Self::paint_point(coord, server_ctx));
@@ -308,6 +418,25 @@ impl Tool for IsoPaintTool {
             MapDragged(coord) => {
                 server_ctx.iso_paint_hover_screen = Some(coord);
                 if self.painting
+                    && Self::is_stamp_mode(&region.iso_paint)
+                    && Self::should_place_stamp(
+                        self.last_stamp_screen,
+                        coord,
+                        region.iso_paint.active_size,
+                        region.iso_paint.active_stamp_density,
+                    )
+                {
+                    let point = Self::paint_point(coord, server_ctx);
+                    let changed =
+                        Self::apply_stamp_at(region, point, self.stamp_clip_owner.as_ref());
+                    if changed {
+                        self.last_stamp_screen = Some([coord.x, coord.y]);
+                    }
+                    self.stroke_changed |= changed;
+                    Self::request_paint_redraw(ctx);
+                    return None;
+                }
+                if self.painting
                     && let Some(stroke_id) = self.active_stroke
                     && region
                         .iso_paint
@@ -324,6 +453,19 @@ impl Tool for IsoPaintTool {
             MapUp(coord) => {
                 server_ctx.iso_paint_hover_screen = Some(coord);
                 if self.painting
+                    && Self::is_stamp_mode(&region.iso_paint)
+                    && Self::should_place_stamp(
+                        self.last_stamp_screen,
+                        coord,
+                        region.iso_paint.active_size,
+                        region.iso_paint.active_stamp_density,
+                    )
+                {
+                    let point = Self::paint_point(coord, server_ctx);
+                    let changed =
+                        Self::apply_stamp_at(region, point, self.stamp_clip_owner.as_ref());
+                    self.stroke_changed |= changed;
+                } else if self.painting
                     && let Some(stroke_id) = self.active_stroke
                     && region
                         .iso_paint

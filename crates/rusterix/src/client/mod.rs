@@ -2132,6 +2132,9 @@ impl Client {
                     assets,
                     scene_handler,
                 );
+                // Give callers a post-redraw hook as well. Some overlays are drawn
+                // directly into the widget buffer and must run after the final 3D frame.
+                let _ = widget_overlay(widget, scene_handler);
             }
 
             if let Some(font) = &self.messages_font {

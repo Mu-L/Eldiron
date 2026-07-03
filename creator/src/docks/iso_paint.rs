@@ -28,7 +28,10 @@ const ISO_PAINT_MORTAR: &str = "Iso Paint Mortar";
 const ISO_PAINT_PATTERN_DETAIL: &str = "Iso Paint Pattern Detail";
 const ISO_PAINT_PATTERN_VARIATION: &str = "Iso Paint Pattern Variation";
 const ISO_PAINT_STAMP_DENSITY: &str = "Iso Paint Stamp Density";
+const ISO_PAINT_STAMP_SIZE_JITTER: &str = "Iso Paint Stamp Size Jitter";
+const ISO_PAINT_STAMP_ROTATION_JITTER: &str = "Iso Paint Stamp Rotation Jitter";
 const ISO_PAINT_ACTIVE_BRUSH_COLOR: &str = "Iso Paint Active Brush Color";
+const ISO_PAINT_BRUSH_COUNT: usize = 11;
 
 #[derive(Clone, Copy, PartialEq)]
 enum IsoPaintOperation {
@@ -53,6 +56,7 @@ enum IsoPaintPatternKind {
 enum IsoPaintMaterialMode {
     Coat,
     Replace,
+    Stamp,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1528,13 +1532,13 @@ pub struct IsoPaintDock {
     operation: IsoPaintOperation,
     size: f32,
     opacity: f32,
-    brush_shapes: [IsoPaintBrushShape; 7],
-    brush_sizes: [f32; 7],
-    brush_opacities: [f32; 7],
-    brush_color_slots: [[u16; 4]; 7],
+    brush_shapes: [IsoPaintBrushShape; ISO_PAINT_BRUSH_COUNT],
+    brush_sizes: [f32; ISO_PAINT_BRUSH_COUNT],
+    brush_opacities: [f32; ISO_PAINT_BRUSH_COUNT],
+    brush_color_slots: [[u16; 4]; ISO_PAINT_BRUSH_COUNT],
     selected_color_slot: usize,
-    brush_material_presets: [i32; 7],
-    brush_material_finishes: [i32; 7],
+    brush_material_presets: [i32; ISO_PAINT_BRUSH_COUNT],
+    brush_material_finishes: [i32; ISO_PAINT_BRUSH_COUNT],
     material_preset: i32,
     material_finish: i32,
     material_mode: IsoPaintMaterialMode,
@@ -1547,11 +1551,13 @@ pub struct IsoPaintDock {
     pattern_detail: f32,
     pattern_variation: f32,
     stamp_density: f32,
+    stamp_size_jitter: f32,
+    stamp_rotation_jitter: f32,
     nodeui: TheNodeUI,
 }
 
 impl IsoPaintDock {
-    const BRUSHES: [IsoPaintBrushPreset; 7] = [
+    const BRUSHES: [IsoPaintBrushPreset; ISO_PAINT_BRUSH_COUNT] = [
         IsoPaintBrushPreset {
             key: "material",
             size: 8.0,
@@ -1596,6 +1602,42 @@ impl IsoPaintDock {
             pattern_scale: 1.0,
             mortar: 0.08,
             density: 0.6,
+        },
+        IsoPaintBrushPreset {
+            key: "rubble",
+            size: 1.0,
+            opacity: 1.0,
+            shape: IsoPaintBrushShape::Jagged,
+            pattern_scale: 1.0,
+            mortar: 0.08,
+            density: 0.65,
+        },
+        IsoPaintBrushPreset {
+            key: "leaves",
+            size: 1.0,
+            opacity: 1.0,
+            shape: IsoPaintBrushShape::Speckle,
+            pattern_scale: 1.0,
+            mortar: 0.08,
+            density: 0.7,
+        },
+        IsoPaintBrushPreset {
+            key: "footprints",
+            size: 1.0,
+            opacity: 0.9,
+            shape: IsoPaintBrushShape::Soft,
+            pattern_scale: 1.0,
+            mortar: 0.08,
+            density: 0.55,
+        },
+        IsoPaintBrushPreset {
+            key: "mud",
+            size: 1.1,
+            opacity: 0.82,
+            shape: IsoPaintBrushShape::Soft,
+            pattern_scale: 1.0,
+            mortar: 0.08,
+            density: 0.62,
         },
         IsoPaintBrushPreset {
             key: "puddle",
@@ -1646,25 +1688,29 @@ impl IsoPaintDock {
         ]
     }
 
-    fn default_brush_sizes() -> [f32; 7] {
+    fn default_brush_sizes() -> [f32; ISO_PAINT_BRUSH_COUNT] {
         std::array::from_fn(|index| Self::BRUSHES[index].size)
     }
 
-    fn default_brush_opacities() -> [f32; 7] {
+    fn default_brush_opacities() -> [f32; ISO_PAINT_BRUSH_COUNT] {
         std::array::from_fn(|index| Self::BRUSHES[index].opacity)
     }
 
-    fn default_brush_shapes() -> [IsoPaintBrushShape; 7] {
+    fn default_brush_shapes() -> [IsoPaintBrushShape; ISO_PAINT_BRUSH_COUNT] {
         std::array::from_fn(|index| Self::BRUSHES[index].shape)
     }
 
-    fn default_brush_color_slots() -> [[u16; 4]; 7] {
+    fn default_brush_color_slots() -> [[u16; 4]; ISO_PAINT_BRUSH_COUNT] {
         [
-            [0, 0, 0, 0],
+            [2, 2, 2, 2],
             [19, 20, 21, 18],
             [37, 36, 34, 38],
             [1, 2, 4, 7],
             [37, 36, 35, 34],
+            [4, 7, 2, 1],
+            [34, 37, 18, 20],
+            [18, 17, 16, 27],
+            [18, 16, 17, 27],
             [39, 41, 43, 45],
             [18, 17, 27, 16],
         ]
@@ -1673,7 +1719,7 @@ impl IsoPaintDock {
     fn brush_color_slot_count(key: &str) -> usize {
         match key {
             "material" => 1,
-            "puddle" => 0,
+            "puddle" => 1,
             "crack" => 3,
             _ => 4,
         }
@@ -1778,12 +1824,12 @@ impl IsoPaintDock {
             .unwrap_or(0) as i32
     }
 
-    fn default_brush_material_presets() -> [i32; 7] {
+    fn default_brush_material_presets() -> [i32; ISO_PAINT_BRUSH_COUNT] {
         std::array::from_fn(|index| {
             let key = match Self::BRUSHES[index].key {
-                "brick" | "crack" => "stone",
-                "moss" | "grass" => "foliage",
-                "dirt" => "dirt",
+                "brick" | "crack" | "rubble" => "stone",
+                "moss" | "grass" | "leaves" => "foliage",
+                "dirt" | "footprints" | "mud" => "dirt",
                 "puddle" => "water",
                 _ => "default",
             };
@@ -1791,11 +1837,12 @@ impl IsoPaintDock {
         })
     }
 
-    fn default_brush_material_finishes() -> [i32; 7] {
+    fn default_brush_material_finishes() -> [i32; ISO_PAINT_BRUSH_COUNT] {
         std::array::from_fn(|index| {
             let key = match Self::BRUSHES[index].key {
                 "puddle" => "wet",
                 "dirt" => "matte",
+                "mud" => "wet",
                 _ => "natural",
             };
             Self::finish_index_from_key(key)
@@ -1817,6 +1864,10 @@ impl IsoPaintDock {
             }
             self.brush_material_presets[self.selected_brush] = self.material_preset;
             self.brush_material_finishes[self.selected_brush] = self.material_finish;
+        } else if !Self::brush_supports_stamp(self.selected_preset().key)
+            && self.material_mode == IsoPaintMaterialMode::Stamp
+        {
+            self.material_mode = IsoPaintMaterialMode::Coat;
         }
     }
 
@@ -1905,21 +1956,35 @@ impl IsoPaintDock {
         match material_mode {
             IsoPaintMaterialMode::Coat => "coat",
             IsoPaintMaterialMode::Replace => "replace",
+            IsoPaintMaterialMode::Stamp => "stamp",
         }
     }
 
     fn material_mode_from_key(key: &str) -> IsoPaintMaterialMode {
         match key {
             "replace" => IsoPaintMaterialMode::Replace,
+            "stamp" => IsoPaintMaterialMode::Stamp,
             _ => IsoPaintMaterialMode::Coat,
         }
     }
 
-    fn material_mode_labels() -> Vec<String> {
-        vec![
+    fn material_mode_labels(allow_stamp: bool) -> Vec<String> {
+        let mut labels = vec![
             fl!("iso_paint_material_mode_coat"),
             fl!("iso_paint_material_mode_replace"),
-        ]
+        ];
+        if allow_stamp {
+            labels.push("Stamp".to_string());
+        }
+        labels
+    }
+
+    fn material_mode_index(&self, allow_stamp: bool) -> i32 {
+        match self.material_mode {
+            IsoPaintMaterialMode::Replace => 1,
+            IsoPaintMaterialMode::Stamp if allow_stamp => 2,
+            _ => 0,
+        }
     }
 
     fn pattern_kind_labels() -> Vec<String> {
@@ -1971,6 +2036,10 @@ impl IsoPaintDock {
             "brick" => [1.0, 0.72, 1.22, 0.42],
             "moss" | "grass" => [1.0, 0.76, 1.18, 0.48],
             "crack" => [1.0, 0.58, 1.32, 0.40],
+            "rubble" => [1.0, 0.72, 1.18, 0.46],
+            "leaves" => [1.0, 0.72, 1.28, 0.44],
+            "footprints" => [1.0, 0.78, 0.58, 0.36],
+            "mud" => [1.0, 0.76, 0.54, 1.24],
             _ => [1.0, 0.78, 1.16, 0.52],
         };
         tones[slot.min(tones.len().saturating_sub(1))]
@@ -2069,7 +2138,11 @@ impl IsoPaintDock {
             "brick" => fl!("iso_paint_brush_brick"),
             "moss" => fl!("iso_paint_brush_moss"),
             "crack" => fl!("iso_paint_brush_crack"),
-            "grass" => fl!("iso_paint_brush_grass"),
+            "grass" => "Grass".to_string(),
+            "rubble" => "Rubble".to_string(),
+            "leaves" => "Leaves".to_string(),
+            "footprints" => "Footprints".to_string(),
+            "mud" => "Mud".to_string(),
             "puddle" => fl!("iso_paint_brush_puddle"),
             "dirt" => fl!("material_preset_dirt"),
             _ => key.to_string(),
@@ -2082,7 +2155,11 @@ impl IsoPaintDock {
             "brick" => fl!("iso_paint_brush_brick_desc"),
             "moss" => fl!("iso_paint_brush_moss_desc"),
             "crack" => fl!("iso_paint_brush_crack_desc"),
-            "grass" => fl!("iso_paint_brush_grass_desc"),
+            "grass" => "Paint a randomized green ground foliage brush.".to_string(),
+            "rubble" => "Place loose stone chips as scene-aware stamps.".to_string(),
+            "leaves" => "Scatter fallen leaves as scene-aware stamps.".to_string(),
+            "footprints" => "Place muddy paired footprints as scene-aware stamps.".to_string(),
+            "mud" => "Place glossy mud bubbles as scene-aware stamps.".to_string(),
             "puddle" => fl!("iso_paint_brush_puddle_desc"),
             "dirt" => "Paint dirt, dust, and grime onto the surface.".to_string(),
             _ => String::new(),
@@ -2170,18 +2247,42 @@ impl IsoPaintDock {
                 true,
             ));
         }
+        let allow_stamp_mode = Self::brush_supports_stamp(brush.key);
+        let stamp_mode = allow_stamp_mode && self.material_mode == IsoPaintMaterialMode::Stamp;
+        if stamp_mode {
+            nodeui.add_item(TheNodeUIItem::FloatEditSlider(
+                ISO_PAINT_STAMP_DENSITY.into(),
+                "Density".to_string(),
+                fl!("status_iso_paint_stamp_density"),
+                self.stamp_density,
+                0.0..=1.0,
+                true,
+            ));
+            nodeui.add_item(TheNodeUIItem::FloatEditSlider(
+                ISO_PAINT_STAMP_SIZE_JITTER.into(),
+                "Radius".to_string(),
+                "Randomize stamp size.".to_string(),
+                self.stamp_size_jitter,
+                0.0..=1.0,
+                true,
+            ));
+            nodeui.add_item(TheNodeUIItem::FloatEditSlider(
+                ISO_PAINT_STAMP_ROTATION_JITTER.into(),
+                "Rotate".to_string(),
+                "Randomize stamp rotation.".to_string(),
+                self.stamp_rotation_jitter,
+                0.0..=1.0,
+                true,
+            ));
+        }
         if brush.key != "puddle" {
             nodeui.add_item(TheNodeUIItem::Separator(fl!("iso_paint_section_material")));
             nodeui.add_item(TheNodeUIItem::Selector(
                 ISO_PAINT_MATERIAL_MODE.into(),
                 fl!("iso_paint_material_mode"),
                 fl!("status_iso_paint_material_mode"),
-                Self::material_mode_labels(),
-                if self.material_mode == IsoPaintMaterialMode::Replace {
-                    1
-                } else {
-                    0
-                },
+                Self::material_mode_labels(allow_stamp_mode),
+                self.material_mode_index(allow_stamp_mode),
             ));
         }
 
@@ -2198,6 +2299,16 @@ impl IsoPaintDock {
             }
             TheNodeUIItem::PaletteIndexRowPicker(id, _, _, _, _)
                 if id == ISO_PAINT_ACTIVE_BRUSH_COLOR =>
+            {
+                0
+            }
+            TheNodeUIItem::FloatEditSlider(id, _, _, _, _, _)
+                if matches!(
+                    id.as_str(),
+                    ISO_PAINT_STAMP_DENSITY
+                        | ISO_PAINT_STAMP_SIZE_JITTER
+                        | ISO_PAINT_STAMP_ROTATION_JITTER
+                ) =>
             {
                 0
             }
@@ -2240,8 +2351,19 @@ impl IsoPaintDock {
             .unwrap_or(Self::BRUSHES[0])
     }
 
+    fn brush_supports_stamp(key: &str) -> bool {
+        matches!(
+            key,
+            "grass" | "grass_stamp" | "rubble" | "leaves" | "footprints" | "mud"
+        )
+    }
+
     fn brush_index_from_key(key: &str) -> usize {
-        let key = if key == "screen" { "dirt" } else { key };
+        let key = match key {
+            "screen" => "dirt",
+            "grass_stamp" => "grass",
+            _ => key,
+        };
         Self::BRUSHES
             .iter()
             .position(|brush| brush.key == key)
@@ -2321,6 +2443,9 @@ impl IsoPaintDock {
         self.brush_shape = self.brush_shapes[self.selected_brush];
         self.material_preset = self.brush_material_presets[self.selected_brush];
         self.material_finish = self.brush_material_finishes[self.selected_brush];
+        if matches!(brush.key, "rubble" | "leaves" | "footprints" | "mud") {
+            self.material_mode = IsoPaintMaterialMode::Stamp;
+        }
         self.enforce_special_brush_settings();
         self.sync_inspector(ui, ctx, project);
         ctx.ui.send(TheEvent::SetStatusText(
@@ -2365,24 +2490,34 @@ impl IsoPaintDock {
         let brush = self.selected_preset();
         let palette_indices = self.current_palette_indices();
         let palette_colors = self.current_palette_colors(project);
-        let color = if brush.key == "puddle" {
-            iso_paint_brush::default_preview_color(brush.key)
-        } else {
-            palette_colors
-                .first()
-                .copied()
-                .unwrap_or_else(|| Self::selected_palette_color(project))
-        };
+        let color = palette_colors
+            .first()
+            .copied()
+            .unwrap_or_else(|| Self::selected_palette_color(project));
         let Some(region) = project.get_region_mut(&server_ctx.curr_region) else {
             return;
         };
+        let stamp_mode = Self::brush_supports_stamp(brush.key)
+            && self.material_mode == IsoPaintMaterialMode::Stamp;
         let material_key = if brush.key == "puddle" {
             "water"
+        } else if stamp_mode && brush.key == "rubble" {
+            "stone"
+        } else if stamp_mode && brush.key == "footprints" {
+            "dirt"
+        } else if stamp_mode && brush.key == "mud" {
+            "dirt"
+        } else if stamp_mode {
+            "foliage"
         } else {
             self.selected_material_key()
         };
         let finish_key = if brush.key == "puddle" {
             "wet"
+        } else if stamp_mode && brush.key == "mud" {
+            "wet"
+        } else if stamp_mode {
+            "natural"
         } else {
             self.selected_finish_key()
         };
@@ -2409,6 +2544,9 @@ impl IsoPaintDock {
             self.pattern_mortar,
             self.pattern_detail,
             self.pattern_variation,
+            self.stamp_density,
+            self.stamp_size_jitter,
+            self.stamp_rotation_jitter,
             self.size,
             self.opacity,
         );
@@ -2448,6 +2586,8 @@ impl Dock for IsoPaintDock {
             pattern_detail: 0.65,
             pattern_variation: 0.6,
             stamp_density: Self::BRUSHES[0].density,
+            stamp_size_jitter: 0.25,
+            stamp_rotation_jitter: 1.0,
             nodeui: TheNodeUI::default(),
         }
     }
@@ -2611,6 +2751,9 @@ impl Dock for IsoPaintDock {
                 self.material_mode =
                     Self::material_mode_from_key(&region.iso_paint.active_material_mode);
                 self.selected_brush = Self::brush_index_from_key(&region.iso_paint.active_brush);
+                if region.iso_paint.active_brush == "grass_stamp" {
+                    self.material_mode = IsoPaintMaterialMode::Stamp;
+                }
                 let preset = self.selected_preset();
                 self.size = if matches!(preset.key, "material" | "brick")
                     && region.iso_paint.active_size <= 1.001
@@ -2626,6 +2769,10 @@ impl Dock for IsoPaintDock {
                     if slot < self.brush_color_slots[self.selected_brush].len() {
                         self.brush_color_slots[self.selected_brush][slot] = *index;
                     }
+                }
+                if preset.key == "material" && self.brush_color_slots[self.selected_brush][0] == 0 {
+                    self.brush_color_slots[self.selected_brush][0] =
+                        Self::default_brush_color_slots()[self.selected_brush][0];
                 }
                 self.brush_shape = Self::brush_shape_from_key(&region.iso_paint.active_brush_shape);
                 self.brush_shapes[self.selected_brush] = self.brush_shape;
@@ -2644,6 +2791,9 @@ impl Dock for IsoPaintDock {
                 self.pattern_mortar = region.iso_paint.active_pattern_mortar;
                 self.pattern_detail = region.iso_paint.active_pattern_detail;
                 self.pattern_variation = region.iso_paint.active_pattern_variation;
+                self.stamp_density = region.iso_paint.active_stamp_density;
+                self.stamp_size_jitter = region.iso_paint.active_stamp_size_jitter;
+                self.stamp_rotation_jitter = region.iso_paint.active_stamp_rotation_jitter;
                 region.iso_paint.visible
             })
             .unwrap_or(true);
@@ -2791,11 +2941,17 @@ impl Dock for IsoPaintDock {
                             }
                             ISO_PAINT_MATERIAL_MODE => {
                                 if let TheValue::Int(index) = value {
-                                    self.material_mode = if *index == 1 {
-                                        IsoPaintMaterialMode::Replace
-                                    } else {
-                                        IsoPaintMaterialMode::Coat
+                                    self.material_mode = match *index {
+                                        1 => IsoPaintMaterialMode::Replace,
+                                        2 if Self::brush_supports_stamp(
+                                            self.selected_preset().key,
+                                        ) =>
+                                        {
+                                            IsoPaintMaterialMode::Stamp
+                                        }
+                                        _ => IsoPaintMaterialMode::Coat,
                                     };
+                                    refresh_inspector = true;
                                 }
                             }
                             name if Self::brush_color_slot_from_id(name).is_some() => {
@@ -2852,6 +3008,16 @@ impl Dock for IsoPaintDock {
                             ISO_PAINT_STAMP_DENSITY => {
                                 if let Some(value) = value.to_f32() {
                                     self.stamp_density = value.clamp(0.0, 1.0);
+                                }
+                            }
+                            ISO_PAINT_STAMP_SIZE_JITTER => {
+                                if let Some(value) = value.to_f32() {
+                                    self.stamp_size_jitter = value.clamp(0.0, 1.0);
+                                }
+                            }
+                            ISO_PAINT_STAMP_ROTATION_JITTER => {
+                                if let Some(value) = value.to_f32() {
+                                    self.stamp_rotation_jitter = value.clamp(0.0, 1.0);
                                 }
                             }
                             _ => {}

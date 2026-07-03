@@ -1452,6 +1452,741 @@ impl Editor {
         }
     }
 
+    fn iso_paint_project_world(
+        point: [f32; 3],
+        view: Mat4<f32>,
+        proj: Mat4<f32>,
+        width: i32,
+        height: i32,
+    ) -> Option<[i32; 2]> {
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        let clip = (proj * view) * Vec4::new(point[0], point[1], point[2], 1.0);
+        if clip.w.abs() <= f32::EPSILON {
+            return None;
+        }
+        let ndc = Vec3::new(clip.x / clip.w, clip.y / clip.w, clip.z / clip.w);
+        Some([
+            ((ndc.x * 0.5 + 0.5) * width as f32).round() as i32,
+            ((1.0 - (ndc.y * 0.5 + 0.5)) * height as f32).round() as i32,
+        ])
+    }
+
+    fn iso_paint_blend_line(
+        buffer: &mut TheRGBABuffer,
+        surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
+        stamp_depth: Option<f32>,
+        owner_geo_id: Option<scenevm::GeoId>,
+        x0: i32,
+        y0: i32,
+        x1: i32,
+        y1: i32,
+        color: [u8; 4],
+    ) {
+        let dim = *buffer.dim();
+        if dim.width <= 0 || dim.height <= 0 {
+            return;
+        }
+        let width = dim.width as usize;
+        let height = dim.height as usize;
+        let pixels = buffer.pixels_mut();
+        let mut x = x0;
+        let mut y = y0;
+        let dx = (x1 - x0).abs();
+        let dy = -(y1 - y0).abs();
+        let sx = if x0 < x1 { 1 } else { -1 };
+        let sy = if y0 < y1 { 1 } else { -1 };
+        let mut err = dx + dy;
+        loop {
+            if Self::iso_paint_stamp_pixel_visible(surface_buffer, stamp_depth, owner_geo_id, x, y)
+            {
+                Self::iso_paint_blend_pixel(pixels, width, height, x, y, color);
+            }
+            if x == x1 && y == y1 {
+                break;
+            }
+            let e2 = 2 * err;
+            if e2 >= dy {
+                err += dy;
+                x += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                y += sy;
+            }
+        }
+    }
+
+    fn iso_paint_world_depth(point: [f32; 3], camera: scenevm::Camera3D) -> Option<f32> {
+        let point = Vec3::new(point[0], point[1], point[2]);
+        let depth = (point - camera.pos).dot(camera.forward);
+        (depth.is_finite() && depth > camera.near && depth < camera.far).then_some(depth)
+    }
+
+    fn iso_paint_stamp_pixel_visible(
+        surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
+        stamp_depth: Option<f32>,
+        owner_geo_id: Option<scenevm::GeoId>,
+        x: i32,
+        y: i32,
+    ) -> bool {
+        let Some(surface_pixel) = surface_buffer.and_then(|surface| surface.pixel(x, y)) else {
+            return true;
+        };
+        if !surface_pixel.valid {
+            return true;
+        }
+        if let Some(stamp_depth) = stamp_depth {
+            return surface_pixel.depth + 0.03 >= stamp_depth;
+        };
+        owner_geo_id.is_none_or(|owner_geo_id| {
+            Self::iso_paint_geo_object_matches(owner_geo_id, surface_pixel.geo_id)
+        })
+    }
+
+    fn iso_paint_adjust_rgb(color: [u8; 4], amount: f32) -> [u8; 4] {
+        [
+            (color[0] as f32 * amount).round().clamp(0.0, 255.0) as u8,
+            (color[1] as f32 * amount).round().clamp(0.0, 255.0) as u8,
+            (color[2] as f32 * amount).round().clamp(0.0, 255.0) as u8,
+            color[3],
+        ]
+    }
+
+    fn iso_paint_blend_stamp_pixel(
+        buffer: &mut TheRGBABuffer,
+        surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
+        stamp_depth: Option<f32>,
+        owner_geo_id: Option<scenevm::GeoId>,
+        x: i32,
+        y: i32,
+        color: [u8; 4],
+    ) {
+        if !Self::iso_paint_stamp_pixel_visible(surface_buffer, stamp_depth, owner_geo_id, x, y) {
+            return;
+        }
+        let dim = *buffer.dim();
+        let width = dim.width.max(0) as usize;
+        let height = dim.height.max(0) as usize;
+        Self::iso_paint_blend_pixel(buffer.pixels_mut(), width, height, x, y, color);
+    }
+
+    fn draw_iso_paint_rotated_ellipse(
+        buffer: &mut TheRGBABuffer,
+        surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
+        stamp_depth: Option<f32>,
+        owner_geo_id: Option<scenevm::GeoId>,
+        center: [i32; 2],
+        radius_major: f32,
+        radius_minor: f32,
+        angle: f32,
+        color: [u8; 4],
+        variation: u32,
+    ) {
+        let radius_major = radius_major.max(1.0);
+        let radius_minor = radius_minor.max(1.0);
+        let cos = angle.cos();
+        let sin = angle.sin();
+        let bound = (radius_major.max(radius_minor) + 1.0).ceil() as i32;
+        for y in -bound..=bound {
+            for x in -bound..=bound {
+                let lx = x as f32 * cos + y as f32 * sin;
+                let ly = -x as f32 * sin + y as f32 * cos;
+                let edge = lx * lx / (radius_major * radius_major)
+                    + ly * ly / (radius_minor * radius_minor);
+                if edge > 1.0 {
+                    continue;
+                }
+                let hash = iso_paint_brush::hash_u32(center[0] + x, center[1] + y, variation);
+                let noise = (hash & 0xff) as f32 / 255.0;
+                let shade = if ly < -radius_minor * 0.35 {
+                    1.08 + noise * 0.14
+                } else if edge > 0.78 || ly > radius_minor * 0.45 {
+                    0.62 + noise * 0.18
+                } else {
+                    0.82 + noise * 0.20
+                };
+                let mut pixel = Self::iso_paint_adjust_rgb(color, shade);
+                if edge > 0.9 {
+                    pixel[3] = ((pixel[3] as f32) * 0.65).round() as u8;
+                }
+                Self::iso_paint_blend_stamp_pixel(
+                    buffer,
+                    surface_buffer,
+                    stamp_depth,
+                    owner_geo_id,
+                    center[0] + x,
+                    center[1] + y,
+                    pixel,
+                );
+            }
+        }
+    }
+
+    fn draw_iso_paint_leaves_stamp(
+        buffer: &mut TheRGBABuffer,
+        surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
+        screen: [i32; 2],
+        stamp_depth: Option<f32>,
+        owner_geo_id: Option<scenevm::GeoId>,
+        size: f32,
+        color: [u8; 4],
+        opacity: f32,
+        variation: u32,
+        rotation: f32,
+    ) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        let leaf_count = 5 + (variation % 6) as i32;
+        let spread = (size * 10.0).round().clamp(5.0, 38.0) as i32;
+        let shadow = [12, 10, 7, (opacity * 42.0).round() as u8];
+        for i in 0..leaf_count {
+            let seed = variation
+                .wrapping_add((i as u32).wrapping_mul(0x27d4_eb2d))
+                .rotate_left(((i * 5) as u32) & 15);
+            let ox = ((seed & 0xff) as i32 - 128) * spread / 190;
+            let oy = (((seed >> 8) & 0xff) as i32 - 128) * spread / 300;
+            let center = [screen[0] + ox, screen[1] + oy];
+            let angle = rotation + (((seed >> 16) & 0xff) as f32 / 255.0 - 0.5) * 0.85;
+            let major = size * (2.2 + ((seed >> 24) & 0x7f) as f32 / 75.0);
+            let minor = major * (0.34 + ((seed >> 11) & 0x3f) as f32 / 260.0);
+            let shade = 0.68 + ((seed >> 5) & 0xff) as f32 / 255.0 * 0.78;
+            let mut leaf = Self::iso_paint_adjust_rgb(color, shade);
+            leaf[3] = (opacity * 215.0).round() as u8;
+            Self::draw_iso_paint_rotated_ellipse(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                [center[0] + 1, center[1] + 1],
+                major,
+                minor,
+                angle,
+                shadow,
+                seed ^ 0x51ad_0001,
+            );
+            Self::draw_iso_paint_rotated_ellipse(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                center,
+                major,
+                minor,
+                angle,
+                leaf,
+                seed,
+            );
+            let vein_alpha = (opacity * 92.0).round() as u8;
+            let vein = Self::iso_paint_adjust_rgb(leaf, 0.42);
+            let vein = [vein[0], vein[1], vein[2], vein_alpha];
+            let vx = (angle.cos() * major * 0.65).round() as i32;
+            let vy = (angle.sin() * major * 0.65).round() as i32;
+            Self::iso_paint_blend_line(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                center[0] - vx,
+                center[1] - vy,
+                center[0] + vx,
+                center[1] + vy,
+                vein,
+            );
+        }
+    }
+
+    fn draw_iso_paint_footprints_stamp(
+        buffer: &mut TheRGBABuffer,
+        surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
+        screen: [i32; 2],
+        stamp_depth: Option<f32>,
+        owner_geo_id: Option<scenevm::GeoId>,
+        size: f32,
+        color: [u8; 4],
+        opacity: f32,
+        variation: u32,
+        rotation: f32,
+    ) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        let angle = rotation;
+        let forward = [angle.cos(), angle.sin()];
+        let side = [-forward[1], forward[0]];
+        let step = (size * 4.6).round().clamp(3.0, 16.0);
+        let stride = (size * 4.2).round().clamp(3.0, 16.0);
+        let foot_len = (size * 3.5).clamp(3.0, 13.0);
+        let foot_w = (size * 1.35).clamp(1.2, 5.0);
+        let shadow = [8, 6, 5, (opacity * 45.0).round() as u8];
+        for i in 0..2 {
+            let phase = if i == 0 { -1.0 } else { 1.0 };
+            let seed = variation ^ (i as u32 + 1).wrapping_mul(0x9e37_79b9);
+            let center = [
+                screen[0]
+                    + (side[0] * step * phase + forward[0] * stride * phase * 0.55).round() as i32,
+                screen[1]
+                    + (side[1] * step * phase + forward[1] * stride * phase * 0.55).round() as i32,
+            ];
+            let foot_angle = angle + phase * 0.16;
+            let shade = 0.64 + ((seed >> 12) & 0xff) as f32 / 255.0 * 0.26;
+            let mut print = Self::iso_paint_adjust_rgb(color, shade);
+            print[3] = (opacity * 190.0).round() as u8;
+            Self::draw_iso_paint_rotated_ellipse(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                [center[0] + 1, center[1] + 1],
+                foot_len,
+                foot_w,
+                foot_angle,
+                shadow,
+                seed ^ 0x5a5a_0011,
+            );
+            Self::draw_iso_paint_rotated_ellipse(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                center,
+                foot_len,
+                foot_w,
+                foot_angle,
+                print,
+                seed,
+            );
+            let toe = [
+                center[0] + (forward[0] * foot_len * 0.68).round() as i32,
+                center[1] + (forward[1] * foot_len * 0.68).round() as i32,
+            ];
+            for toe_side in [-0.9_f32, 0.0, 0.9] {
+                let toe_center = [
+                    toe[0] + (side[0] * foot_w * toe_side).round() as i32,
+                    toe[1] + (side[1] * foot_w * toe_side).round() as i32,
+                ];
+                Self::draw_iso_paint_rotated_ellipse(
+                    buffer,
+                    surface_buffer,
+                    stamp_depth,
+                    owner_geo_id,
+                    toe_center,
+                    foot_w * 0.48,
+                    foot_w * 0.42,
+                    foot_angle,
+                    print,
+                    seed ^ ((toe_side.to_bits()).wrapping_mul(0x45d9_f3b)),
+                );
+            }
+        }
+    }
+
+    fn draw_iso_paint_mud_stamp(
+        buffer: &mut TheRGBABuffer,
+        surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
+        screen: [i32; 2],
+        stamp_depth: Option<f32>,
+        owner_geo_id: Option<scenevm::GeoId>,
+        size: f32,
+        color: [u8; 4],
+        opacity: f32,
+        variation: u32,
+        rotation: f32,
+    ) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        let spread = (size * 9.0).round().clamp(5.0, 34.0) as i32;
+        let shadow = [8, 6, 5, (opacity * 48.0).round() as u8];
+        let mut base = Self::iso_paint_adjust_rgb(color, 0.78);
+        base[3] = (opacity * 165.0).round() as u8;
+        for i in 0..3 {
+            let seed = variation
+                .wrapping_add((i as u32).wrapping_mul(0x4cf5_ad43))
+                .rotate_left(((i * 4) as u32) & 15);
+            let ox = if i == 0 {
+                0
+            } else {
+                ((seed & 0xff) as i32 - 128) * spread / 260
+            };
+            let oy = if i == 0 {
+                0
+            } else {
+                (((seed >> 8) & 0xff) as i32 - 128) * spread / 360
+            };
+            let center = [screen[0] + ox, screen[1] + oy];
+            let angle = rotation * 0.18 + (((seed >> 18) & 0xff) as f32 / 255.0 - 0.5) * 0.5;
+            let major = size * (4.3 + ((seed >> 10) & 0x7f) as f32 / 52.0);
+            let minor = size * (2.0 + ((seed >> 25) & 0x3f) as f32 / 55.0);
+            Self::draw_iso_paint_rotated_ellipse(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                [center[0] + 1, center[1] + 1],
+                major,
+                minor,
+                angle,
+                shadow,
+                seed ^ 0x011d_1111,
+            );
+            Self::draw_iso_paint_rotated_ellipse(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                center,
+                major,
+                minor,
+                angle,
+                base,
+                seed,
+            );
+        }
+
+        let bubble_count = 3 + (variation % 4) as i32;
+        for i in 0..bubble_count {
+            let seed = variation
+                .wrapping_add((i as u32).wrapping_mul(0x9e37_79b9))
+                .rotate_left(((i * 7) as u32) & 15);
+            let ox = ((seed & 0xff) as i32 - 128) * spread / 180;
+            let oy = (((seed >> 8) & 0xff) as i32 - 128) * spread / 280;
+            let center = [screen[0] + ox, screen[1] + oy];
+            let radius = (size * (1.05 + ((seed >> 16) & 0x7f) as f32 / 92.0)).clamp(1.2, 6.0);
+            let mut dome = Self::iso_paint_adjust_rgb(color, 1.18);
+            dome[3] = (opacity * 122.0).round() as u8;
+            let mut rim = Self::iso_paint_adjust_rgb(color, 0.54);
+            rim[3] = (opacity * 120.0).round() as u8;
+            Self::draw_iso_paint_rotated_ellipse(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                center,
+                radius,
+                radius * 0.72,
+                rotation,
+                rim,
+                seed ^ 0x8b8b_0001,
+            );
+            Self::draw_iso_paint_rotated_ellipse(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                [center[0], center[1] - 1],
+                radius * 0.68,
+                radius * 0.44,
+                rotation,
+                dome,
+                seed,
+            );
+            let highlight = [210, 224, 208, (opacity * 112.0).round() as u8];
+            Self::iso_paint_blend_stamp_pixel(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                center[0] - radius.round() as i32 / 2,
+                center[1] - radius.round() as i32 / 2,
+                highlight,
+            );
+        }
+    }
+
+    fn draw_iso_paint_rubble_ellipse(
+        buffer: &mut TheRGBABuffer,
+        surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
+        stamp_depth: Option<f32>,
+        owner_geo_id: Option<scenevm::GeoId>,
+        center: [i32; 2],
+        radius_x: i32,
+        radius_y: i32,
+        color: [u8; 4],
+        variation: u32,
+    ) {
+        let radius_x = radius_x.max(1);
+        let radius_y = radius_y.max(1);
+        let rx2 = (radius_x * radius_x).max(1) as f32;
+        let ry2 = (radius_y * radius_y).max(1) as f32;
+        for y in -radius_y..=radius_y {
+            for x in -radius_x..=radius_x {
+                let edge = x as f32 * x as f32 / rx2 + y as f32 * y as f32 / ry2;
+                if edge > 1.0 {
+                    continue;
+                }
+                let hash = iso_paint_brush::hash_u32(center[0] + x, center[1] + y, variation);
+                let noise = (hash & 0xff) as f32 / 255.0;
+                let shade = if y <= -radius_y / 3 && x <= radius_x / 3 {
+                    1.18 + noise * 0.16
+                } else if y >= radius_y / 3 || edge > 0.78 {
+                    0.56 + noise * 0.16
+                } else {
+                    0.80 + noise * 0.24
+                };
+                let mut pixel = Self::iso_paint_adjust_rgb(color, shade);
+                if edge > 0.88 {
+                    pixel[3] = ((pixel[3] as f32) * 0.72).round() as u8;
+                }
+                Self::iso_paint_blend_stamp_pixel(
+                    buffer,
+                    surface_buffer,
+                    stamp_depth,
+                    owner_geo_id,
+                    center[0] + x,
+                    center[1] + y,
+                    pixel,
+                );
+            }
+        }
+    }
+
+    fn draw_iso_paint_rubble_stamp(
+        buffer: &mut TheRGBABuffer,
+        surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
+        screen: [i32; 2],
+        stamp_depth: Option<f32>,
+        owner_geo_id: Option<scenevm::GeoId>,
+        size: f32,
+        color: [u8; 4],
+        opacity: f32,
+        variation: u32,
+        rotation: f32,
+    ) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        let stone_count = 4 + (variation % 5) as i32;
+        let spread = (size * 9.0).round().clamp(5.0, 36.0) as i32;
+        let shadow = [9, 8, 7, (opacity * 72.0).round() as u8];
+        for i in 0..stone_count {
+            let seed = variation
+                .wrapping_add((i as u32).wrapping_mul(0x85eb_ca6b))
+                .rotate_left(((i * 3) as u32) & 15);
+            let ox = ((seed & 0xff) as i32 - 128) * spread / 210;
+            let oy = (((seed >> 8) & 0xff) as i32 - 128) * spread / 360;
+            let lean = (rotation.sin() * spread as f32 * 0.18).round() as i32;
+            let center = [screen[0] + ox + lean, screen[1] + oy];
+            let radius_x = (size * (1.7 + ((seed >> 16) & 0x7f) as f32 / 90.0))
+                .round()
+                .clamp(2.0, 10.0) as i32;
+            let radius_y = (radius_x as f32 * (0.42 + ((seed >> 23) & 0x3f) as f32 / 180.0))
+                .round()
+                .max(1.0) as i32;
+            for sx in -radius_x..=radius_x {
+                Self::iso_paint_blend_stamp_pixel(
+                    buffer,
+                    surface_buffer,
+                    stamp_depth,
+                    owner_geo_id,
+                    center[0] + sx,
+                    center[1] + radius_y,
+                    shadow,
+                );
+            }
+            let shade = 0.68 + ((seed >> 11) & 0xff) as f32 / 255.0 * 0.64;
+            let mut stone = Self::iso_paint_adjust_rgb(color, shade);
+            stone[3] = (opacity * 235.0).round() as u8;
+            Self::draw_iso_paint_rubble_ellipse(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                center,
+                radius_x,
+                radius_y,
+                stone,
+                seed,
+            );
+        }
+    }
+
+    fn draw_iso_paint_grass_stamp(
+        buffer: &mut TheRGBABuffer,
+        surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
+        screen: [i32; 2],
+        stamp_depth: Option<f32>,
+        owner_geo_id: Option<scenevm::GeoId>,
+        size: f32,
+        color: [u8; 4],
+        opacity: f32,
+        variation: u32,
+        rotation: f32,
+    ) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        let blade_count = 5 + (variation % 5) as i32;
+        let base_alpha = (opacity * 235.0).round() as u8;
+        let base_color = [color[0], color[1], color[2], base_alpha];
+        let shadow = [7, 11, 8, (opacity * 72.0).round() as u8];
+        let height = (size * 12.0).round().clamp(10.0, 56.0) as i32;
+        let spread = (size * 5.0).round().clamp(4.0, 28.0) as i32;
+        let dim = *buffer.dim();
+        let width = dim.width.max(0) as usize;
+        let height_px = dim.height.max(0) as usize;
+        for sx in -spread / 2..=spread / 2 {
+            let x = screen[0] + sx;
+            if Self::iso_paint_stamp_pixel_visible(
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                x,
+                screen[1],
+            ) {
+                Self::iso_paint_blend_pixel(
+                    buffer.pixels_mut(),
+                    width,
+                    height_px,
+                    x,
+                    screen[1],
+                    shadow,
+                );
+            }
+        }
+        for i in 0..blade_count {
+            let lane = i - blade_count / 2;
+            let seed = variation
+                .wrapping_add((i as u32).wrapping_mul(0x9e37_79b9))
+                .rotate_left((i as u32) & 15);
+            let bend = ((seed & 0xff) as i32 - 128) * spread / 190;
+            let lean = (rotation.sin() * spread as f32 * 0.45).round() as i32;
+            let base_x = screen[0] + lane * spread / blade_count.max(1);
+            let top_x = base_x + bend + lean;
+            let top_y = screen[1] - height + ((seed >> 8) & 9) as i32;
+            let shade = 0.68 + ((seed >> 16) & 0xff) as f32 / 255.0 * 0.68;
+            let blade = Self::iso_paint_adjust_rgb(base_color, shade);
+            Self::iso_paint_blend_line(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                base_x,
+                screen[1],
+                top_x,
+                top_y,
+                blade,
+            );
+            if size > 1.7 {
+                Self::iso_paint_blend_line(
+                    buffer,
+                    surface_buffer,
+                    stamp_depth,
+                    owner_geo_id,
+                    base_x + 1,
+                    screen[1],
+                    top_x + 1,
+                    top_y,
+                    blade,
+                );
+            }
+        }
+    }
+
+    fn draw_iso_paint_stamps(
+        buffer: &mut TheRGBABuffer,
+        layer: &IsoPaintLayer,
+        view: Mat4<f32>,
+        proj: Mat4<f32>,
+        surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
+        camera: scenevm::Camera3D,
+    ) {
+        if !layer.visible {
+            return;
+        }
+        let dim = *buffer.dim();
+        let mut stamps = Vec::new();
+        for chunk in layer.chunks.values() {
+            for stamp in &chunk.stamps {
+                let screen = stamp
+                    .world
+                    .and_then(|world| {
+                        Self::iso_paint_project_world(world, view, proj, dim.width, dim.height)
+                    })
+                    .unwrap_or(stamp.screen);
+                stamps.push((screen[1] as f32 + stamp.sort_depth * 0.001, screen, stamp));
+            }
+        }
+        stamps.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (_, screen, stamp) in stamps {
+            let stamp_depth = stamp
+                .world
+                .and_then(|world| Self::iso_paint_world_depth(world, camera))
+                .or_else(|| {
+                    surface_buffer
+                        .and_then(|surface| surface.pixel(screen[0], screen[1]))
+                        .filter(|pixel| pixel.valid)
+                        .map(|pixel| pixel.depth)
+                });
+            let owner_geo_id = stamp.owner.as_ref().map(Self::iso_paint_owner_geo_id);
+            match stamp.kind.as_str() {
+                "grass" | "grass_stamp" => {
+                    Self::draw_iso_paint_grass_stamp(
+                        buffer,
+                        surface_buffer,
+                        screen,
+                        stamp_depth,
+                        owner_geo_id,
+                        stamp.size,
+                        stamp.color,
+                        stamp.opacity,
+                        stamp.variation,
+                        stamp.rotation,
+                    );
+                }
+                "rubble" => {
+                    Self::draw_iso_paint_rubble_stamp(
+                        buffer,
+                        surface_buffer,
+                        screen,
+                        stamp_depth,
+                        owner_geo_id,
+                        stamp.size,
+                        stamp.color,
+                        stamp.opacity,
+                        stamp.variation,
+                        stamp.rotation,
+                    );
+                }
+                "leaves" => {
+                    Self::draw_iso_paint_leaves_stamp(
+                        buffer,
+                        surface_buffer,
+                        screen,
+                        stamp_depth,
+                        owner_geo_id,
+                        stamp.size,
+                        stamp.color,
+                        stamp.opacity,
+                        stamp.variation,
+                        stamp.rotation,
+                    );
+                }
+                "footprints" => {
+                    Self::draw_iso_paint_footprints_stamp(
+                        buffer,
+                        surface_buffer,
+                        screen,
+                        stamp_depth,
+                        owner_geo_id,
+                        stamp.size,
+                        stamp.color,
+                        stamp.opacity,
+                        stamp.variation,
+                        stamp.rotation,
+                    );
+                }
+                "mud" => {
+                    Self::draw_iso_paint_mud_stamp(
+                        buffer,
+                        surface_buffer,
+                        screen,
+                        stamp_depth,
+                        owner_geo_id,
+                        stamp.size,
+                        stamp.color,
+                        stamp.opacity,
+                        stamp.variation,
+                        stamp.rotation,
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn iso_paint_current_camera_scale() -> Option<f32> {
         RUSTERIX
             .read()
@@ -6483,6 +7218,14 @@ impl TheTrait for Editor {
                                                 self.iso_paint_render_cache.uploaded_key = None;
                                                 true
                                             };
+                                        Self::draw_iso_paint_stamps(
+                                            &mut widget.buffer,
+                                            &iso_paint,
+                                            view,
+                                            proj,
+                                            Some(&paint_surface),
+                                            scene_camera,
+                                        );
                                         scene_handler.vm.set_active_vm(active_vm);
                                         should_redraw
                                     },
@@ -6941,6 +7684,33 @@ impl TheTrait for Editor {
                         .map(|region| region.iso_paint.clone());
                     if let Some(iso_paint) = iso_paint {
                         let buffer = render_view.render_buffer_mut();
+                        let has_stamps = iso_paint
+                            .chunks
+                            .values()
+                            .any(|chunk| !chunk.stamps.is_empty());
+                        if has_stamps && let Ok(rusterix) = RUSTERIX.read() {
+                            let dim = *buffer.dim();
+                            if dim.width > 0 && dim.height > 0 {
+                                let view = rusterix.client.camera_d3.view_matrix();
+                                let proj = rusterix
+                                    .client
+                                    .camera_d3
+                                    .projection_matrix(dim.width as f32, dim.height as f32);
+                                let paint_surface = rusterix
+                                    .scene_handler
+                                    .vm
+                                    .paint_surface_buffer(dim.width as u32, dim.height as u32);
+                                let camera = rusterix.client.camera_d3.as_scenevm_camera();
+                                Self::draw_iso_paint_stamps(
+                                    buffer,
+                                    &iso_paint,
+                                    view,
+                                    proj,
+                                    Some(&paint_surface),
+                                    camera,
+                                );
+                            }
+                        }
                         if self.server_ctx.curr_map_tool_type == MapToolType::IsoPaint {
                             Self::draw_iso_paint_preview(
                                 buffer,

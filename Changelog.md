@@ -1,5 +1,15 @@
 # Eldiron v0.92.0
 
+## Improvements
+
+### Creator
+
+- Added the first **Iso Paint** system for fixed-isometric screen-space painting over 3D region geometry, including persistent per-region/chunk paint layers, camera-anchored strokes, object/no-clip painting, undoable clear-all, editor/game rendering paths, and a dock workflow for visibility, draw/erase/pick, brush presets, brush shapes, materials, finishes, and pattern settings.
+- Added procedural Iso Paint brush presets for material painting, brick/tile patterns, moss, cracks, grass detail, puddles, and color-only touchup, with preview thumbnails, per-preset size/opacity/material/finish state, multi-color palette slots, and generated grain/fleck/detail output for more organic terrain and ruin painting.
+- Reworked project palette ownership into a fixed **Ruleset Palette** for rules-owned gameplay visuals plus an editable 256-entry **Art Palette** for tiles, drawing, Iso Paint, palette picking, and artist-facing color work; the Art Palette defaults to the Endesga 64 colors and restored palette loading/editing for art workflows.
+- Moved material rendering toward material-family IDs and the shared material library so tiles and Iso Paint can select abstract material/finish combinations such as stone, dirt, foliage, water, glass, mirror, emissive, skin, bone, and wax instead of carrying unrelated per-tile PBR sliders through the authoring UI.
+- Replaced the older optional render-style paths with the Nomad-style material renderer direction for 3D views, including material-aware lighting/post treatment used by both iso and first-person rendering.
+
 ## Bug Fixes
 
 ### Windows

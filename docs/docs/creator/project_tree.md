@@ -102,7 +102,12 @@ For the complete audio workflow (assets, buses, and scripting), see [Audio](../a
 
 ## Palette
 
-Shows the colors of your palette. Use the palette based **Actions** to clear or import palettes.
+Shows both palette roles used by the project:
+
+- **Ruleset Palette**: fixed colors owned by the active ruleset.
+- **Art Palette**: editable project art colors used by tiles, drawing, palette-index geometry, tile graphs, and Iso Paint.
+
+Use the [Palette Tool](tools/palette) to edit the Art Palette, load external palette colors, and assign Art Palette entries to geometry. Ruleset Palette changes belong in the active ruleset or project rules overrides.
 
 ## Game
 

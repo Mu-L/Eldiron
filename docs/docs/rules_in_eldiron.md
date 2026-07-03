@@ -304,21 +304,22 @@ Ruleset item ids are stable. Startup loadouts can reference `training_sword` or
 
 ## Palette Ownership
 
-The official ruleset owns the game palette.
+The official ruleset owns the **Ruleset Palette**.
 
-On load and ruleset sync, Eldiron copies the effective ruleset `[palette]` into
-the project palette. This keeps existing painting, avatar, tile, item, and
-rendering systems on one active palette instead of maintaining two palettes at
-runtime.
+On load and ruleset sync, Eldiron resolves the effective ruleset `[palette]`
+into the project's Ruleset Palette. Rules-owned visuals such as official item
+icons, avatar defaults, UI color channels, and generated ruleset assets can rely
+on those indices staying stable.
+
+The editable **Art Palette** is separate. It is used for artist-authored tiles,
+pixel drawing, tile graphs, palette-index geometry sources, and Iso Paint.
 
 For ruleset-driven projects:
 
-- palette clear/import actions are disabled
-- palette color picker and hex color edits are disabled
-- palette material preset/finish metadata remains editable project render metadata
-- the palette sidebar shows only the colors present in the active ruleset
-
-Palette changes should be made by overriding `[palette]` in **Game / Rules**.
+- Ruleset Palette changes should be made by overriding `[palette]` in **Game / Rules**.
+- Art Palette changes are made with the Palette Tool and do not alter rules-owned indices.
+- palette clear/import actions affect the Art Palette only.
+- Art Palette material preset/finish metadata remains editable project render metadata.
 
 ## Visual Defaults
 

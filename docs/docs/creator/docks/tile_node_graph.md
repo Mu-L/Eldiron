@@ -143,7 +143,7 @@ It also receives the final graph outputs:
 
 `Height` is especially important because Eldiron uses it to generate procedural normals for node-group tiles.
 
-For normal authoring, use high-level material presets and finishes on tiles, palette entries, or geometry objects. Raw graph material channels are an advanced/legacy path and are not the standard material workflow.
+For normal authoring, use high-level material presets and finishes on tiles, Art Palette entries, or geometry objects. Raw graph material channels are an advanced/legacy path and are not the standard material workflow.
 
 For FX graphs:
 
@@ -197,11 +197,11 @@ This makes them suitable as reusable material layers, not just closed grayscale 
 Node graphs can use one of two palette modes:
 
 - **Local**: the graph uses its own embedded palette
-- **Project**: the graph uses the current project palette
+- **Project / Art Palette**: the graph uses the current project Art Palette
 
 New graphs default to **Local**, which makes them portable and shareable.
 
-The **Graph** menu also includes **Map To Project Palette**, which remaps existing palette-index usage to the nearest colors in the current project palette.
+The **Graph** menu also includes **Map To Project Palette**, which remaps existing palette-index usage to the nearest colors in the current Art Palette.
 
 ## Previewing
 

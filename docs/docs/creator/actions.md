@@ -367,7 +367,7 @@ Options:
 * `[geometry].height`: object bounds height.
 * `[geometry].depth`: object bounds depth.
 
-Supported `preset` values are `default`, `stone`, `wood`, `metal`, `glass`, `water`, `mirror`, `emissive`, `dirt`, `fabric`, and `plastic`.
+Supported `preset` values are `default`, `stone`, `dirt`, `wood`, `metal`, `glass`, `water`, `mirror`, `emissive`, `fabric`, `plastic`, `foliage`, `skin`, `bone`, and `wax`.
 
 Scripted area behavior:
 
@@ -489,7 +489,7 @@ Options:
 
 ### Surface Noise
 
-Apply procedural surface noise to the selected direct 3D geometry faces. The action exposes a **NOISE** HUD material slot; use the Tiles or Palette dock's Apply/Clear controls to assign or clear that slot before applying the action.
+Apply procedural surface noise to the selected direct 3D geometry faces. The action exposes a **NOISE** HUD material slot; use the Tiles dock or the Palette dock's Art Palette controls to assign or clear that slot before applying the action.
 
 The noise is stored on each selected face and uses object/world-space coordinates for evaluation, so adjoining faces with matching noise settings can continue around corners instead of restarting per face.
 
@@ -550,13 +550,13 @@ Options: none.
 
 ### Clear Palette
 
-Empty the palette and reapply it project-wide. Undo is supported.
+Empty the editable Art Palette and reapply it project-wide. The Ruleset Palette is not changed. Undo is supported.
 
 Options: none.
 
-### Import Palette
+### Load Palette
 
-Open a file requester for Paint.NET `.txt` palettes; load colors into the project palette at the currently selected palette index. Undo is supported.
+Open a file requester for Paint.NET `.txt` palettes; load colors into the Art Palette at the currently selected palette index. The Ruleset Palette is not changed. Undo is supported.
 
 Options: none.
 
@@ -614,9 +614,9 @@ Supported `kind` values are `floor`, `wall`, `entrance`, and `exit`. Use `none` 
 
 Procedural tile metadata is consumed by **Build Procedural**, which is available in the 2D editor view. See [Procedural Map Generation](/docs/building_maps/procedural_generation) for the full workflow and [Region Settings: Procedural](/docs/building_maps/region_settings/#procedural) for the matching region-side settings.
 
-Material tile metadata stores the tile's default high-level render material. Object material overrides take priority over tile defaults. Palette entries have their own material metadata when a surface uses a `PaletteIndex` source. If no preset applies, Eldiron uses the default material: roughness `0.5`, metallic `0.0`, opacity `1.0`, emissive `0.0`.
+Material tile metadata stores the tile's default high-level render material. Object material overrides take priority over tile defaults. Art Palette entries have their own material metadata when a surface uses a `PaletteIndex` source. If no preset applies, Eldiron uses the material library's default material.
 
-Supported `preset` values are `default`, `stone`, `wood`, `metal`, `glass`, `water`, `mirror`, `emissive`, `dirt`, `fabric`, and `plastic`.
+Supported `preset` values are `default`, `stone`, `dirt`, `wood`, `metal`, `glass`, `water`, `mirror`, `emissive`, `fabric`, `plastic`, `foliage`, `skin`, `bone`, and `wax`.
 
 Options:
 
@@ -629,7 +629,7 @@ Options:
 
 ### New Tile
 
-Create a square tile sized 8-64 px with 1-8 frames, filled with the currently selected palette color.
+Create a square tile sized 8-64 px with 1-8 frames, filled with the currently selected Art Palette color.
 
 Options:
 

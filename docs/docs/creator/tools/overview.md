@@ -14,6 +14,7 @@ Some tools are specifically designed for **map editing** and display a common **
 - **Sector / Face Tool**
 - **Rect Tool**
 - **Builder Tool**
+- **Iso Paint Tool**
 
 The tool strip also contains **mode toggles** below the main map tools:
 
@@ -86,9 +87,17 @@ The **icons in the upper-right corner** of the HUD are **tool-specific** and all
 
 With the [Palette Tool](palette), the lower picker area shows the **Palette** dock instead:
 
-- a palette board for selecting and reordering palette entries
-- material and finish selectors for palette entries
+- a fixed Ruleset Palette view
+- an editable Art Palette board
+- material and finish selectors for Art Palette entries
 - `Apply Color` and `Clear` actions for palette-based assignment
+
+With the [Iso Paint Tool](iso_paint), the lower picker area shows the **Iso Paint** dock instead:
+
+- visual brush presets
+- draw/erase/pick and object clipping controls
+- Art Palette color slots
+- material, finish, shape, and pattern settings for isometric paint strokes
 
 ## Direct 3D Geometry Editing
 
@@ -117,8 +126,14 @@ The **Palette Tool** is another bottom-row mode toggle. When enabled, contexts t
 
 Palette mode is used for:
 
-- editing project palette entries
+- editing Art Palette entries
 - changing palette material and finish metadata
 - applying palette-index sources to geometry
 
 For the full workflow, see [Palette Tool](palette).
+
+## Iso Paint Mode
+
+The **Iso Paint Tool** paints persistent isometric beauty layers over 3D region geometry. It is meant for organic detail such as moss, cracks, grass, dirt, puddles, generated brick patterns, and color-only touchups in the fixed iso view.
+
+For the full workflow, see [Iso Paint Tool](iso_paint).

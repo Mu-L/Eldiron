@@ -23,7 +23,7 @@ In the tile picker you can further edit tile sources and assign them to geometry
 
 Single tiles can also have a human-readable alias. Set it with **Edit Tile Meta** and then use that alias anywhere a `tile_id`-style source is accepted in TOML, actions, or `set_tile(...)`.
 
-Single tiles can also have high-level material metadata. Use **Edit Tile Meta** to assign a material preset and finish for tile sources. Palette colors carry their own material preset and finish in the **Palette** dock.
+Single tiles can also have high-level material metadata. Use **Edit Tile Meta** to assign a material preset and finish for tile sources. Art Palette colors carry their own material preset and finish in the **Palette** dock.
 
 The tile picker can now contain:
 
@@ -45,7 +45,7 @@ Selecting a node group and maximizing opens the **tile node graph editor** inste
 
 Node graphs can also import other node graphs as reusable layers, which is useful for building modular materials such as stones with soil, moss, or grass overlays.
 
-Drawing pixels uses the currently selected color in the project tree palette. There are various palette based actions available like [Clear Palette](/docs/creator/actions/#clear-palette) or [Import Palette](/docs/creator/actions/#import-palette).
+Drawing pixels uses the currently selected color in the Art Palette. Palette actions such as [Clear Palette](/docs/creator/actions/#clear-palette) and [Load Palette](/docs/creator/actions/#load-palette) operate on the editable Art Palette, not the fixed Ruleset Palette.
 
 Editing tiles auto-updates them on the map. Undo is supported for each tile individually.
 

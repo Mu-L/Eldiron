@@ -374,8 +374,8 @@ fade_mode = "ordered_dither"
 # Lighting model: "lambert", "cook_torrance", or "pbr".
 lighting_model = "cook_torrance"
 
-# Renderer style: "clean" keeps normal lighting, "retro" softens shine,
-# "grimy" adds stronger worn surface variation.
+# Renderer material style. The current renderer uses the material-aware
+# Nomad-style path for 3D views.
 style = "clean"
 
 # Avatar readability boost toggle for Raster 3D avatars.
@@ -422,7 +422,7 @@ All `[render]` options apply **only to the 3D renderer** (they do not affect the
 - **`shadow_bias`** — Depth bias used to reduce shadow acne/peter-panning.
 - **`fade_mode`** — Visibility fade style for hidden/fading geometry (`ordered_dither` or `uniform`).
 - **`lighting_model`** — Surface lighting model (`lambert`, `cook_torrance`, `pbr`).
-- **`style`** — Renderer style preset (`clean`, `retro`, `grimy`). `retro` and `grimy` reduce shiny PBR response and add coarse organic surface variation.
+- **`style`** — Renderer material style. The current 3D renderer follows the material-aware Nomad-style path; older optional style presets are kept as compatibility values where present.
 - **`avatar_highlight_enabled`** — Enables avatar readability boost in Raster 3D.
 - **`avatar_highlight_lift`** — Multiplier for avatar lit color (`1.0` = unchanged).
 - **`avatar_highlight_fill`** — Extra ambient/albedo fill added to avatars.

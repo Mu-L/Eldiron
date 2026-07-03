@@ -57,7 +57,8 @@ For authored pixel tiles:
 
 - editing changes the visible tile texture directly
 - normals are generated from the tile texture data used by Eldiron
-- render material comes from high-level material metadata, such as tile presets, palette entry presets, or object overrides
+- drawing uses the selected Art Palette color
+- render material comes from high-level material metadata, such as tile presets, Art Palette entry presets, or object overrides
 
 Procedural node groups use the node graph editor instead and can generate height-driven normals from graph output.
 

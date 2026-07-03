@@ -104,6 +104,34 @@ const CRACK_COLORS: [[u8; 4]; 5] = [
     [94, 92, 84, 255],
     [151, 145, 123, 255],
 ];
+const RUBBLE_COLORS: [[u8; 4]; 5] = [
+    [78, 74, 65, 255],
+    [112, 105, 88, 255],
+    [48, 46, 41, 255],
+    [148, 138, 112, 255],
+    [29, 28, 25, 255],
+];
+const LEAF_COLORS: [[u8; 4]; 5] = [
+    [92, 73, 33, 255],
+    [136, 89, 36, 255],
+    [62, 91, 42, 255],
+    [168, 126, 45, 255],
+    [48, 38, 24, 255],
+];
+const FOOTPRINT_COLORS: [[u8; 4]; 5] = [
+    [47, 35, 25, 255],
+    [70, 52, 36, 255],
+    [31, 26, 21, 255],
+    [92, 68, 45, 255],
+    [19, 17, 15, 255],
+];
+const MUD_COLORS: [[u8; 4]; 5] = [
+    [48, 35, 25, 255],
+    [72, 50, 32, 255],
+    [29, 24, 20, 255],
+    [98, 72, 45, 255],
+    [118, 102, 78, 255],
+];
 const PUDDLE_COLORS: [[u8; 4]; 5] = [
     [32, 56, 72, 255],
     [42, 78, 102, 255],
@@ -297,6 +325,128 @@ const DIRT_LAYERS: [BrushLayer; 3] = [
     },
 ];
 
+const RUBBLE_LAYERS: [BrushLayer; 3] = [
+    BrushLayer {
+        kind: BrushLayerKind::Fleck,
+        shape: "jagged",
+        opacity: 1.0,
+        density: 0.50,
+        scale: 2,
+        seed: 0xa771_2d19,
+        use_input_color: false,
+        colors: &RUBBLE_COLORS,
+    },
+    BrushLayer {
+        kind: BrushLayerKind::Grain,
+        shape: "jagged",
+        opacity: 0.58,
+        density: 0.36,
+        scale: 1,
+        seed: 0x522d_b331,
+        use_input_color: false,
+        colors: &RUBBLE_COLORS,
+    },
+    BrushLayer {
+        kind: BrushLayerKind::Crack,
+        shape: "scratch",
+        opacity: 0.32,
+        density: 0.25,
+        scale: 1,
+        seed: 0xbad0_5110,
+        use_input_color: false,
+        colors: &RUBBLE_COLORS,
+    },
+];
+
+const LEAF_LAYERS: [BrushLayer; 3] = [
+    BrushLayer {
+        kind: BrushLayerKind::Fleck,
+        shape: "speckle",
+        opacity: 0.95,
+        density: 0.42,
+        scale: 2,
+        seed: 0x1ea5_4f11,
+        use_input_color: false,
+        colors: &LEAF_COLORS,
+    },
+    BrushLayer {
+        kind: BrushLayerKind::Grain,
+        shape: "jagged",
+        opacity: 0.60,
+        density: 0.38,
+        scale: 1,
+        seed: 0x7a11_9d31,
+        use_input_color: false,
+        colors: &LEAF_COLORS,
+    },
+    BrushLayer {
+        kind: BrushLayerKind::Crack,
+        shape: "scratch",
+        opacity: 0.24,
+        density: 0.22,
+        scale: 1,
+        seed: 0x5eed_1eaf,
+        use_input_color: false,
+        colors: &LEAF_COLORS,
+    },
+];
+
+const FOOTPRINT_LAYERS: [BrushLayer; 2] = [
+    BrushLayer {
+        kind: BrushLayerKind::Fleck,
+        shape: "soft",
+        opacity: 0.85,
+        density: 0.34,
+        scale: 3,
+        seed: 0xf007_9a11,
+        use_input_color: false,
+        colors: &FOOTPRINT_COLORS,
+    },
+    BrushLayer {
+        kind: BrushLayerKind::Grain,
+        shape: "dirt",
+        opacity: 0.48,
+        density: 0.42,
+        scale: 2,
+        seed: 0x420d_1117,
+        use_input_color: false,
+        colors: &FOOTPRINT_COLORS,
+    },
+];
+
+const MUD_LAYERS: [BrushLayer; 3] = [
+    BrushLayer {
+        kind: BrushLayerKind::Fill,
+        shape: "soft",
+        opacity: 0.70,
+        density: 1.0,
+        scale: 5,
+        seed: 0xb00b_1e55,
+        use_input_color: false,
+        colors: &MUD_COLORS,
+    },
+    BrushLayer {
+        kind: BrushLayerKind::Fleck,
+        shape: "speckle",
+        opacity: 0.72,
+        density: 0.20,
+        scale: 1,
+        seed: 0x6c05_51a7,
+        use_input_color: false,
+        colors: &MUD_COLORS,
+    },
+    BrushLayer {
+        kind: BrushLayerKind::Grain,
+        shape: "soft",
+        opacity: 0.38,
+        density: 0.36,
+        scale: 2,
+        seed: 0x0dd5_0a11,
+        use_input_color: false,
+        colors: &MUD_COLORS,
+    },
+];
+
 const PUDDLE_LAYERS: [BrushLayer; 1] = [BrushLayer {
     kind: BrushLayerKind::Fill,
     shape: "inherit",
@@ -333,6 +483,30 @@ pub fn preset_for_key(key: &str) -> BrushPreset {
             default_shape: "speckle",
             default_color: [75, 119, 57, 255],
             layers: &GRASS_LAYERS,
+        },
+        "rubble" => BrushPreset {
+            key: "rubble",
+            default_shape: "jagged",
+            default_color: [96, 90, 76, 255],
+            layers: &RUBBLE_LAYERS,
+        },
+        "leaves" => BrushPreset {
+            key: "leaves",
+            default_shape: "speckle",
+            default_color: [119, 83, 35, 255],
+            layers: &LEAF_LAYERS,
+        },
+        "footprints" => BrushPreset {
+            key: "footprints",
+            default_shape: "soft",
+            default_color: [52, 40, 30, 255],
+            layers: &FOOTPRINT_LAYERS,
+        },
+        "mud" => BrushPreset {
+            key: "mud",
+            default_shape: "soft",
+            default_color: [56, 40, 28, 255],
+            layers: &MUD_LAYERS,
         },
         "puddle" => BrushPreset {
             key: "puddle",
