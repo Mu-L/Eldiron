@@ -118,6 +118,13 @@ const LEAF_COLORS: [[u8; 4]; 5] = [
     [168, 126, 45, 255],
     [48, 38, 24, 255],
 ];
+const FLOWER_COLORS: [[u8; 4]; 5] = [
+    [45, 77, 42, 255],
+    [255, 235, 91, 255],
+    [246, 129, 135, 255],
+    [253, 210, 237, 255],
+    [148, 138, 112, 255],
+];
 const FOOTPRINT_COLORS: [[u8; 4]; 5] = [
     [47, 35, 25, 255],
     [70, 52, 36, 255],
@@ -391,6 +398,39 @@ const LEAF_LAYERS: [BrushLayer; 3] = [
     },
 ];
 
+const FLOWER_LAYERS: [BrushLayer; 3] = [
+    BrushLayer {
+        kind: BrushLayerKind::Blade,
+        shape: "speckle",
+        opacity: 0.78,
+        density: 0.34,
+        scale: 1,
+        seed: 0x3385_18a1,
+        use_input_color: false,
+        colors: &FLOWER_COLORS,
+    },
+    BrushLayer {
+        kind: BrushLayerKind::Fleck,
+        shape: "speckle",
+        opacity: 0.95,
+        density: 0.26,
+        scale: 1,
+        seed: 0xf10a_4091,
+        use_input_color: false,
+        colors: &FLOWER_COLORS,
+    },
+    BrushLayer {
+        kind: BrushLayerKind::Grain,
+        shape: "dirt",
+        opacity: 0.38,
+        density: 0.18,
+        scale: 2,
+        seed: 0x6b9d_1373,
+        use_input_color: false,
+        colors: &FLOWER_COLORS,
+    },
+];
+
 const FOOTPRINT_LAYERS: [BrushLayer; 2] = [
     BrushLayer {
         kind: BrushLayerKind::Fleck,
@@ -495,6 +535,12 @@ pub fn preset_for_key(key: &str) -> BrushPreset {
             default_shape: "speckle",
             default_color: [119, 83, 35, 255],
             layers: &LEAF_LAYERS,
+        },
+        "flowers" => BrushPreset {
+            key: "flowers",
+            default_shape: "speckle",
+            default_color: [75, 119, 57, 255],
+            layers: &FLOWER_LAYERS,
         },
         "footprints" => BrushPreset {
             key: "footprints",

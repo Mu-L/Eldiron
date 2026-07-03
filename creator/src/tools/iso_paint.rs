@@ -2,6 +2,7 @@ use crate::editor::{DOCKMANAGER, RUSTERIX};
 use crate::prelude::*;
 use MapEvent::*;
 use ToolEvent::*;
+use rusterix::material_library::MaterialDefinition;
 
 pub struct IsoPaintTool {
     id: TheId,
@@ -15,10 +16,93 @@ pub struct IsoPaintTool {
 }
 
 impl IsoPaintTool {
+    fn neutral_material_palette(project: &Project) -> (u16, [u8; 4]) {
+        let target = [132i32, 132i32, 128i32];
+        let mut best: Option<(u16, [u8; 4], i32)> = None;
+        for (index, entry) in project.art_palette.colors.iter().enumerate() {
+            let Some(color) = entry.as_ref() else {
+                continue;
+            };
+            let mut color = color.to_u8_array();
+            color[3] = 255;
+            let dr = color[0] as i32 - target[0];
+            let dg = color[1] as i32 - target[1];
+            let db = color[2] as i32 - target[2];
+            let score = dr * dr + dg * dg + db * db;
+            if best.map_or(true, |(_, _, best_score)| score < best_score) {
+                best = Some((index as u16, color, score));
+            }
+        }
+        best.map(|(index, color, _)| (index, color))
+            .unwrap_or((6, [132, 132, 128, 255]))
+    }
+
+    fn material_color_needs_gray(index: Option<u16>, color: [u8; 4]) -> bool {
+        let average = (color[0] as u16 + color[1] as u16 + color[2] as u16) / 3;
+        index == Some(0) || average < 58 || (color[0] > 150 && color[1] < 90 && color[2] < 90)
+    }
+
+    fn ensure_initial_material_settings(region: &mut Region, neutral: (u16, [u8; 4])) {
+        let active_brush = region.iso_paint.active_brush.as_str();
+        let active_index = region.iso_paint.active_palette_indices.first().copied();
+        let active_color = region
+            .iso_paint
+            .active_palette_colors
+            .first()
+            .copied()
+            .unwrap_or(region.iso_paint.active_color);
+        let needs_material_seed = active_brush.is_empty()
+            || active_brush == "screen"
+            || (active_brush == "material"
+                && (region.iso_paint.active_palette_colors.is_empty()
+                    || Self::material_color_needs_gray(active_index, active_color)));
+
+        if !needs_material_seed {
+            return;
+        }
+
+        let (palette_index, color) = neutral;
+        let size = if region.iso_paint.active_size <= 1.001 {
+            8.0
+        } else {
+            region.iso_paint.active_size
+        };
+        let opacity = if region.iso_paint.active_opacity <= 0.0 {
+            1.0
+        } else {
+            region.iso_paint.active_opacity
+        };
+        let material_id = MaterialDefinition::from_preset_finish("default", "natural").id();
+        region.iso_paint.set_active_settings(
+            "draw",
+            "material",
+            "solid",
+            "default",
+            "natural",
+            material_id,
+            "coat",
+            "object",
+            color,
+            vec![palette_index],
+            vec![color],
+            region.iso_paint.active_pattern_kind.clone(),
+            region.iso_paint.active_pattern_scale,
+            region.iso_paint.active_pattern_mortar,
+            region.iso_paint.active_pattern_detail,
+            region.iso_paint.active_pattern_variation,
+            region.iso_paint.active_stamp_density,
+            region.iso_paint.active_stamp_size_jitter,
+            region.iso_paint.active_stamp_rotation_jitter,
+            "wildflowers",
+            size,
+            opacity,
+        );
+    }
+
     fn is_stamp_mode(layer: &IsoPaintLayer) -> bool {
         matches!(
             layer.active_brush.as_str(),
-            "grass" | "rubble" | "leaves" | "footprints" | "mud"
+            "grass" | "rubble" | "leaves" | "flowers" | "footprints" | "mud"
         ) && layer.active_material_mode == "stamp"
     }
 
@@ -26,6 +110,7 @@ impl IsoPaintTool {
         match layer.active_brush.as_str() {
             "rubble" => "rubble",
             "leaves" => "leaves",
+            "flowers" => "flowers",
             "footprints" => "footprints",
             "mud" => "mud",
             _ => "grass",
@@ -246,10 +331,12 @@ impl Tool for IsoPaintTool {
                 server_ctx.hover_cursor = None;
                 server_ctx.iso_paint_hover_screen = None;
 
+                let neutral_material = Self::neutral_material_palette(project);
                 if let Some(region) = project.get_region_mut(&server_ctx.curr_region) {
                     region.map.camera = MapCamera::ThreeDIso;
                     region.map.clear_selection();
                     region.map.clear_temp();
+                    Self::ensure_initial_material_settings(region, neutral_material);
                     if matches!(region.iso_paint.active_brush.as_str(), "material" | "brick")
                         && region.iso_paint.active_size <= 1.001
                     {

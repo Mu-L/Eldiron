@@ -93,6 +93,10 @@ fn default_stamp_rotation_jitter() -> f32 {
     1.0
 }
 
+fn default_stamp_variant() -> String {
+    "wildflowers".to_string()
+}
+
 fn default_revision() -> u64 {
     0
 }
@@ -184,9 +188,17 @@ pub struct IsoPaintStamp {
     pub owner: Option<IsoPaintOwner>,
     pub sort_depth: f32,
     pub size: f32,
+    #[serde(default)]
+    pub camera_scale: Option<f32>,
+    #[serde(default = "default_stamp_variant")]
+    pub variant: String,
     pub rotation: f32,
     pub variation: u32,
     pub color: [u8; 4],
+    #[serde(default = "default_palette_indices")]
+    pub palette_indices: Vec<u16>,
+    #[serde(default = "default_palette_colors")]
+    pub palette_colors: Vec<[u8; 4]>,
     pub opacity: f32,
     pub screen_bounds: [i32; 4],
 }
@@ -196,8 +208,11 @@ impl IsoPaintStamp {
         kind: String,
         point: IsoPaintPoint,
         color: [u8; 4],
+        palette_indices: Vec<u16>,
+        palette_colors: Vec<[u8; 4]>,
         size: f32,
         opacity: f32,
+        variant: String,
         size_jitter: f32,
         rotation_jitter: f32,
     ) -> Self {
@@ -220,9 +235,17 @@ impl IsoPaintStamp {
             owner: point.owner,
             sort_depth: point.screen[1] as f32,
             size,
+            camera_scale: point.camera_scale,
+            variant: if variant.is_empty() {
+                default_stamp_variant()
+            } else {
+                variant
+            },
             rotation,
             variation,
             color,
+            palette_indices,
+            palette_colors,
             opacity: opacity.clamp(0.0, 1.0),
             screen_bounds: [
                 point.screen[0] - radius,
@@ -412,6 +435,8 @@ pub struct IsoPaintLayer {
     pub active_stamp_size_jitter: f32,
     #[serde(default = "default_stamp_rotation_jitter")]
     pub active_stamp_rotation_jitter: f32,
+    #[serde(default = "default_stamp_variant")]
+    pub active_stamp_variant: String,
     #[serde(default = "default_size")]
     pub active_size: f32,
     #[serde(default = "default_opacity")]
@@ -443,6 +468,7 @@ impl Default for IsoPaintLayer {
             active_stamp_density: default_stamp_density(),
             active_stamp_size_jitter: default_stamp_size_jitter(),
             active_stamp_rotation_jitter: default_stamp_rotation_jitter(),
+            active_stamp_variant: default_stamp_variant(),
             active_size: default_size(),
             active_opacity: default_opacity(),
         }
@@ -480,6 +506,7 @@ impl IsoPaintLayer {
         stamp_density: f32,
         stamp_size_jitter: f32,
         stamp_rotation_jitter: f32,
+        stamp_variant: impl Into<String>,
         size: f32,
         opacity: f32,
     ) {
@@ -507,6 +534,12 @@ impl IsoPaintLayer {
         self.active_stamp_density = stamp_density.clamp(0.0, 1.0);
         self.active_stamp_size_jitter = stamp_size_jitter.clamp(0.0, 1.0);
         self.active_stamp_rotation_jitter = stamp_rotation_jitter.clamp(0.0, 1.0);
+        let stamp_variant = stamp_variant.into();
+        self.active_stamp_variant = if stamp_variant.is_empty() {
+            default_stamp_variant()
+        } else {
+            stamp_variant
+        };
         self.active_size = size.max(0.01);
         self.active_opacity = opacity.clamp(0.0, 1.0);
     }
@@ -564,8 +597,11 @@ impl IsoPaintLayer {
             self.active_brush.clone(),
             point,
             self.active_color,
+            self.active_palette_indices.clone(),
+            self.active_palette_colors.clone(),
             self.active_size,
             self.active_opacity,
+            self.active_stamp_variant.clone(),
             self.active_stamp_size_jitter,
             self.active_stamp_rotation_jitter,
         );
@@ -709,6 +745,30 @@ mod tests {
     }
 
     #[test]
+    fn flowers_stamps_keep_their_brush_kind() {
+        let mut layer = IsoPaintLayer::default();
+        layer.active_brush = "flowers".to_string();
+        layer.active_material_mode = "stamp".to_string();
+        layer.active_stamp_variant = "poppies".to_string();
+        layer.active_color = [75, 119, 57, 255];
+        layer.active_palette_indices = vec![37, 32, 46, 47];
+        layer.active_palette_colors = vec![
+            [30, 80, 40, 255],
+            [220, 40, 50, 255],
+            [180, 28, 42, 255],
+            [40, 22, 18, 255],
+        ];
+        layer.add_stamp(IsoPaintPoint::new([50, 56], None, None));
+        let chunk = layer.chunks.values().next().unwrap();
+        assert_eq!(chunk.stamps.len(), 1);
+        assert_eq!(chunk.stamps[0].kind, "flowers");
+        assert_eq!(chunk.stamps[0].variant, "poppies");
+        assert_eq!(chunk.stamps[0].color, [75, 119, 57, 255]);
+        assert_eq!(chunk.stamps[0].palette_indices, vec![37, 32, 46, 47]);
+        assert_eq!(chunk.stamps[0].palette_colors[1], [220, 40, 50, 255]);
+    }
+
+    #[test]
     fn stamp_erase_can_be_filtered_to_one_owner() {
         let mut layer = IsoPaintLayer::default();
         let owner_a = IsoPaintOwner::Sector(1);
@@ -762,6 +822,23 @@ mod tests {
             .unwrap();
         assert_eq!(stamp.size, 4.0);
         assert_eq!(stamp.rotation, 0.0);
+    }
+
+    #[test]
+    fn stamps_remember_placement_camera_scale() {
+        let mut layer = IsoPaintLayer::default();
+        layer.active_brush = "flowers".to_string();
+        layer.active_material_mode = "stamp".to_string();
+        layer.add_stamp(IsoPaintPoint::new([42, 48], None, None).with_camera_scale(Some(6.0)));
+        let stamp = layer
+            .chunks
+            .values()
+            .next()
+            .unwrap()
+            .stamps
+            .first()
+            .unwrap();
+        assert_eq!(stamp.camera_scale, Some(6.0));
     }
 
     #[test]

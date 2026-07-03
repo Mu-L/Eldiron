@@ -1696,6 +1696,174 @@ impl Editor {
         }
     }
 
+    fn iso_paint_stamp_palette_color(
+        palette: &[[u8; 4]],
+        index: usize,
+        fallback: [u8; 4],
+        opacity: f32,
+        alpha: f32,
+    ) -> [u8; 4] {
+        let mut color = palette.get(index).copied().unwrap_or(fallback);
+        color[3] = (opacity.clamp(0.0, 1.0) * alpha).round().clamp(0.0, 255.0) as u8;
+        color
+    }
+
+    fn draw_iso_paint_flowers_stamp(
+        buffer: &mut TheRGBABuffer,
+        surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
+        screen: [i32; 2],
+        stamp_depth: Option<f32>,
+        owner_geo_id: Option<scenevm::GeoId>,
+        size: f32,
+        color: [u8; 4],
+        palette: &[[u8; 4]],
+        opacity: f32,
+        variant: &str,
+        variation: u32,
+        rotation: f32,
+    ) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        let flower_count = match variant {
+            "bluebells" => 3 + (variation % 3) as i32,
+            "poppies" => 3 + (variation % 4) as i32,
+            _ => 4 + (variation % 5) as i32,
+        };
+        let spread = (size * 8.0).round().clamp(5.0, 32.0) as i32;
+        let stem_source = palette.first().copied().unwrap_or(color);
+        let mut stem = Self::iso_paint_adjust_rgb(stem_source, 0.82);
+        stem[3] = (opacity * 220.0).round() as u8;
+        let mut leaf = Self::iso_paint_adjust_rgb(stem_source, 1.12);
+        leaf[3] = (opacity * 165.0).round() as u8;
+        let mut shadow = Self::iso_paint_adjust_rgb(stem_source, 0.18);
+        shadow[3] = (opacity * 48.0).round() as u8;
+
+        for i in 0..flower_count {
+            let seed = variation
+                .wrapping_add((i as u32).wrapping_mul(0x7feb_352d))
+                .rotate_left(((i * 6) as u32) & 15);
+            let ox = ((seed & 0xff) as i32 - 128) * spread / 190;
+            let oy = (((seed >> 8) & 0xff) as i32 - 128) * spread / 420;
+            let base = [screen[0] + ox, screen[1] + oy];
+            let height = (size * (5.6 + ((seed >> 16) & 0x7f) as f32 / 32.0))
+                .round()
+                .clamp(5.0, 24.0) as i32;
+            let lean = ((seed >> 24) as i32 & 0xff) - 128;
+            let lean = lean * spread / 520 + (rotation.sin() * spread as f32 * 0.2).round() as i32;
+            let tip = [base[0] + lean, base[1] - height];
+
+            Self::iso_paint_blend_line(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                base[0] + 1,
+                base[1] + 1,
+                tip[0] + 1,
+                tip[1] + 1,
+                shadow,
+            );
+            Self::iso_paint_blend_line(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                base[0],
+                base[1],
+                tip[0],
+                tip[1],
+                stem,
+            );
+
+            if i % 2 == 0 {
+                let leaf_center = [
+                    base[0] + lean / 2 + if seed & 1 == 0 { -1 } else { 1 },
+                    base[1] - height / 2,
+                ];
+                Self::draw_iso_paint_rotated_ellipse(
+                    buffer,
+                    surface_buffer,
+                    stamp_depth,
+                    owner_geo_id,
+                    leaf_center,
+                    (size * 1.5).clamp(1.2, 5.0),
+                    (size * 0.55).clamp(0.9, 2.4),
+                    rotation + if seed & 1 == 0 { -0.45 } else { 0.45 },
+                    leaf,
+                    seed ^ 0x3311_aa01,
+                );
+            }
+
+            let petal_slot = if variant == "wildflowers" {
+                1 + (((seed >> 13) as usize) % 3)
+            } else {
+                1
+            };
+            let petal_fallback = Self::iso_paint_adjust_rgb(stem_source, 1.25);
+            let petal = Self::iso_paint_stamp_palette_color(
+                palette,
+                petal_slot,
+                petal_fallback,
+                opacity,
+                225.0,
+            );
+            let radius = (size * (0.9 + ((seed >> 5) & 0x3f) as f32 / 120.0)).clamp(1.1, 4.2);
+            let petal_count = if variant == "poppies" { 5 } else { 4 };
+            for petal_index in 0..petal_count {
+                let angle = rotation
+                    + petal_index as f32 * std::f32::consts::TAU / petal_count as f32
+                    + ((seed >> 9) & 0x1f) as f32 / 255.0;
+                let center = if variant == "bluebells" {
+                    [
+                        tip[0] + ((petal_index as f32 - 1.5) * radius * 0.45).round() as i32,
+                        tip[1] + (radius * (petal_index as f32 * 0.9 + 0.6)).round() as i32,
+                    ]
+                } else {
+                    [
+                        tip[0] + (angle.cos() * radius * 0.75).round() as i32,
+                        tip[1] + (angle.sin() * radius * 0.55).round() as i32,
+                    ]
+                };
+                Self::draw_iso_paint_rotated_ellipse(
+                    buffer,
+                    surface_buffer,
+                    stamp_depth,
+                    owner_geo_id,
+                    center,
+                    radius,
+                    if variant == "bluebells" {
+                        radius * 0.8
+                    } else {
+                        radius * 0.62
+                    },
+                    angle,
+                    petal,
+                    seed ^ petal_index as u32,
+                );
+            }
+            let center_slot = if variant == "wildflowers" { 2 } else { 3 };
+            let center_fallback = Self::iso_paint_adjust_rgb(stem_source, 0.55);
+            let center = Self::iso_paint_stamp_palette_color(
+                palette,
+                center_slot,
+                center_fallback,
+                opacity,
+                if variant == "bluebells" { 150.0 } else { 230.0 },
+            );
+            Self::draw_iso_paint_rotated_ellipse(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                tip,
+                (radius * 0.55).max(1.0),
+                (radius * 0.45).max(1.0),
+                rotation,
+                center,
+                seed ^ 0x7777_0013,
+            );
+        }
+    }
+
     fn draw_iso_paint_footprints_stamp(
         buffer: &mut TheRGBABuffer,
         surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
@@ -2082,6 +2250,7 @@ impl Editor {
         proj: Mat4<f32>,
         surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
         camera: scenevm::Camera3D,
+        current_camera_scale: Option<f32>,
     ) {
         if !layer.visible {
             return;
@@ -2111,6 +2280,13 @@ impl Editor {
                         .map(|pixel| pixel.depth)
                 });
             let owner_geo_id = stamp.owner.as_ref().map(Self::iso_paint_owner_geo_id);
+            let size = if let (Some(source_scale), Some(current_scale)) =
+                (stamp.camera_scale, current_camera_scale)
+            {
+                stamp.size * (source_scale / current_scale.max(0.001)).clamp(0.05, 20.0)
+            } else {
+                stamp.size
+            };
             match stamp.kind.as_str() {
                 "grass" | "grass_stamp" => {
                     Self::draw_iso_paint_grass_stamp(
@@ -2119,7 +2295,7 @@ impl Editor {
                         screen,
                         stamp_depth,
                         owner_geo_id,
-                        stamp.size,
+                        size,
                         stamp.color,
                         stamp.opacity,
                         stamp.variation,
@@ -2133,7 +2309,7 @@ impl Editor {
                         screen,
                         stamp_depth,
                         owner_geo_id,
-                        stamp.size,
+                        size,
                         stamp.color,
                         stamp.opacity,
                         stamp.variation,
@@ -2147,9 +2323,25 @@ impl Editor {
                         screen,
                         stamp_depth,
                         owner_geo_id,
-                        stamp.size,
+                        size,
                         stamp.color,
                         stamp.opacity,
+                        stamp.variation,
+                        stamp.rotation,
+                    );
+                }
+                "flowers" => {
+                    Self::draw_iso_paint_flowers_stamp(
+                        buffer,
+                        surface_buffer,
+                        screen,
+                        stamp_depth,
+                        owner_geo_id,
+                        size,
+                        stamp.color,
+                        &stamp.palette_colors,
+                        stamp.opacity,
+                        stamp.variant.as_str(),
                         stamp.variation,
                         stamp.rotation,
                     );
@@ -2161,7 +2353,7 @@ impl Editor {
                         screen,
                         stamp_depth,
                         owner_geo_id,
-                        stamp.size,
+                        size,
                         stamp.color,
                         stamp.opacity,
                         stamp.variation,
@@ -2175,7 +2367,7 @@ impl Editor {
                         screen,
                         stamp_depth,
                         owner_geo_id,
-                        stamp.size,
+                        size,
                         stamp.color,
                         stamp.opacity,
                         stamp.variation,
@@ -7225,6 +7417,7 @@ impl TheTrait for Editor {
                                             proj,
                                             Some(&paint_surface),
                                             scene_camera,
+                                            camera_scale,
                                         );
                                         scene_handler.vm.set_active_vm(active_vm);
                                         should_redraw
@@ -7701,6 +7894,7 @@ impl TheTrait for Editor {
                                     .vm
                                     .paint_surface_buffer(dim.width as u32, dim.height as u32);
                                 let camera = rusterix.client.camera_d3.as_scenevm_camera();
+                                let camera_scale = Some(rusterix.client.camera_d3.scale());
                                 Self::draw_iso_paint_stamps(
                                     buffer,
                                     &iso_paint,
@@ -7708,6 +7902,7 @@ impl TheTrait for Editor {
                                     proj,
                                     Some(&paint_surface),
                                     camera,
+                                    camera_scale,
                                 );
                             }
                         }

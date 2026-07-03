@@ -21,6 +21,7 @@ pub mod thepalettepicker;
 pub mod therenderview;
 pub mod thergbaview;
 pub mod therowlistitem;
+pub mod thescrollableiconrow;
 pub mod thesdfview;
 pub mod thesectionbar;
 pub mod thesectionbarbutton;
@@ -73,6 +74,9 @@ pub mod prelude {
     };
     pub use crate::theui::thewidget::thelistitem::{TheListItem, TheListItemTrait};
     pub use crate::theui::thewidget::therowlistitem::{TheRowListItem, TheRowListItemTrait};
+    pub use crate::theui::thewidget::thescrollableiconrow::{
+        TheScrollableIconRow, TheScrollableIconRowItem, TheScrollableIconRowTrait,
+    };
     pub use crate::theui::thewidget::thesectionbar::TheSectionbar;
     pub use crate::theui::thewidget::thesectionbarbutton::TheSectionbarButton;
     pub use crate::theui::thewidget::thesectionbarbutton::TheSectionbarButtonTrait;

@@ -30,8 +30,9 @@ const ISO_PAINT_PATTERN_VARIATION: &str = "Iso Paint Pattern Variation";
 const ISO_PAINT_STAMP_DENSITY: &str = "Iso Paint Stamp Density";
 const ISO_PAINT_STAMP_SIZE_JITTER: &str = "Iso Paint Stamp Size Jitter";
 const ISO_PAINT_STAMP_ROTATION_JITTER: &str = "Iso Paint Stamp Rotation Jitter";
+const ISO_PAINT_FLOWER_TYPE: &str = "Iso Paint Flower Type";
 const ISO_PAINT_ACTIVE_BRUSH_COLOR: &str = "Iso Paint Active Brush Color";
-const ISO_PAINT_BRUSH_COUNT: usize = 11;
+const ISO_PAINT_BRUSH_COUNT: usize = 12;
 
 #[derive(Clone, Copy, PartialEq)]
 enum IsoPaintOperation {
@@ -56,6 +57,12 @@ enum IsoPaintPatternKind {
 enum IsoPaintMaterialMode {
     Coat,
     Replace,
+    Stamp,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum IsoPaintPreviewMode {
+    Paint,
     Stamp,
 }
 
@@ -137,10 +144,21 @@ impl IsoPaintBrushBoard {
         stride: usize,
         key: &str,
         palette: &[[u8; 4]],
+        preview_mode: IsoPaintPreviewMode,
     ) {
         let (x, y, w, h) = *rect;
         if key == "brick" {
             Self::draw_brick_preview(buffer, ctx, rect, stride, palette);
+            return;
+        }
+        if key == "puddle"
+            || (preview_mode == IsoPaintPreviewMode::Stamp
+                && matches!(
+                    key,
+                    "grass" | "rubble" | "leaves" | "flowers" | "footprints" | "mud"
+                ))
+        {
+            Self::draw_icon_preview(buffer, ctx, rect, stride, key, palette);
             return;
         }
 
@@ -204,6 +222,364 @@ impl IsoPaintBrushBoard {
                     / 255) as u8;
                 pixels[index + 3] = 255;
             }
+        }
+
+        buffer.draw_rect_outline(
+            &TheDim::new(x as i32, y as i32, w as i32, h as i32),
+            &[20, 20, 20, 255],
+        );
+    }
+
+    fn preview_color(palette: &[[u8; 4]], index: usize, fallback: [u8; 4]) -> [u8; 4] {
+        let mut color = palette.get(index).copied().unwrap_or(fallback);
+        color[3] = 255;
+        color
+    }
+
+    fn blend_preview_pixel(pixels: &mut [u8], stride: usize, x: i32, y: i32, color: [u8; 4]) {
+        if x < 0 || y < 0 || stride == 0 {
+            return;
+        }
+        let x = x as usize;
+        let y = y as usize;
+        if x >= stride {
+            return;
+        }
+        let index = (y * stride + x) * 4;
+        if index + 3 >= pixels.len() {
+            return;
+        }
+        let alpha = color[3] as u32;
+        let inv_alpha = 255 - alpha;
+        pixels[index] = ((color[0] as u32 * alpha + pixels[index] as u32 * inv_alpha) / 255) as u8;
+        pixels[index + 1] =
+            ((color[1] as u32 * alpha + pixels[index + 1] as u32 * inv_alpha) / 255) as u8;
+        pixels[index + 2] =
+            ((color[2] as u32 * alpha + pixels[index + 2] as u32 * inv_alpha) / 255) as u8;
+        pixels[index + 3] = 255;
+    }
+
+    fn draw_preview_line(
+        buffer: &mut TheRGBABuffer,
+        stride: usize,
+        x0: i32,
+        y0: i32,
+        x1: i32,
+        y1: i32,
+        color: [u8; 4],
+    ) {
+        let pixels = buffer.pixels_mut();
+        let mut x = x0;
+        let mut y = y0;
+        let dx = (x1 - x0).abs();
+        let dy = -(y1 - y0).abs();
+        let sx = if x0 < x1 { 1 } else { -1 };
+        let sy = if y0 < y1 { 1 } else { -1 };
+        let mut err = dx + dy;
+        loop {
+            Self::blend_preview_pixel(pixels, stride, x, y, color);
+            if x == x1 && y == y1 {
+                break;
+            }
+            let e2 = err * 2;
+            if e2 >= dy {
+                err += dy;
+                x += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                y += sy;
+            }
+        }
+    }
+
+    fn draw_preview_ellipse(
+        buffer: &mut TheRGBABuffer,
+        stride: usize,
+        cx: i32,
+        cy: i32,
+        rx: i32,
+        ry: i32,
+        color: [u8; 4],
+    ) {
+        let rx = rx.max(1);
+        let ry = ry.max(1);
+        let rx2 = (rx * rx) as f32;
+        let ry2 = (ry * ry) as f32;
+        let pixels = buffer.pixels_mut();
+        for y in -ry..=ry {
+            for x in -rx..=rx {
+                let edge = x as f32 * x as f32 / rx2 + y as f32 * y as f32 / ry2;
+                if edge <= 1.0 {
+                    Self::blend_preview_pixel(pixels, stride, cx + x, cy + y, color);
+                }
+            }
+        }
+    }
+
+    fn draw_icon_preview(
+        buffer: &mut TheRGBABuffer,
+        ctx: &mut TheContext,
+        rect: &(usize, usize, usize, usize),
+        stride: usize,
+        key: &str,
+        palette: &[[u8; 4]],
+    ) {
+        let (x, y, w, h) = *rect;
+        let bg = match key {
+            "grass" => [30, 47, 34, 255],
+            "rubble" => [58, 55, 49, 255],
+            "leaves" => [55, 48, 36, 255],
+            "flowers" => [35, 52, 35, 255],
+            "footprints" => [86, 73, 56, 255],
+            "mud" => [45, 34, 27, 255],
+            "puddle" => [34, 50, 58, 255],
+            _ => [68, 63, 54, 255],
+        };
+        let fill = (
+            x + 1,
+            y + 1,
+            w.saturating_sub(2).max(1),
+            h.saturating_sub(2).max(1),
+        );
+        ctx.draw.rect(buffer.pixels_mut(), &fill, stride, &bg);
+
+        let left = x as i32;
+        let top = y as i32;
+        let width = w as i32;
+        let height = h as i32;
+        let cx = left + width / 2;
+        let cy = top + height / 2;
+        let scale = width.min(height).max(1) as f32 / 48.0;
+        let s = |value: f32| (value * scale).round().max(1.0) as i32;
+
+        match key {
+            "grass" => {
+                let colors = [
+                    Self::preview_color(palette, 0, [64, 124, 55, 255]),
+                    Self::preview_color(palette, 1, [93, 158, 70, 255]),
+                    Self::preview_color(palette, 2, [135, 173, 82, 255]),
+                ];
+                for i in 0..9 {
+                    let base_x = left + s(12.0) + i * s(5.0);
+                    let base_y = top + height - s(9.0);
+                    let lean = ((i % 3) - 1) * s(3.0);
+                    let tip_y = top + s(14.0 + (i % 4) as f32 * 3.0);
+                    Self::draw_preview_line(
+                        buffer,
+                        stride,
+                        base_x,
+                        base_y,
+                        base_x + lean,
+                        tip_y,
+                        colors[i as usize % colors.len()],
+                    );
+                    if i % 2 == 0 {
+                        Self::draw_preview_line(
+                            buffer,
+                            stride,
+                            base_x + 1,
+                            base_y,
+                            base_x + lean + 1,
+                            tip_y + s(2.0),
+                            colors[(i as usize + 1) % colors.len()],
+                        );
+                    }
+                }
+            }
+            "rubble" => {
+                let colors = [
+                    Self::preview_color(palette, 0, [98, 92, 80, 255]),
+                    Self::preview_color(palette, 1, [140, 132, 112, 255]),
+                    Self::preview_color(palette, 2, [54, 51, 46, 255]),
+                ];
+                let stones = [
+                    (-18, -4, 7, 5),
+                    (-7, 8, 9, 5),
+                    (7, -7, 8, 6),
+                    (18, 7, 6, 4),
+                    (0, 0, 6, 4),
+                ];
+                for (i, (ox, oy, rx, ry)) in stones.iter().enumerate() {
+                    Self::draw_preview_ellipse(
+                        buffer,
+                        stride,
+                        cx + s(*ox as f32),
+                        cy + s(*oy as f32),
+                        s(*rx as f32),
+                        s(*ry as f32),
+                        colors[i % colors.len()],
+                    );
+                }
+            }
+            "leaves" => {
+                let colors = [
+                    Self::preview_color(palette, 0, [118, 82, 34, 255]),
+                    Self::preview_color(palette, 1, [168, 116, 42, 255]),
+                    Self::preview_color(palette, 2, [76, 112, 50, 255]),
+                ];
+                let leaves = [(-16, -6, 11, 5), (0, 7, 13, 5), (16, -4, 10, 4)];
+                for (i, (ox, oy, rx, ry)) in leaves.iter().enumerate() {
+                    let color = colors[i % colors.len()];
+                    let leaf_cx = cx + s(*ox as f32);
+                    let leaf_cy = cy + s(*oy as f32);
+                    Self::draw_preview_ellipse(
+                        buffer,
+                        stride,
+                        leaf_cx,
+                        leaf_cy,
+                        s(*rx as f32),
+                        s(*ry as f32),
+                        color,
+                    );
+                    Self::draw_preview_line(
+                        buffer,
+                        stride,
+                        leaf_cx - s(*rx as f32 / 2.0),
+                        leaf_cy,
+                        leaf_cx + s(*rx as f32 / 2.0),
+                        leaf_cy,
+                        [38, 29, 18, 120],
+                    );
+                }
+            }
+            "flowers" => {
+                let stem = Self::preview_color(palette, 0, [64, 124, 55, 255]);
+                let flowers = [
+                    Self::preview_color(palette, 1, [255, 235, 91, 255]),
+                    Self::preview_color(palette, 2, [246, 129, 135, 255]),
+                    Self::preview_color(palette, 3, [253, 210, 237, 255]),
+                ];
+                let stems = [
+                    (-16, 13, -13, -4),
+                    (-4, 14, -2, -11),
+                    (8, 13, 9, -5),
+                    (17, 14, 16, -13),
+                ];
+                let clusters: &[(i32, i32)] = if w > 120 || h > 70 {
+                    &[(-64, 10), (-34, -12), (0, 7), (34, -9), (64, 12)]
+                } else {
+                    &[(0, 0)]
+                };
+                for (cluster_index, (coff_x, coff_y)) in clusters.iter().enumerate() {
+                    for (i, (x0, y0, x1, y1)) in stems.iter().enumerate() {
+                        let base = [
+                            cx + s(*coff_x as f32) + s(*x0 as f32),
+                            cy + s(*coff_y as f32) + s(*y0 as f32),
+                        ];
+                        let tip = [
+                            cx + s(*coff_x as f32) + s(*x1 as f32),
+                            cy + s(*coff_y as f32) + s(*y1 as f32),
+                        ];
+                        Self::draw_preview_line(
+                            buffer, stride, base[0], base[1], tip[0], tip[1], stem,
+                        );
+                        let bloom = flowers[(i + cluster_index) % flowers.len()];
+                        Self::draw_preview_ellipse(
+                            buffer,
+                            stride,
+                            tip[0],
+                            tip[1],
+                            s(3.0),
+                            s(3.0),
+                            bloom,
+                        );
+                        let center = Self::preview_color(palette, 3, [255, 246, 174, 230]);
+                        Self::draw_preview_ellipse(
+                            buffer,
+                            stride,
+                            tip[0],
+                            tip[1],
+                            s(1.2),
+                            s(1.2),
+                            center,
+                        );
+                    }
+                }
+            }
+            "footprints" => {
+                let print = Self::preview_color(palette, 0, [48, 34, 25, 255]);
+                for (i, (ox, oy)) in [(-8, -10), (8, 7)].iter().enumerate() {
+                    let foot_cx = cx + s(*ox as f32);
+                    let foot_cy = cy + s(*oy as f32);
+                    Self::draw_preview_ellipse(
+                        buffer,
+                        stride,
+                        foot_cx,
+                        foot_cy,
+                        s(5.0),
+                        s(11.0),
+                        print,
+                    );
+                    let toe_y = foot_cy - s(10.0);
+                    let toe_dir = if i == 0 { -1 } else { 1 };
+                    for toe in -1..=1 {
+                        Self::draw_preview_ellipse(
+                            buffer,
+                            stride,
+                            foot_cx + toe * s(3.0) + toe_dir * s(1.0),
+                            toe_y,
+                            s(2.0),
+                            s(2.0),
+                            print,
+                        );
+                    }
+                }
+            }
+            "mud" => {
+                let mud = Self::preview_color(palette, 0, [57, 39, 27, 220]);
+                Self::draw_preview_ellipse(buffer, stride, cx - s(6.0), cy, s(18.0), s(10.0), mud);
+                Self::draw_preview_ellipse(
+                    buffer,
+                    stride,
+                    cx + s(12.0),
+                    cy + s(4.0),
+                    s(13.0),
+                    s(8.0),
+                    Self::preview_color(palette, 1, [80, 54, 35, 210]),
+                );
+                for (ox, oy, r) in [(-11, -4, 4), (3, 3, 3), (15, -2, 3)] {
+                    Self::draw_preview_ellipse(
+                        buffer,
+                        stride,
+                        cx + s(ox as f32),
+                        cy + s(oy as f32),
+                        s(r as f32),
+                        s((r - 1) as f32),
+                        [112, 86, 58, 180],
+                    );
+                    Self::blend_preview_pixel(
+                        buffer.pixels_mut(),
+                        stride,
+                        cx + s(ox as f32) - s(1.0),
+                        cy + s(oy as f32) - s(1.0),
+                        [220, 226, 210, 150],
+                    );
+                }
+            }
+            "puddle" => {
+                let water = Self::preview_color(palette, 0, [45, 91, 122, 210]);
+                Self::draw_preview_ellipse(buffer, stride, cx, cy, s(23.0), s(13.0), water);
+                Self::draw_preview_ellipse(
+                    buffer,
+                    stride,
+                    cx + s(10.0),
+                    cy - s(2.0),
+                    s(10.0),
+                    s(6.0),
+                    [80, 140, 168, 160],
+                );
+                Self::draw_preview_line(
+                    buffer,
+                    stride,
+                    cx - s(15.0),
+                    cy - s(5.0),
+                    cx - s(2.0),
+                    cy - s(8.0),
+                    [210, 236, 242, 170],
+                );
+            }
+            _ => {}
         }
 
         buffer.draw_rect_outline(
@@ -346,6 +722,12 @@ impl TheWidget for IsoPaintBrushBoard {
                 }
             }
             TheEvent::Hover(coord) => {
+                let mut redraw = false;
+                if !self.id().equals(&ctx.ui.hover) {
+                    ctx.ui.set_hover(self.id());
+                    self.is_dirty = true;
+                    redraw = true;
+                }
                 let hovered = self
                     .rectangles
                     .iter()
@@ -364,6 +746,9 @@ impl TheWidget for IsoPaintBrushBoard {
                         .unwrap_or_default();
                     ctx.ui.send(TheEvent::SetStatusText(self.id.clone(), text));
                     self.is_dirty = true;
+                    return true;
+                }
+                if redraw {
                     return true;
                 }
             }
@@ -442,7 +827,15 @@ impl TheWidget for IsoPaintBrushBoard {
                     .get(index)
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
-                Self::draw_engine_preview(buffer, ctx, &preview, stride, brush.key, palette);
+                Self::draw_engine_preview(
+                    buffer,
+                    ctx,
+                    &preview,
+                    stride,
+                    brush.key,
+                    palette,
+                    IsoPaintPreviewMode::Paint,
+                );
                 if self.selected == index {
                     ctx.draw
                         .rect_outline_border(buffer.pixels_mut(), &outer, stride, &WHITE, 1);
@@ -496,6 +889,10 @@ struct IsoPaintPresetStrip {
     preview_palettes: Vec<Vec<[u8; 4]>>,
     hovered: Option<usize>,
     rectangles: Vec<(usize, TheDim)>,
+    scroll_offset: i32,
+    drag_anchor: Option<Vec2<i32>>,
+    drag_start_scroll: i32,
+    is_dragging: bool,
     is_dirty: bool,
 }
 
@@ -513,6 +910,10 @@ impl IsoPaintPresetStrip {
             preview_palettes: vec![Vec::new(); IsoPaintDock::BRUSHES.len()],
             hovered: None,
             rectangles: Vec::new(),
+            scroll_offset: 0,
+            drag_anchor: None,
+            drag_start_scroll: 0,
+            is_dragging: false,
             is_dirty: true,
         }
     }
@@ -525,6 +926,40 @@ impl IsoPaintPresetStrip {
     fn set_preview_palettes(&mut self, palettes: Vec<Vec<[u8; 4]>>) {
         self.preview_palettes = palettes;
         self.is_dirty = true;
+    }
+
+    fn content_width(&self) -> i32 {
+        const PAD_X: i32 = 7;
+        const GAP: i32 = 5;
+        let count = IsoPaintDock::BRUSHES.len() as i32;
+        if count == 0 {
+            0
+        } else {
+            PAD_X * 2 + count * (Self::tile_width() + GAP) - GAP
+        }
+    }
+
+    fn tile_width() -> i32 {
+        64
+    }
+
+    fn max_scroll(&self) -> i32 {
+        (self.content_width() - self.dim.width).max(0)
+    }
+
+    fn clamp_scroll(&mut self) {
+        self.scroll_offset = self.scroll_offset.clamp(0, self.max_scroll());
+    }
+
+    fn scroll_by(&mut self, delta: i32) -> bool {
+        let old = self.scroll_offset;
+        self.scroll_offset = (self.scroll_offset + delta).clamp(0, self.max_scroll());
+        if old != self.scroll_offset {
+            self.is_dirty = true;
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -551,6 +986,7 @@ impl TheWidget for IsoPaintPresetStrip {
     fn set_dim(&mut self, dim: TheDim, _ctx: &mut TheContext) {
         if self.dim != dim {
             self.dim = dim;
+            self.clamp_scroll();
             self.is_dirty = true;
         }
     }
@@ -574,20 +1010,60 @@ impl TheWidget for IsoPaintPresetStrip {
     fn on_event(&mut self, event: &TheEvent, ctx: &mut TheContext) -> bool {
         match event {
             TheEvent::MouseDown(coord) => {
-                for (index, rect) in &self.rectangles {
-                    if rect.contains(*coord) {
-                        self.selected = *index;
-                        ctx.ui.set_focus(self.id());
-                        ctx.ui.send(TheEvent::Custom(
-                            TheId::named(ISO_PAINT_BRUSH_SELECTED),
-                            TheValue::Int(*index as i32),
-                        ));
+                self.drag_anchor = Some(*coord);
+                self.drag_start_scroll = self.scroll_offset;
+                self.is_dragging = false;
+                ctx.ui.set_hover(self.id());
+                ctx.ui.set_focus(self.id());
+                return true;
+            }
+            TheEvent::MouseDragged(coord) => {
+                if let Some(anchor) = self.drag_anchor {
+                    let dx = coord.x - anchor.x;
+                    if dx.abs() > 2 {
+                        self.is_dragging = true;
+                    }
+                    let old = self.scroll_offset;
+                    self.scroll_offset = (self.drag_start_scroll - dx).clamp(0, self.max_scroll());
+                    if self.scroll_offset != old {
                         self.is_dirty = true;
                         return true;
                     }
                 }
+                return false;
+            }
+            TheEvent::MouseUp(coord) => {
+                let clicked = !self.is_dragging;
+                self.drag_anchor = None;
+                self.is_dragging = false;
+                if clicked {
+                    for (index, rect) in &self.rectangles {
+                        if rect.contains(*coord) {
+                            self.selected = *index;
+                            ctx.ui.send(TheEvent::Custom(
+                                TheId::named(ISO_PAINT_BRUSH_SELECTED),
+                                TheValue::Int(*index as i32),
+                            ));
+                            self.is_dirty = true;
+                            return true;
+                        }
+                    }
+                }
+                return self.is_dirty;
+            }
+            TheEvent::MouseWheel(delta) => {
+                if self.scroll_by(-delta.x - delta.y) {
+                    return true;
+                }
+                return false;
             }
             TheEvent::Hover(coord) => {
+                let mut redraw = false;
+                if !self.id().equals(&ctx.ui.hover) {
+                    ctx.ui.set_hover(self.id());
+                    self.is_dirty = true;
+                    redraw = true;
+                }
                 let hovered = self
                     .rectangles
                     .iter()
@@ -606,6 +1082,9 @@ impl TheWidget for IsoPaintPresetStrip {
                         .unwrap_or_default();
                     ctx.ui.send(TheEvent::SetStatusText(self.id.clone(), text));
                     self.is_dirty = true;
+                    return true;
+                }
+                if redraw {
                     return true;
                 }
             }
@@ -640,33 +1119,29 @@ impl TheWidget for IsoPaintPresetStrip {
             style.theme().color(ListLayoutBackground),
         );
 
+        self.clamp_scroll();
         const PAD_X: i32 = 7;
         const PAD_Y: i32 = 4;
         const GAP: i32 = 5;
-        let count = IsoPaintDock::BRUSHES.len().max(1) as i32;
-        let aw = (self.dim.width - PAD_X * 2).max(1);
-        let tile_w = ((aw - (count - 1) * GAP) / count).clamp(46, 78);
+        let tile_w = Self::tile_width();
         let tile_h = (self.dim.height - PAD_Y * 2).clamp(30, 38);
         self.rectangles.clear();
 
         for index in 0..IsoPaintDock::BRUSHES.len() {
-            let x = PAD_X + index as i32 * (tile_w + GAP);
+            let x = PAD_X + index as i32 * (tile_w + GAP) - self.scroll_offset;
             let y = PAD_Y;
-            if x + tile_w > self.dim.width - PAD_X + 1 {
-                break;
+            if x + tile_w <= 0 || x >= self.dim.width {
+                continue;
             }
 
             let brush = IsoPaintDock::BRUSHES[index];
             let local_rect = TheDim::new(x, y, tile_w, tile_h);
-            let outer = (
-                utuple.0 + x as usize,
-                utuple.1 + y as usize,
-                tile_w as usize,
-                tile_h as usize,
-            );
+            let mut tile_buffer = TheRGBABuffer::new(TheDim::sized(tile_w, tile_h));
+            let tile_stride = tile_buffer.stride();
+            let outer = (0, 0, tile_w as usize, tile_h as usize);
             let preview = (
-                outer.0 + 2,
-                outer.1 + 2,
+                2,
+                2,
                 tile_w.saturating_sub(4) as usize,
                 tile_h.saturating_sub(4) as usize,
             );
@@ -677,21 +1152,39 @@ impl TheWidget for IsoPaintPresetStrip {
             } else {
                 style.theme().color(ListItemNormal)
             };
+            ctx.draw
+                .rect(tile_buffer.pixels_mut(), &outer, tile_stride, bg);
             let palette = self
                 .preview_palettes
                 .get(index)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
             IsoPaintBrushBoard::draw_engine_preview(
-                buffer, ctx, &preview, stride, brush.key, palette,
+                &mut tile_buffer,
+                ctx,
+                &preview,
+                tile_stride,
+                brush.key,
+                palette,
+                if IsoPaintDock::brush_supports_stamp(brush.key) {
+                    IsoPaintPreviewMode::Stamp
+                } else {
+                    IsoPaintPreviewMode::Paint
+                },
             );
             if self.selected == index {
-                ctx.draw
-                    .rect_outline_border(buffer.pixels_mut(), &outer, stride, &WHITE, 1);
+                ctx.draw.rect_outline_border(
+                    tile_buffer.pixels_mut(),
+                    &outer,
+                    tile_stride,
+                    &WHITE,
+                    1,
+                );
             } else if self.hovered == Some(index) {
                 ctx.draw
-                    .rect_outline_border(buffer.pixels_mut(), &outer, stride, bg, 1);
+                    .rect_outline_border(tile_buffer.pixels_mut(), &outer, tile_stride, bg, 1);
             }
+            buffer.copy_into(utuple.0 as i32 + x, utuple.1 as i32 + y, &tile_buffer);
             self.rectangles.push((index, local_rect));
         }
 
@@ -959,7 +1452,15 @@ struct IsoPaintBrushEditor {
     dim: TheDim,
     selected_brush: usize,
     preview_palette: Vec<[u8; 4]>,
-    preview_cache: Option<(String, Vec<[u8; 4]>, i32, i32, TheRGBABuffer)>,
+    preview_mode: IsoPaintPreviewMode,
+    preview_cache: Option<(
+        String,
+        Vec<[u8; 4]>,
+        IsoPaintPreviewMode,
+        i32,
+        i32,
+        TheRGBABuffer,
+    )>,
     is_dirty: bool,
 }
 
@@ -973,6 +1474,7 @@ impl IsoPaintBrushEditor {
             dim: TheDim::zero(),
             selected_brush: 0,
             preview_palette: Vec::new(),
+            preview_mode: IsoPaintPreviewMode::Paint,
             preview_cache: None,
             is_dirty: true,
         }
@@ -990,6 +1492,14 @@ impl IsoPaintBrushEditor {
     fn set_preview_palette(&mut self, palette: Vec<[u8; 4]>) {
         if self.preview_palette != palette {
             self.preview_palette = palette;
+            self.preview_cache = None;
+            self.is_dirty = true;
+        }
+    }
+
+    fn set_preview_mode(&mut self, preview_mode: IsoPaintPreviewMode) {
+        if self.preview_mode != preview_mode {
+            self.preview_mode = preview_mode;
             self.preview_cache = None;
             self.is_dirty = true;
         }
@@ -1036,9 +1546,10 @@ impl IsoPaintBrushEditor {
         brush_key: &str,
     ) {
         let cache_valid = self.preview_cache.as_ref().is_some_and(
-            |(cached_key, cached_palette, cached_w, cached_h, _)| {
+            |(cached_key, cached_palette, cached_mode, cached_w, cached_h, _)| {
                 cached_key == brush_key
                     && cached_palette == &self.preview_palette
+                    && *cached_mode == self.preview_mode
                     && *cached_w == rect.2 as i32
                     && *cached_h == rect.3 as i32
             },
@@ -1052,16 +1563,18 @@ impl IsoPaintBrushEditor {
                 rect.2,
                 brush_key,
                 &self.preview_palette,
+                self.preview_mode,
             );
             self.preview_cache = Some((
                 brush_key.to_string(),
                 self.preview_palette.clone(),
+                self.preview_mode,
                 rect.2 as i32,
                 rect.3 as i32,
                 preview,
             ));
         }
-        if let Some((_, _, _, _, preview)) = &self.preview_cache {
+        if let Some((_, _, _, _, _, preview)) = &self.preview_cache {
             ctx.draw
                 .blend_slice(buffer.pixels_mut(), preview.pixels(), rect, stride);
         }
@@ -1553,6 +2066,7 @@ pub struct IsoPaintDock {
     stamp_density: f32,
     stamp_size_jitter: f32,
     stamp_rotation_jitter: f32,
+    flower_type: i32,
     nodeui: TheNodeUI,
 }
 
@@ -1620,6 +2134,15 @@ impl IsoPaintDock {
             pattern_scale: 1.0,
             mortar: 0.08,
             density: 0.7,
+        },
+        IsoPaintBrushPreset {
+            key: "flowers",
+            size: 1.0,
+            opacity: 1.0,
+            shape: IsoPaintBrushShape::Speckle,
+            pattern_scale: 1.0,
+            mortar: 0.08,
+            density: 0.58,
         },
         IsoPaintBrushPreset {
             key: "footprints",
@@ -1702,13 +2225,14 @@ impl IsoPaintDock {
 
     fn default_brush_color_slots() -> [[u16; 4]; ISO_PAINT_BRUSH_COUNT] {
         [
-            [2, 2, 2, 2],
+            [6, 6, 6, 6],
             [19, 20, 21, 18],
             [37, 36, 34, 38],
             [1, 2, 4, 7],
             [37, 36, 35, 34],
             [4, 7, 2, 1],
             [34, 37, 18, 20],
+            [37, 32, 46, 47],
             [18, 17, 16, 27],
             [18, 16, 17, 27],
             [39, 41, 43, 45],
@@ -1828,7 +2352,7 @@ impl IsoPaintDock {
         std::array::from_fn(|index| {
             let key = match Self::BRUSHES[index].key {
                 "brick" | "crack" | "rubble" => "stone",
-                "moss" | "grass" | "leaves" => "foliage",
+                "moss" | "grass" | "leaves" | "flowers" => "foliage",
                 "dirt" | "footprints" | "mud" => "dirt",
                 "puddle" => "water",
                 _ => "default",
@@ -1987,6 +2511,37 @@ impl IsoPaintDock {
         }
     }
 
+    fn flower_type_labels() -> Vec<String> {
+        vec![
+            "Wildflowers".to_string(),
+            "Daisies".to_string(),
+            "Poppies".to_string(),
+            "Bluebells".to_string(),
+        ]
+    }
+
+    fn flower_type_key(index: i32) -> &'static str {
+        match index {
+            1 => "daisies",
+            2 => "poppies",
+            3 => "bluebells",
+            _ => "wildflowers",
+        }
+    }
+
+    fn flower_type_index(key: &str) -> i32 {
+        match key {
+            "daisies" => 1,
+            "poppies" => 2,
+            "bluebells" => 3,
+            _ => 0,
+        }
+    }
+
+    fn selected_flower_type_key(&self) -> &'static str {
+        Self::flower_type_key(self.flower_type)
+    }
+
     fn pattern_kind_labels() -> Vec<String> {
         vec![
             fl!("iso_paint_pattern_tiles"),
@@ -2030,6 +2585,16 @@ impl IsoPaintDock {
         color
     }
 
+    fn material_color_needs_gray(index: u16, color: [u8; 4]) -> bool {
+        let average = (color[0] as u16 + color[1] as u16 + color[2] as u16) / 3;
+        index == 0 || average < 58 || (color[0] > 150 && color[1] < 90 && color[2] < 90)
+    }
+
+    fn neutral_material_palette_index(project: &Project) -> u16 {
+        Self::nearest_palette_index(project, [132, 132, 128], &[])
+            .unwrap_or(Self::default_brush_color_slots()[0][0])
+    }
+
     fn brush_palette_tone(brush: &str, slot: usize) -> f32 {
         let tones = match brush {
             "dirt" => [1.0, 0.72, 0.50, 0.34],
@@ -2038,6 +2603,7 @@ impl IsoPaintDock {
             "crack" => [1.0, 0.58, 1.32, 0.40],
             "rubble" => [1.0, 0.72, 1.18, 0.46],
             "leaves" => [1.0, 0.72, 1.28, 0.44],
+            "flowers" => [1.0, 1.28, 1.55, 1.42],
             "footprints" => [1.0, 0.78, 0.58, 0.36],
             "mud" => [1.0, 0.76, 0.54, 1.24],
             _ => [1.0, 0.78, 1.16, 0.52],
@@ -2141,6 +2707,7 @@ impl IsoPaintDock {
             "grass" => "Grass".to_string(),
             "rubble" => "Rubble".to_string(),
             "leaves" => "Leaves".to_string(),
+            "flowers" => "Flowers".to_string(),
             "footprints" => "Footprints".to_string(),
             "mud" => "Mud".to_string(),
             "puddle" => fl!("iso_paint_brush_puddle"),
@@ -2158,6 +2725,7 @@ impl IsoPaintDock {
             "grass" => "Paint a randomized green ground foliage brush.".to_string(),
             "rubble" => "Place loose stone chips as scene-aware stamps.".to_string(),
             "leaves" => "Scatter fallen leaves as scene-aware stamps.".to_string(),
+            "flowers" => "Place small wildflower clusters as scene-aware stamps.".to_string(),
             "footprints" => "Place muddy paired footprints as scene-aware stamps.".to_string(),
             "mud" => "Place glossy mud bubbles as scene-aware stamps.".to_string(),
             "puddle" => fl!("iso_paint_brush_puddle_desc"),
@@ -2284,6 +2852,15 @@ impl IsoPaintDock {
                 Self::material_mode_labels(allow_stamp_mode),
                 self.material_mode_index(allow_stamp_mode),
             ));
+            if brush.key == "flowers" && stamp_mode {
+                nodeui.add_item(TheNodeUIItem::Selector(
+                    ISO_PAINT_FLOWER_TYPE.into(),
+                    "Flower Type".to_string(),
+                    "Choose the flower stamp variety.".to_string(),
+                    Self::flower_type_labels(),
+                    self.flower_type,
+                ));
+            }
         }
 
         nodeui
@@ -2354,7 +2931,7 @@ impl IsoPaintDock {
     fn brush_supports_stamp(key: &str) -> bool {
         matches!(
             key,
-            "grass" | "grass_stamp" | "rubble" | "leaves" | "footprints" | "mud"
+            "grass" | "grass_stamp" | "rubble" | "leaves" | "flowers" | "footprints" | "mud"
         )
     }
 
@@ -2373,6 +2950,11 @@ impl IsoPaintDock {
     fn sync_inspector(&mut self, ui: &mut TheUI, ctx: &mut TheContext, project: &Project) {
         self.nodeui = self.build_nodeui(project);
         self.sync_toolbar(ui, ctx);
+        let editor_preview_mode = if self.material_mode == IsoPaintMaterialMode::Stamp {
+            IsoPaintPreviewMode::Stamp
+        } else {
+            IsoPaintPreviewMode::Paint
+        };
         if let Some(widget) = ui.get_widget(ISO_PAINT_PRESET_STRIP)
             && let Some(strip) = widget.as_any().downcast_mut::<IsoPaintPresetStrip>()
         {
@@ -2389,6 +2971,7 @@ impl IsoPaintDock {
         {
             editor.set_selected_brush(self.selected_brush);
             editor.set_preview_palette(self.current_palette_colors(project));
+            editor.set_preview_mode(editor_preview_mode);
         }
         if let Some(widget) = ui.get_widget(ISO_PAINT_BRUSH_SHAPE_GROUP)
             && let Some(strip) = widget.as_any().downcast_mut::<IsoPaintBrushShapeStrip>()
@@ -2443,7 +3026,10 @@ impl IsoPaintDock {
         self.brush_shape = self.brush_shapes[self.selected_brush];
         self.material_preset = self.brush_material_presets[self.selected_brush];
         self.material_finish = self.brush_material_finishes[self.selected_brush];
-        if matches!(brush.key, "rubble" | "leaves" | "footprints" | "mud") {
+        if matches!(
+            brush.key,
+            "rubble" | "leaves" | "flowers" | "footprints" | "mud"
+        ) {
             self.material_mode = IsoPaintMaterialMode::Stamp;
         }
         self.enforce_special_brush_settings();
@@ -2526,6 +3112,11 @@ impl IsoPaintDock {
         } else {
             Self::material_mode_key(self.material_mode)
         };
+        let stamp_variant_key = if stamp_mode && brush.key == "flowers" {
+            self.selected_flower_type_key()
+        } else {
+            "wildflowers"
+        };
         let material_id = MaterialDefinition::from_preset_finish(material_key, finish_key).id();
         region.iso_paint.set_active_settings(
             Self::operation_key(self.operation),
@@ -2547,6 +3138,7 @@ impl IsoPaintDock {
             self.stamp_density,
             self.stamp_size_jitter,
             self.stamp_rotation_jitter,
+            stamp_variant_key,
             self.size,
             self.opacity,
         );
@@ -2588,6 +3180,7 @@ impl Dock for IsoPaintDock {
             stamp_density: Self::BRUSHES[0].density,
             stamp_size_jitter: 0.25,
             stamp_rotation_jitter: 1.0,
+            flower_type: 0,
             nodeui: TheNodeUI::default(),
         }
     }
@@ -2770,9 +3363,13 @@ impl Dock for IsoPaintDock {
                         self.brush_color_slots[self.selected_brush][slot] = *index;
                     }
                 }
-                if preset.key == "material" && self.brush_color_slots[self.selected_brush][0] == 0 {
-                    self.brush_color_slots[self.selected_brush][0] =
-                        Self::default_brush_color_slots()[self.selected_brush][0];
+                if preset.key == "material" {
+                    let slot = self.brush_color_slots[self.selected_brush][0];
+                    let color = Self::palette_color(project, slot);
+                    if Self::material_color_needs_gray(slot, color) {
+                        self.brush_color_slots[self.selected_brush][0] =
+                            Self::neutral_material_palette_index(project);
+                    }
                 }
                 self.brush_shape = Self::brush_shape_from_key(&region.iso_paint.active_brush_shape);
                 self.brush_shapes[self.selected_brush] = self.brush_shape;
@@ -2794,6 +3391,7 @@ impl Dock for IsoPaintDock {
                 self.stamp_density = region.iso_paint.active_stamp_density;
                 self.stamp_size_jitter = region.iso_paint.active_stamp_size_jitter;
                 self.stamp_rotation_jitter = region.iso_paint.active_stamp_rotation_jitter;
+                self.flower_type = Self::flower_type_index(&region.iso_paint.active_stamp_variant);
                 region.iso_paint.visible
             })
             .unwrap_or(true);
@@ -2951,6 +3549,12 @@ impl Dock for IsoPaintDock {
                                         }
                                         _ => IsoPaintMaterialMode::Coat,
                                     };
+                                    refresh_inspector = true;
+                                }
+                            }
+                            ISO_PAINT_FLOWER_TYPE => {
+                                if let TheValue::Int(index) = value {
+                                    self.flower_type = (*index).clamp(0, 3);
                                     refresh_inspector = true;
                                 }
                             }
