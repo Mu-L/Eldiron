@@ -763,7 +763,7 @@ impl Editor {
         )
     }
 
-    fn iso_paint_arch_pattern_coord(
+    fn iso_paint_path_pattern_coord(
         screen: [i32; 2],
         path_points: &[[f32; 2]],
         path_lengths: &[f32],
@@ -806,7 +806,19 @@ impl Editor {
             }
         }
 
-        best.map(|(_, along, across)| [along, across + 8192.0])
+        best.map(|(_, along, across)| [along, across])
+    }
+
+    fn iso_paint_arch_pattern_coord(
+        screen: [i32; 2],
+        path_points: &[[f32; 2]],
+        path_lengths: &[f32],
+        origin: [i32; 2],
+        scale: f32,
+    ) -> Option<[f32; 2]> {
+        let coord =
+            Self::iso_paint_path_pattern_coord(screen, path_points, path_lengths, origin, scale)?;
+        Some([coord[0], coord[1] + 8192.0])
     }
 
     fn iso_paint_sample_arch_brick_color(
@@ -827,7 +839,7 @@ impl Editor {
             coord[0],
             coord[1],
             base,
-            "brick",
+            "tile",
             pattern_scale,
             pattern_mortar,
             pattern_detail,
@@ -1992,6 +2004,275 @@ impl Editor {
         }
     }
 
+    fn draw_iso_paint_vines_stamp(
+        buffer: &mut TheRGBABuffer,
+        surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
+        screen: [i32; 2],
+        stamp_depth: Option<f32>,
+        owner_geo_id: Option<scenevm::GeoId>,
+        size: f32,
+        color: [u8; 4],
+        palette: &[[u8; 4]],
+        opacity: f32,
+        variation: u32,
+        rotation: f32,
+    ) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        let mut stem = Self::iso_paint_stamp_palette_color(
+            palette,
+            0,
+            Self::iso_paint_adjust_rgb(color, 0.74),
+            opacity,
+            225.0,
+        );
+        stem = Self::iso_paint_adjust_rgb(stem, 0.86);
+        let leaf_a = Self::iso_paint_stamp_palette_color(
+            palette,
+            1,
+            Self::iso_paint_adjust_rgb(color, 1.12),
+            opacity,
+            205.0,
+        );
+        let leaf_b = Self::iso_paint_stamp_palette_color(
+            palette,
+            2,
+            Self::iso_paint_adjust_rgb(color, 0.92),
+            opacity,
+            190.0,
+        );
+        let mut shadow = Self::iso_paint_adjust_rgb(stem, 0.22);
+        shadow[3] = (opacity * 54.0).round() as u8;
+
+        let vine_count = 2 + (variation % 3) as i32;
+        let spread = (size * 7.0).round().clamp(3.0, 28.0) as i32;
+        for i in 0..vine_count {
+            let seed = variation
+                .wrapping_add((i as u32).wrapping_mul(0x632b_e5ab))
+                .rotate_left(((i * 5) as u32) & 15);
+            let base = [
+                screen[0] + ((seed & 0xff) as i32 - 128) * spread / 220,
+                screen[1] + (((seed >> 8) & 0xff) as i32 - 128) * spread / 300,
+            ];
+            let length = (size * (14.0 + ((seed >> 16) & 0x7f) as f32 / 4.6))
+                .round()
+                .clamp(10.0, 58.0);
+            let angle = rotation - std::f32::consts::FRAC_PI_2
+                + ((seed >> 24) & 0xff) as f32 / 255.0 * 1.35
+                - 0.68;
+            let dir = [angle.cos(), angle.sin()];
+            let normal = [-dir[1], dir[0]];
+            let sway = (size * (3.0 + ((seed >> 10) & 0x3f) as f32 / 22.0)).clamp(2.0, 13.0);
+            let phase = ((seed >> 4) & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
+            let segments = 5 + ((seed >> 7) & 3) as i32;
+            let mut prev = base;
+            for step in 1..=segments {
+                let t = step as f32 / segments as f32;
+                let wave = (phase + t * std::f32::consts::TAU * 0.72).sin() * sway;
+                let point = [
+                    base[0] + (dir[0] * length * t + normal[0] * wave).round() as i32,
+                    base[1] + (dir[1] * length * t + normal[1] * wave).round() as i32,
+                ];
+                Self::iso_paint_blend_line(
+                    buffer,
+                    surface_buffer,
+                    stamp_depth,
+                    owner_geo_id,
+                    prev[0] + 1,
+                    prev[1] + 1,
+                    point[0] + 1,
+                    point[1] + 1,
+                    shadow,
+                );
+                Self::iso_paint_blend_line(
+                    buffer,
+                    surface_buffer,
+                    stamp_depth,
+                    owner_geo_id,
+                    prev[0],
+                    prev[1],
+                    point[0],
+                    point[1],
+                    stem,
+                );
+
+                if step % 2 == 0 || step == segments {
+                    let side = if (seed >> (step as u32)) & 1 == 0 {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                    let leaf_center = [
+                        point[0] + (normal[0] * side * size * 2.2).round() as i32,
+                        point[1] + (normal[1] * side * size * 2.2).round() as i32,
+                    ];
+                    let leaf_seed = seed ^ (step as u32).wrapping_mul(0x45d9_f3b);
+                    Self::draw_iso_paint_rotated_ellipse(
+                        buffer,
+                        surface_buffer,
+                        stamp_depth,
+                        owner_geo_id,
+                        leaf_center,
+                        (size * 2.4).clamp(1.5, 8.0),
+                        (size * 0.85).clamp(0.8, 3.2),
+                        angle + side * 0.78,
+                        if step % 3 == 0 { leaf_b } else { leaf_a },
+                        leaf_seed,
+                    );
+                }
+                prev = point;
+            }
+        }
+    }
+
+    fn draw_iso_paint_candles_stamp(
+        buffer: &mut TheRGBABuffer,
+        surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
+        screen: [i32; 2],
+        stamp_depth: Option<f32>,
+        owner_geo_id: Option<scenevm::GeoId>,
+        size: f32,
+        color: [u8; 4],
+        palette: &[[u8; 4]],
+        opacity: f32,
+        variation: u32,
+    ) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        let wax = Self::iso_paint_stamp_palette_color(palette, 0, color, opacity, 235.0);
+        let side = Self::iso_paint_stamp_palette_color(
+            palette,
+            1,
+            Self::iso_paint_adjust_rgb(wax, 0.66),
+            opacity,
+            210.0,
+        );
+        let flame =
+            Self::iso_paint_stamp_palette_color(palette, 2, [255, 151, 45, 230], opacity, 230.0);
+        let core =
+            Self::iso_paint_stamp_palette_color(palette, 3, [255, 239, 142, 245], opacity, 245.0);
+        let candle_count = 1 + (variation % 3) as i32;
+        let shadow = [8, 6, 4, (opacity * 62.0).round() as u8];
+        let glow = [255, 151, 45, (opacity * 32.0).round() as u8];
+        for i in 0..candle_count {
+            let seed = variation
+                .wrapping_add((i as u32).wrapping_mul(0x85eb_ca6b))
+                .rotate_left(((i * 6) as u32) & 15);
+            let offset = (i - (candle_count - 1) / 2) as f32;
+            let jitter = ((seed & 0xff) as f32 / 255.0 - 0.5) * size * 4.0;
+            let base = [
+                screen[0] + (offset * size * 6.0 + jitter).round() as i32,
+                screen[1] + (((seed >> 8) & 0x3f) as f32 / 63.0 * size * 3.0).round() as i32,
+            ];
+            let height = (size * (8.0 + ((seed >> 14) & 0x7f) as f32 / 13.0))
+                .round()
+                .clamp(7.0, 28.0) as i32;
+            let half_width = (size * (1.45 + ((seed >> 22) & 0x3f) as f32 / 72.0))
+                .round()
+                .clamp(1.0, 6.0) as i32;
+            let top_y = base[1] - height;
+            Self::draw_iso_paint_rotated_ellipse(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                [base[0], base[1] + 1],
+                half_width as f32 + 1.2,
+                (size * 1.0).clamp(0.8, 3.2),
+                0.0,
+                shadow,
+                seed ^ 0x1188_0001,
+            );
+            Self::draw_iso_paint_rotated_ellipse(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                [base[0], top_y - (size * 5.3).round() as i32],
+                (size * 4.4).clamp(2.0, 14.0),
+                (size * 5.6).clamp(2.6, 18.0),
+                0.0,
+                glow,
+                seed ^ 0x7f7f_0009,
+            );
+            for dx in -half_width..=half_width {
+                let mut body = if dx > half_width / 2 { side } else { wax };
+                let shade = if dx < -half_width / 2 { 1.09 } else { 1.0 };
+                body = Self::iso_paint_adjust_rgb(body, shade);
+                Self::iso_paint_blend_line(
+                    buffer,
+                    surface_buffer,
+                    stamp_depth,
+                    owner_geo_id,
+                    base[0] + dx,
+                    base[1],
+                    base[0] + dx,
+                    top_y,
+                    body,
+                );
+            }
+            Self::draw_iso_paint_rotated_ellipse(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                [base[0], base[1]],
+                half_width as f32 + 0.6,
+                (size * 0.85).clamp(0.7, 2.8),
+                0.0,
+                side,
+                seed ^ 0x5511_0001,
+            );
+            Self::draw_iso_paint_rotated_ellipse(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                [base[0], top_y],
+                half_width as f32 + 0.4,
+                (size * 0.75).clamp(0.7, 2.4),
+                0.0,
+                wax,
+                seed ^ 0x5511_0002,
+            );
+            let wick = [24, 17, 12, (opacity * 185.0).round() as u8];
+            Self::iso_paint_blend_line(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                base[0],
+                top_y,
+                base[0],
+                top_y - (size * 2.3).round().max(2.0) as i32,
+                wick,
+            );
+            let flame_y = top_y - (size * 4.2).round().max(4.0) as i32;
+            Self::draw_iso_paint_rotated_ellipse(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                [base[0], flame_y],
+                (size * 1.7).clamp(1.2, 5.5),
+                (size * 3.2).clamp(2.0, 8.8),
+                0.0,
+                flame,
+                seed ^ 0xf17e_0001,
+            );
+            Self::draw_iso_paint_rotated_ellipse(
+                buffer,
+                surface_buffer,
+                stamp_depth,
+                owner_geo_id,
+                [base[0], flame_y + (size * 0.55).round() as i32],
+                (size * 0.85).clamp(0.8, 3.0),
+                (size * 1.55).clamp(1.0, 4.8),
+                0.0,
+                core,
+                seed ^ 0xf17e_0002,
+            );
+        }
+    }
+
     fn draw_iso_paint_footprints_stamp(
         buffer: &mut TheRGBABuffer,
         surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
@@ -2472,6 +2753,35 @@ impl Editor {
                         stamp.variant.as_str(),
                         stamp.variation,
                         stamp.rotation,
+                    );
+                }
+                "vines" => {
+                    Self::draw_iso_paint_vines_stamp(
+                        buffer,
+                        surface_buffer,
+                        screen,
+                        stamp_depth,
+                        owner_geo_id,
+                        size,
+                        stamp.color,
+                        &stamp.palette_colors,
+                        stamp.opacity,
+                        stamp.variation,
+                        stamp.rotation,
+                    );
+                }
+                "candles" => {
+                    Self::draw_iso_paint_candles_stamp(
+                        buffer,
+                        surface_buffer,
+                        screen,
+                        stamp_depth,
+                        owner_geo_id,
+                        size,
+                        stamp.color,
+                        &stamp.palette_colors,
+                        stamp.opacity,
+                        stamp.variation,
                     );
                 }
                 "footprints" => {

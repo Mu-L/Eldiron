@@ -7,6 +7,11 @@ use rusterix::material_library::MaterialDefinition;
 const ISO_PAINT_MIN_BRUSH_SIZE: f32 = 0.05;
 const ISO_PAINT_MAX_PAINT_BRUSH_SIZE: f32 = 16.0;
 const ISO_PAINT_MAX_STAMP_BRUSH_SIZE: f32 = 8.0;
+const ISO_PAINT_PATTERN_KIND: &str = "Iso Paint Pattern Kind";
+const ISO_PAINT_PATTERN_SCALE: &str = "Iso Paint Pattern Scale";
+const ISO_PAINT_MORTAR: &str = "Iso Paint Mortar";
+const ISO_PAINT_PATTERN_DETAIL: &str = "Iso Paint Pattern Detail";
+const ISO_PAINT_PATTERN_VARIATION: &str = "Iso Paint Pattern Variation";
 
 pub struct IsoPaintTool {
     id: TheId,
@@ -114,7 +119,7 @@ impl IsoPaintTool {
     fn is_stamp_mode(layer: &IsoPaintLayer) -> bool {
         matches!(
             layer.active_brush.as_str(),
-            "grass" | "rubble" | "leaves" | "flowers" | "footprints" | "mud"
+            "grass" | "rubble" | "leaves" | "flowers" | "vines" | "candles" | "footprints" | "mud"
         ) && layer.active_material_mode == "stamp"
     }
 
@@ -123,6 +128,8 @@ impl IsoPaintTool {
             "rubble" => "rubble",
             "leaves" => "leaves",
             "flowers" => "flowers",
+            "vines" => "vines",
+            "candles" => "candles",
             "footprints" => "footprints",
             "mud" => "mud",
             _ => "grass",
@@ -198,6 +205,37 @@ impl IsoPaintTool {
                 2 => "stamp".to_string(),
                 _ => "coat".to_string(),
             };
+        }
+        if let Some(TheValue::Int(index)) = ui.get_widget_value(ISO_PAINT_PATTERN_KIND) {
+            region.iso_paint.active_pattern_kind = match index {
+                0 => "tile".to_string(),
+                2 => "arch".to_string(),
+                _ => "brick".to_string(),
+            };
+        }
+        if let Some(pattern_scale) = ui
+            .get_widget_value(ISO_PAINT_PATTERN_SCALE)
+            .and_then(|value| value.to_f32())
+        {
+            region.iso_paint.active_pattern_scale = pattern_scale.clamp(0.25, 4.0);
+        }
+        if let Some(mortar) = ui
+            .get_widget_value(ISO_PAINT_MORTAR)
+            .and_then(|value| value.to_f32())
+        {
+            region.iso_paint.active_pattern_mortar = mortar.clamp(0.0, 0.4);
+        }
+        if let Some(detail) = ui
+            .get_widget_value(ISO_PAINT_PATTERN_DETAIL)
+            .and_then(|value| value.to_f32())
+        {
+            region.iso_paint.active_pattern_detail = detail.clamp(0.0, 1.0);
+        }
+        if let Some(variation) = ui
+            .get_widget_value(ISO_PAINT_PATTERN_VARIATION)
+            .and_then(|value| value.to_f32())
+        {
+            region.iso_paint.active_pattern_variation = variation.clamp(0.0, 1.0);
         }
         if let Some(size) = ui
             .get_widget_value("Iso Paint Tool Size")
@@ -467,10 +505,10 @@ impl Tool for IsoPaintTool {
     ) -> Option<ProjectUndoAtom> {
         match map_event {
             MapClicked(coord) => {
-                self.painting = true;
                 server_ctx.iso_paint_hover_screen = Some(coord);
-                self.stroke_before = Some(region.clone());
                 Self::sync_live_paint_settings(_ui, region);
+                self.painting = true;
+                self.stroke_before = Some(region.clone());
                 if Self::is_stamp_mode(&region.iso_paint) {
                     let point = Self::paint_point(coord, server_ctx);
                     self.stamp_clip_owner = Self::stamp_clip_owner(&region.iso_paint, &point);
