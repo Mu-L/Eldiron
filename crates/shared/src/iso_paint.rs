@@ -194,6 +194,8 @@ pub struct IsoPaintStamp {
     pub variant: String,
     pub rotation: f32,
     pub variation: u32,
+    #[serde(default = "default_material_id")]
+    pub material_id: u8,
     pub color: [u8; 4],
     #[serde(default = "default_palette_indices")]
     pub palette_indices: Vec<u16>,
@@ -210,6 +212,7 @@ impl IsoPaintStamp {
         color: [u8; 4],
         palette_indices: Vec<u16>,
         palette_colors: Vec<[u8; 4]>,
+        material_id: u8,
         size: f32,
         opacity: f32,
         variant: String,
@@ -243,6 +246,7 @@ impl IsoPaintStamp {
             },
             rotation,
             variation,
+            material_id,
             color,
             palette_indices,
             palette_colors,
@@ -599,6 +603,7 @@ impl IsoPaintLayer {
             self.active_color,
             self.active_palette_indices.clone(),
             self.active_palette_colors.clone(),
+            self.active_material_id,
             self.active_size,
             self.active_opacity,
             self.active_stamp_variant.clone(),
@@ -742,6 +747,18 @@ mod tests {
         assert_eq!(chunk.stamps.len(), 1);
         assert_eq!(chunk.stamps[0].kind, "rubble");
         assert_eq!(chunk.stamps[0].color, [96, 90, 76, 255]);
+    }
+
+    #[test]
+    fn stamps_keep_their_material_id() {
+        let mut layer = IsoPaintLayer::default();
+        layer.active_brush = "leaves".to_string();
+        layer.active_material_mode = "stamp".to_string();
+        layer.active_material_id = 44;
+        layer.add_stamp(IsoPaintPoint::new([42, 48], None, None));
+        let chunk = layer.chunks.values().next().unwrap();
+        assert_eq!(chunk.stamps.len(), 1);
+        assert_eq!(chunk.stamps[0].material_id, 44);
     }
 
     #[test]

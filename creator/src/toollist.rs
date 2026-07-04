@@ -226,6 +226,21 @@ impl ToolList {
         }
     }
 
+    fn paste_position(server_ctx: &ServerContext) -> Option<Vec2<f32>> {
+        server_ctx
+            .hover_cursor
+            .or_else(|| {
+                server_ctx
+                    .hover_cursor_3d
+                    .map(|pos| Vec2::new(pos.x, pos.z))
+            })
+            .or_else(|| {
+                server_ctx
+                    .geo_hit
+                    .map(|_| Vec2::new(server_ctx.geo_hit_pos.x, server_ctx.geo_hit_pos.z))
+            })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn current_tool_map_event(
         &mut self,
@@ -2496,18 +2511,20 @@ impl ToolList {
                             if coord.y > 20 {
                                 // Test for Paste operation
                                 if let Some(paste) = &server_ctx.paste_clipboard {
-                                    if let Some(hover) = server_ctx.hover_cursor {
+                                    if let Some(hover) = Self::paste_position(server_ctx) {
                                         let prev = map.clone();
                                         let prev_counts = (
                                             map.vertices.len(),
                                             map.linedefs.len(),
                                             map.sectors.len(),
+                                            map.geometry_objects.len(),
                                         );
                                         map.paste_at_position(paste, hover);
                                         let post_counts = (
                                             map.vertices.len(),
                                             map.linedefs.len(),
                                             map.sectors.len(),
+                                            map.geometry_objects.len(),
                                         );
                                         let inserted = post_counts != prev_counts;
 

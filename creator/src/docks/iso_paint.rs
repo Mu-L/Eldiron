@@ -32,7 +32,7 @@ const ISO_PAINT_STAMP_SIZE_JITTER: &str = "Iso Paint Stamp Size Jitter";
 const ISO_PAINT_STAMP_ROTATION_JITTER: &str = "Iso Paint Stamp Rotation Jitter";
 const ISO_PAINT_FLOWER_TYPE: &str = "Iso Paint Flower Type";
 const ISO_PAINT_ACTIVE_BRUSH_COLOR: &str = "Iso Paint Active Brush Color";
-const ISO_PAINT_BRUSH_COUNT: usize = 14;
+const ISO_PAINT_BRUSH_COUNT: usize = 17;
 const ISO_PAINT_SHAPE_STRIP_TILE_WIDTH: i32 = 44;
 const ISO_PAINT_SHAPE_STRIP_ICON_PADDING: i32 = 2;
 const ISO_PAINT_SHAPE_STRIP_TILE_HEIGHT: i32 = 24;
@@ -167,6 +167,9 @@ impl IsoPaintBrushBoard {
                         | "leaves"
                         | "flowers"
                         | "vines"
+                        | "roots"
+                        | "bushes"
+                        | "tree"
                         | "candles"
                         | "footprints"
                         | "mud"
@@ -246,6 +249,20 @@ impl IsoPaintBrushBoard {
 
     fn preview_color(palette: &[[u8; 4]], index: usize, fallback: [u8; 4]) -> [u8; 4] {
         let mut color = palette.get(index).copied().unwrap_or(fallback);
+        color[3] = 255;
+        color
+    }
+
+    fn preview_wood_color(palette: &[[u8; 4]], index: usize, fallback: [u8; 4]) -> [u8; 4] {
+        let mut color = palette
+            .get(index)
+            .copied()
+            .filter(|color| {
+                color[0] >= color[1].saturating_add(10)
+                    && color[1] >= color[2].saturating_add(4)
+                    && color[0] >= 54
+            })
+            .unwrap_or(fallback);
         color[3] = 255;
         color
     }
@@ -331,6 +348,46 @@ impl IsoPaintBrushBoard {
         }
     }
 
+    fn draw_preview_leaf_mass(
+        buffer: &mut TheRGBABuffer,
+        stride: usize,
+        cx: i32,
+        cy: i32,
+        rx: i32,
+        ry: i32,
+        seed: u32,
+        dark: [u8; 4],
+        mid: [u8; 4],
+        light: [u8; 4],
+    ) {
+        let rx = rx.max(2);
+        let ry = ry.max(2);
+        let rx2 = (rx * rx) as f32;
+        let ry2 = (ry * ry) as f32;
+        for y in -ry - 1..=ry + 1 {
+            for x in -rx - 1..=rx + 1 {
+                let edge = x as f32 * x as f32 / rx2 + y as f32 * y as f32 / ry2;
+                let hash = iso_paint_brush::hash_u32(cx + x, cy + y, seed);
+                let wobble = (((hash >> 8) & 0xff) as f32 / 255.0 - 0.5) * 0.34;
+                if edge > 0.94 + wobble || (edge > 0.62 && ((hash >> 18) & 7) == 0) {
+                    continue;
+                }
+                let noise = (hash & 0xff) as f32 / 255.0;
+                let mut color = if y < -ry / 4 && noise > 0.34 {
+                    light
+                } else if y > ry / 5 || edge > 0.72 {
+                    dark
+                } else {
+                    mid
+                };
+                if edge > 0.76 {
+                    color[3] = ((color[3] as f32) * (0.62 + noise * 0.28)).round() as u8;
+                }
+                Self::blend_preview_pixel(buffer.pixels_mut(), stride, cx + x, cy + y, color);
+            }
+        }
+    }
+
     fn draw_icon_preview(
         buffer: &mut TheRGBABuffer,
         ctx: &mut TheContext,
@@ -346,6 +403,9 @@ impl IsoPaintBrushBoard {
             "leaves" => [55, 48, 36, 255],
             "flowers" => [35, 52, 35, 255],
             "vines" => [28, 43, 29, 255],
+            "roots" => [46, 36, 28, 255],
+            "bushes" => [30, 48, 29, 255],
+            "tree" => [28, 45, 29, 255],
             "candles" => [47, 39, 33, 255],
             "footprints" => [86, 73, 56, 255],
             "mud" => [45, 34, 27, 255],
@@ -547,6 +607,193 @@ impl IsoPaintBrushBoard {
                             if t == 1 { highlight } else { leaf },
                         );
                     }
+                }
+            }
+            "roots" => {
+                let root = Self::preview_color(palette, 0, [92, 58, 36, 255]);
+                let dark = Self::preview_color(palette, 1, [48, 31, 22, 240]);
+                let light = Self::preview_color(palette, 2, [130, 88, 55, 220]);
+                let base_y = cy + s(8.0);
+                let paths = [
+                    (-20, 5, -5, -4, 14),
+                    (-7, 7, 8, 0, -11),
+                    (3, 10, 20, -5, 9),
+                    (-2, 8, -18, 15, -6),
+                ];
+                for (i, (x0, y0, x1, y1, bend)) in paths.iter().enumerate() {
+                    let start = [cx + s(*x0 as f32), base_y + s(*y0 as f32)];
+                    let mid = [
+                        cx + s((*x0 + *x1) as f32 * 0.5 + *bend as f32 * 0.25),
+                        base_y + s((*y0 + *y1) as f32 * 0.5),
+                    ];
+                    let end = [cx + s(*x1 as f32), base_y + s(*y1 as f32)];
+                    Self::draw_preview_line(
+                        buffer,
+                        stride,
+                        start[0],
+                        start[1] + 1,
+                        mid[0],
+                        mid[1] + 1,
+                        dark,
+                    );
+                    Self::draw_preview_line(
+                        buffer,
+                        stride,
+                        mid[0],
+                        mid[1] + 1,
+                        end[0],
+                        end[1] + 1,
+                        dark,
+                    );
+                    Self::draw_preview_line(
+                        buffer, stride, start[0], start[1], mid[0], mid[1], root,
+                    );
+                    Self::draw_preview_line(buffer, stride, mid[0], mid[1], end[0], end[1], root);
+                    if i % 2 == 0 {
+                        Self::draw_preview_line(
+                            buffer,
+                            stride,
+                            mid[0],
+                            mid[1],
+                            mid[0] + s(if *bend > 0 { 6.0 } else { -6.0 }),
+                            mid[1] - s(5.0),
+                            light,
+                        );
+                    }
+                    Self::draw_preview_ellipse(
+                        buffer,
+                        stride,
+                        start[0],
+                        start[1],
+                        s(2.2),
+                        s(1.6),
+                        light,
+                    );
+                }
+            }
+            "bushes" => {
+                let dark = Self::preview_color(palette, 0, [42, 86, 42, 255]);
+                let mid = Self::preview_color(palette, 1, [72, 126, 56, 255]);
+                let light = Self::preview_color(palette, 2, [118, 156, 69, 235]);
+                let branch = Self::preview_wood_color(palette, 3, [74, 49, 28, 255]);
+                let bark_dark = [30, 22, 15, 210];
+                let base_y = cy + s(15.0);
+                for (i, (x0, x1, y1, side)) in [
+                    (-6.0, -9.0, -17.0, -1.0),
+                    (0.0, -1.0, -22.0, 1.0),
+                    (6.0, 8.0, -18.0, -1.0),
+                ]
+                .iter()
+                .enumerate()
+                {
+                    let start_x = cx + s(*x0);
+                    let top_x = cx + s(*x1);
+                    let top_y = base_y + s(*y1);
+                    Self::draw_preview_line(
+                        buffer,
+                        stride,
+                        start_x + 1,
+                        base_y,
+                        top_x + 1,
+                        top_y,
+                        bark_dark,
+                    );
+                    Self::draw_preview_line(buffer, stride, start_x, base_y, top_x, top_y, branch);
+                    let mid_x = (start_x + top_x) / 2 + s(*side * 2.5);
+                    let mid_y = (base_y + top_y) / 2;
+                    Self::draw_preview_leaf_mass(
+                        buffer,
+                        stride,
+                        mid_x,
+                        mid_y,
+                        s(3.2),
+                        s(5.0),
+                        0xb05b_1001 ^ i as u32,
+                        dark,
+                        mid,
+                        light,
+                    );
+                    Self::draw_preview_leaf_mass(
+                        buffer,
+                        stride,
+                        top_x + s(*side * 1.4),
+                        top_y,
+                        s(3.5),
+                        s(5.5),
+                        0xb05b_2001 ^ i as u32,
+                        dark,
+                        mid,
+                        light,
+                    );
+                    Self::draw_preview_line(
+                        buffer,
+                        stride,
+                        start_x + 1,
+                        base_y,
+                        top_x + 1,
+                        top_y,
+                        bark_dark,
+                    );
+                    Self::draw_preview_line(buffer, stride, start_x, base_y, top_x, top_y, branch);
+                }
+                Self::draw_preview_line(
+                    buffer,
+                    stride,
+                    cx - s(9.0),
+                    base_y,
+                    cx + s(9.0),
+                    base_y,
+                    bark_dark,
+                );
+            }
+            "tree" => {
+                let leaf_dark = Self::preview_color(palette, 0, [38, 83, 41, 255]);
+                let leaf_mid = Self::preview_color(palette, 1, [75, 128, 54, 255]);
+                let trunk = Self::preview_color(palette, 2, [92, 58, 36, 255]);
+                let leaf_light = Self::preview_color(palette, 3, [128, 166, 75, 235]);
+                Self::draw_preview_ellipse(
+                    buffer,
+                    stride,
+                    cx,
+                    cy + s(15.0),
+                    s(10.0),
+                    s(4.0),
+                    [8, 8, 6, 85],
+                );
+                for dx in -s(2.0)..=s(2.0) {
+                    Self::draw_preview_line(
+                        buffer,
+                        stride,
+                        cx + dx,
+                        cy + s(14.0),
+                        cx + dx,
+                        cy - s(8.0),
+                        trunk,
+                    );
+                }
+                for (i, (ox, oy, rx, ry)) in [
+                    (-10, -14, 11, 10),
+                    (4, -20, 13, 12),
+                    (15, -9, 10, 9),
+                    (-1, -5, 16, 11),
+                    (-16, -2, 9, 8),
+                    (0, -25, 8, 8),
+                ]
+                .iter()
+                .enumerate()
+                {
+                    Self::draw_preview_leaf_mass(
+                        buffer,
+                        stride,
+                        cx + s(*ox as f32),
+                        cy + s(*oy as f32),
+                        s(*rx as f32),
+                        s(*ry as f32),
+                        0x7eee_0001 ^ i as u32,
+                        leaf_dark,
+                        leaf_mid,
+                        leaf_light,
+                    );
                 }
             }
             "candles" => {
@@ -2266,6 +2513,33 @@ impl IsoPaintDock {
             density: 0.54,
         },
         IsoPaintBrushPreset {
+            key: "roots",
+            size: 1.15,
+            opacity: 1.0,
+            shape: IsoPaintBrushShape::Scratch,
+            pattern_scale: 1.0,
+            mortar: 0.08,
+            density: 0.56,
+        },
+        IsoPaintBrushPreset {
+            key: "bushes",
+            size: 1.85,
+            opacity: 1.0,
+            shape: IsoPaintBrushShape::Speckle,
+            pattern_scale: 1.0,
+            mortar: 0.08,
+            density: 0.45,
+        },
+        IsoPaintBrushPreset {
+            key: "tree",
+            size: 2.35,
+            opacity: 1.0,
+            shape: IsoPaintBrushShape::Speckle,
+            pattern_scale: 1.0,
+            mortar: 0.08,
+            density: 0.38,
+        },
+        IsoPaintBrushPreset {
             key: "candles",
             size: 1.0,
             opacity: 1.0,
@@ -2364,6 +2638,9 @@ impl IsoPaintDock {
             [34, 37, 18, 20],
             [37, 32, 46, 47],
             [37, 36, 34, 18],
+            [18, 17, 16, 27],
+            [37, 36, 34, 35],
+            [37, 36, 18, 34],
             [46, 47, 21, 32],
             [18, 17, 16, 27],
             [18, 16, 17, 27],
@@ -2511,8 +2788,9 @@ impl IsoPaintDock {
         std::array::from_fn(|index| {
             let key = match Self::BRUSHES[index].key {
                 "brick" | "crack" | "rubble" => "stone",
-                "moss" | "grass" | "leaves" | "flowers" | "vines" => "foliage",
-                "candles" => "wax",
+                "moss" | "grass" | "leaves" | "flowers" | "vines" | "bushes" | "tree" => "foliage",
+                "roots" => "wood",
+                "candles" => "emissive",
                 "dirt" | "footprints" | "mud" => "dirt",
                 "puddle" => "water",
                 _ => "default",
@@ -2888,6 +3166,9 @@ impl IsoPaintDock {
             "leaves" => "Leaves".to_string(),
             "flowers" => "Flowers".to_string(),
             "vines" => "Vines".to_string(),
+            "roots" => "Roots".to_string(),
+            "bushes" => "Bushes".to_string(),
+            "tree" => "Tree".to_string(),
             "candles" => "Candles".to_string(),
             "footprints" => "Footprints".to_string(),
             "mud" => "Mud".to_string(),
@@ -2908,6 +3189,9 @@ impl IsoPaintDock {
             "leaves" => "Scatter fallen leaves as scene-aware stamps.".to_string(),
             "flowers" => "Place small wildflower clusters as scene-aware stamps.".to_string(),
             "vines" => "Place creeping vine tendrils as scene-aware stamps.".to_string(),
+            "roots" => "Place branching exposed roots as scene-aware stamps.".to_string(),
+            "bushes" => "Place larger leafy bush clusters as scene-aware stamps.".to_string(),
+            "tree" => "Place a small painted tree stamp with trunk and canopy.".to_string(),
             "candles" => "Place small candle clusters as scene-aware stamps.".to_string(),
             "footprints" => "Place muddy paired footprints as scene-aware stamps.".to_string(),
             "mud" => "Place glossy mud bubbles as scene-aware stamps.".to_string(),
@@ -3117,6 +3401,9 @@ impl IsoPaintDock {
                 | "leaves"
                 | "flowers"
                 | "vines"
+                | "roots"
+                | "bushes"
+                | "tree"
                 | "candles"
                 | "footprints"
                 | "mud"
@@ -3232,7 +3519,16 @@ impl IsoPaintDock {
         self.material_finish = self.brush_material_finishes[self.selected_brush];
         if matches!(
             brush.key,
-            "rubble" | "leaves" | "flowers" | "vines" | "candles" | "footprints" | "mud"
+            "rubble"
+                | "leaves"
+                | "flowers"
+                | "vines"
+                | "roots"
+                | "bushes"
+                | "tree"
+                | "candles"
+                | "footprints"
+                | "mud"
         ) {
             self.material_mode = IsoPaintMaterialMode::Stamp;
         }
@@ -3289,29 +3585,13 @@ impl IsoPaintDock {
         let Some(region) = project.get_region_mut(&server_ctx.curr_region) else {
             return;
         };
-        let stamp_mode = Self::brush_supports_stamp(brush.key)
-            && self.material_mode == IsoPaintMaterialMode::Stamp;
         let material_key = if brush.key == "puddle" {
             "water"
-        } else if stamp_mode && brush.key == "rubble" {
-            "stone"
-        } else if stamp_mode && brush.key == "footprints" {
-            "dirt"
-        } else if stamp_mode && brush.key == "mud" {
-            "dirt"
-        } else if stamp_mode && brush.key == "candles" {
-            "wax"
-        } else if stamp_mode {
-            "foliage"
         } else {
             self.selected_material_key()
         };
         let finish_key = if brush.key == "puddle" {
             "wet"
-        } else if stamp_mode && brush.key == "mud" {
-            "wet"
-        } else if stamp_mode {
-            "natural"
         } else {
             self.selected_finish_key()
         };
@@ -3320,6 +3600,8 @@ impl IsoPaintDock {
         } else {
             Self::material_mode_key(self.material_mode)
         };
+        let stamp_mode = Self::brush_supports_stamp(brush.key)
+            && self.material_mode == IsoPaintMaterialMode::Stamp;
         let stamp_variant_key = if stamp_mode && brush.key == "flowers" {
             self.selected_flower_type_key()
         } else {

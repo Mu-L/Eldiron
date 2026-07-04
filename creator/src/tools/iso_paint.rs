@@ -119,7 +119,17 @@ impl IsoPaintTool {
     fn is_stamp_mode(layer: &IsoPaintLayer) -> bool {
         matches!(
             layer.active_brush.as_str(),
-            "grass" | "rubble" | "leaves" | "flowers" | "vines" | "candles" | "footprints" | "mud"
+            "grass"
+                | "rubble"
+                | "leaves"
+                | "flowers"
+                | "vines"
+                | "roots"
+                | "bushes"
+                | "tree"
+                | "candles"
+                | "footprints"
+                | "mud"
         ) && layer.active_material_mode == "stamp"
     }
 
@@ -129,6 +139,9 @@ impl IsoPaintTool {
             "leaves" => "leaves",
             "flowers" => "flowers",
             "vines" => "vines",
+            "roots" => "roots",
+            "bushes" => "bushes",
+            "tree" => "tree",
             "candles" => "candles",
             "footprints" => "footprints",
             "mud" => "mud",

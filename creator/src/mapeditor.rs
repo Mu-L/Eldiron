@@ -300,6 +300,101 @@ impl MapEditor {
         true
     }
 
+    fn selected_geometry_bbox_xz(map: &Map) -> Option<(Vec2<f32>, Vec2<f32>)> {
+        let mut min = Vec2::broadcast(f32::INFINITY);
+        let mut max = Vec2::broadcast(f32::NEG_INFINITY);
+        let mut found = false;
+
+        for object_id in &map.selected_geometry_objects {
+            let Some(object) = map
+                .geometry_objects
+                .iter()
+                .find(|object| object.id == *object_id)
+            else {
+                continue;
+            };
+            let Some(bbox) = object.bbox() else {
+                continue;
+            };
+            min.x = min.x.min(bbox.min.x);
+            min.y = min.y.min(bbox.min.y);
+            max.x = max.x.max(bbox.max.x);
+            max.y = max.y.max(bbox.max.y);
+            found = true;
+        }
+
+        found.then_some((min, max))
+    }
+
+    fn immediate_geometry_paste_position(map: &Map, server_ctx: &ServerContext) -> Vec2<f32> {
+        if let Some(pos) = server_ctx.hover_cursor_3d {
+            return Vec2::new(pos.x, pos.z);
+        }
+        if server_ctx.geo_hit.is_some() {
+            return Vec2::new(server_ctx.geo_hit_pos.x, server_ctx.geo_hit_pos.z);
+        }
+        if let Some(pos) = server_ctx.hover_cursor {
+            return pos;
+        }
+        if let Some((min, max)) = Self::selected_geometry_bbox_xz(map) {
+            let step = ServerContext::edit_grid_step(map.subdivisions).max(0.01);
+            return Vec2::new(max.x + step, min.y);
+        }
+        Vec2::zero()
+    }
+
+    fn paste_geometry_objects_immediately(
+        ctx: &mut TheContext,
+        project: &mut Project,
+        server_ctx: &mut ServerContext,
+    ) -> bool {
+        if server_ctx.editor_view_mode == EditorViewMode::D2
+            || server_ctx.get_map_context() != MapContext::Region
+            || server_ctx.clipboard.geometry_objects.is_empty()
+        {
+            return false;
+        }
+
+        let clipboard = server_ctx.clipboard.clone();
+        let Some(map) = project.get_map_mut(server_ctx) else {
+            return false;
+        };
+
+        let prev = map.clone();
+        let prev_count = map.geometry_objects.len();
+        let position = Self::immediate_geometry_paste_position(map, server_ctx);
+        map.paste_at_position(&clipboard, position);
+        if map.geometry_objects.len() == prev_count {
+            return false;
+        }
+
+        map.sanitize();
+        map.changed += 1;
+        server_ctx.paste_clipboard = None;
+
+        let undo_atom =
+            ProjectUndoAtom::MapEdit(server_ctx.pc, Box::new(prev), Box::new(map.clone()));
+        crate::utils::editor_scene_apply_map_edit_atom(project, server_ctx, &undo_atom);
+        UNDOMANAGER.write().unwrap().add_undo(undo_atom, ctx);
+        RUSTERIX.write().unwrap().set_overlay_dirty();
+        ctx.ui.send(TheEvent::SetStatusText(
+            TheId::empty(),
+            "Geometry pasted.".to_string(),
+        ));
+        ctx.ui.send(TheEvent::Custom(
+            TheId::named("Map Selection Changed"),
+            TheValue::Empty,
+        ));
+        ctx.ui.send(TheEvent::Custom(
+            TheId::named("Update Action Parameters"),
+            TheValue::Empty,
+        ));
+        ctx.ui
+            .set_widget_state("Paste".to_string(), TheWidgetState::None);
+        ctx.ui.redraw_all = true;
+        true
+    }
+
     pub fn new() -> Self {
         Self {
             curr_tile_uuid: None,
@@ -561,6 +656,9 @@ impl MapEditor {
             }
             TheEvent::Paste(_, _) => {
                 // TODO use focus_widget_supports_clipboard here
+                if Self::paste_geometry_objects_immediately(ctx, project, server_ctx) {
+                    return true;
+                }
                 if !server_ctx.clipboard.is_empty() && server_ctx.polyview_has_focus(ctx) {
                     ctx.ui.send(TheEvent::SetStatusText(
                         TheId::empty(),

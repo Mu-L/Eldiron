@@ -361,6 +361,79 @@ mod tests {
         assert_eq!(map.named_area_center("Tavern"), None);
         assert_eq!(map.named_area_name_at(Vec2::new(12.0, 23.0)), None);
     }
+
+    #[test]
+    fn copy_selected_includes_geometry_objects() {
+        let mut map = Map::default();
+        let object = GeometryObject::box_from_bounds(
+            "Crate",
+            Vec3::new(10.0, 2.0, 20.0),
+            Vec3::new(12.0, 4.0, 23.0),
+        );
+        let object_id = object.id;
+        map.geometry_objects.push(object);
+        map.selected_geometry_objects.push(object_id);
+
+        let clipboard = map.copy_selected(false);
+
+        assert!(!clipboard.is_empty());
+        assert_eq!(clipboard.geometry_objects.len(), 1);
+        assert_eq!(map.geometry_objects.len(), 1);
+
+        let bbox = clipboard.geometry_objects[0].bbox().unwrap();
+        assert_close(bbox.min.x, 0.0);
+        assert_close(bbox.min.y, 0.0);
+        assert_close(bbox.max.x, 2.0);
+        assert_close(bbox.max.y, 3.0);
+    }
+
+    #[test]
+    fn paste_at_position_clones_geometry_objects_with_fresh_ids() {
+        let mut source = Map::default();
+        let object = GeometryObject::box_from_bounds(
+            "Crate",
+            Vec3::new(10.0, 2.0, 20.0),
+            Vec3::new(12.0, 4.0, 23.0),
+        );
+        let original_id = object.id;
+        source.geometry_objects.push(object);
+        source.selected_geometry_objects.push(original_id);
+        let clipboard = source.copy_selected(false);
+
+        let mut map = Map::default();
+        map.paste_at_position(&clipboard, Vec2::new(50.0, 60.0));
+
+        assert_eq!(map.geometry_objects.len(), 1);
+        let pasted = &map.geometry_objects[0];
+        assert_ne!(pasted.id, original_id);
+        assert_eq!(pasted.name, "Crate Copy");
+        assert_eq!(map.selected_geometry_objects, vec![pasted.id]);
+
+        let bbox = pasted.bbox().unwrap();
+        assert_close(bbox.min.x, 50.0);
+        assert_close(bbox.min.y, 60.0);
+        assert_close(bbox.max.x, 52.0);
+        assert_close(bbox.max.y, 63.0);
+    }
+
+    #[test]
+    fn cut_selected_removes_geometry_objects_after_copying() {
+        let mut map = Map::default();
+        let object = GeometryObject::box_from_bounds(
+            "Crate",
+            Vec3::new(10.0, 2.0, 20.0),
+            Vec3::new(12.0, 4.0, 23.0),
+        );
+        let object_id = object.id;
+        map.geometry_objects.push(object);
+        map.selected_geometry_objects.push(object_id);
+
+        let clipboard = map.copy_selected(true);
+
+        assert_eq!(clipboard.geometry_objects.len(), 1);
+        assert!(map.geometry_objects.is_empty());
+        assert!(map.selected_geometry_objects.is_empty());
+    }
 }
 
 impl Map {
@@ -2295,11 +2368,15 @@ impl Map {
         !self.selected_vertices.is_empty()
             || !self.selected_linedefs.is_empty()
             || !self.selected_sectors.is_empty()
+            || !self.selected_geometry_objects.is_empty()
     }
 
     /// Check if the map is empty.
     pub fn is_empty(&self) -> bool {
-        self.vertices.is_empty() && self.linedefs.is_empty() && self.sectors.is_empty()
+        self.vertices.is_empty()
+            && self.linedefs.is_empty()
+            && self.sectors.is_empty()
+            && self.geometry_objects.is_empty()
     }
 
     /// Copy selected geometry into a new map
@@ -2313,6 +2390,8 @@ impl Map {
         let mut vertex_ids: FxHashSet<u32> = FxHashSet::default();
         let mut linedef_ids: FxHashSet<u32> = self.selected_linedefs.iter().copied().collect();
         let sector_ids: FxHashSet<u32> = self.selected_sectors.iter().copied().collect();
+        let selected_geometry_ids: FxHashSet<Uuid> =
+            self.selected_geometry_objects.iter().copied().collect();
 
         // Add linedefs from selected sectors
         for sid in &sector_ids {
@@ -2336,24 +2415,48 @@ impl Map {
             vertex_ids.insert(vid);
         }
 
-        // Normalize vertex positions
+        let copied_geometry_objects: Vec<GeometryObject> = self
+            .geometry_objects
+            .iter()
+            .filter(|object| selected_geometry_ids.contains(&object.id))
+            .cloned()
+            .collect();
+
+        // Normalize copied positions to the lower X/Z corner of the copied selection.
         let copied_vertices: Vec<Vertex> = vertex_ids
             .iter()
             .filter_map(|id| self.find_vertex(*id).cloned())
             .collect();
 
-        if copied_vertices.is_empty() {
+        if copied_vertices.is_empty() && copied_geometry_objects.is_empty() {
             return clipboard;
         }
 
-        let min_x = copied_vertices
+        let mut min_x = copied_vertices
             .iter()
             .map(|v| v.x)
             .fold(f32::INFINITY, f32::min);
-        let min_y = copied_vertices
+        let mut min_y = copied_vertices
             .iter()
             .map(|v| v.y)
             .fold(f32::INFINITY, f32::min);
+        for object in &copied_geometry_objects {
+            for vertex in &object.vertices {
+                let world = object.transform_point(*vertex);
+                if world.x.is_finite() {
+                    min_x = min_x.min(world.x);
+                }
+                if world.z.is_finite() {
+                    min_y = min_y.min(world.z);
+                }
+            }
+        }
+        if !min_x.is_finite() {
+            min_x = 0.0;
+        }
+        if !min_y.is_finite() {
+            min_y = 0.0;
+        }
         let offset = Vec2::new(min_x, min_y);
 
         // Remap and store vertices
@@ -2366,6 +2469,14 @@ impl Map {
                 old_to_new_vertex.insert(old.id, new_id);
                 clipboard.vertices.push(new_v);
             }
+        }
+
+        for old in copied_geometry_objects {
+            let mut new_object = old.clone();
+            new_object.transform[3][0] -= offset.x;
+            new_object.transform[3][2] -= offset.y;
+            clipboard.selected_geometry_objects.push(new_object.id);
+            clipboard.geometry_objects.push(new_object);
         }
 
         // Remap and store linedefs
@@ -2422,6 +2533,10 @@ impl Map {
                 &linedef_ids.iter().copied().collect::<Vec<_>>(),
                 &sector_ids.iter().copied().collect::<Vec<_>>(),
             );
+            if !selected_geometry_ids.is_empty() {
+                self.geometry_objects
+                    .retain(|object| !selected_geometry_ids.contains(&object.id));
+            }
             self.clear_selection();
         }
 
@@ -2433,8 +2548,23 @@ impl Map {
         let mut vertex_map = FxHashMap::default();
         let mut linedef_map = FxHashMap::default();
         let mut pasted_sector_ids: Vec<u32> = Vec::new();
+        let mut pasted_geometry_object_ids: Vec<Uuid> = Vec::new();
 
         self.clear_selection();
+
+        for object in &local_map.geometry_objects {
+            let mut new_object = object.clone();
+            new_object.id = Uuid::new_v4();
+            new_object.name = if new_object.name.is_empty() {
+                "Copy".to_string()
+            } else {
+                format!("{} Copy", new_object.name)
+            };
+            new_object.transform[3][0] += position.x;
+            new_object.transform[3][2] += position.y;
+            pasted_geometry_object_ids.push(new_object.id);
+            self.geometry_objects.push(new_object);
+        }
 
         // Vertices
         for v in &local_map.vertices {
@@ -2502,6 +2632,11 @@ impl Map {
                 surface.calculate_geometry(self);
                 self.surfaces.insert(surface.id, surface);
             }
+        }
+
+        self.selected_geometry_objects = pasted_geometry_object_ids;
+        if !self.selected_geometry_objects.is_empty() {
+            self.geometry_selection_mode = 0;
         }
     }
 

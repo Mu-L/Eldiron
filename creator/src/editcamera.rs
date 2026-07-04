@@ -274,6 +274,16 @@ impl EditCamera {
         delta: Vec2<i32>,
         view_size: Vec2<i32>,
     ) {
+        self.pan_3d_by_delta_f32(region, server_ctx, delta.map(|v| v as f32), view_size);
+    }
+
+    pub fn pan_3d_by_delta_f32(
+        &self,
+        region: &mut Region,
+        server_ctx: &ServerContext,
+        delta: Vec2<f32>,
+        view_size: Vec2<i32>,
+    ) {
         if server_ctx.editor_view_mode == EditorViewMode::Orbit {
             self.pan_orbit_by_delta(region, delta, view_size);
         } else if server_ctx.editor_view_mode == EditorViewMode::Iso {
@@ -464,7 +474,7 @@ impl EditCamera {
         }
     }
 
-    fn pan_iso_by_delta(&self, region: &mut Region, delta: Vec2<i32>, view_size: Vec2<i32>) {
+    fn pan_iso_by_delta(&self, region: &mut Region, delta: Vec2<f32>, view_size: Vec2<i32>) {
         let viewport_h = view_size.y.max(1) as f32;
         let (_fwd, right, up) = self.iso_camera.basis_vectors();
         let ortho_h = self.iso_camera.scale();
@@ -484,10 +494,10 @@ impl EditCamera {
         };
 
         region.editing_position_3d +=
-            right_xz * delta.x as f32 * world_per_pixel - up_xz * delta.y as f32 * world_per_pixel;
+            right_xz * delta.x * world_per_pixel - up_xz * delta.y * world_per_pixel;
     }
 
-    fn pan_orbit_by_delta(&self, region: &mut Region, delta: Vec2<i32>, view_size: Vec2<i32>) {
+    fn pan_orbit_by_delta(&self, region: &mut Region, delta: Vec2<f32>, view_size: Vec2<i32>) {
         let viewport_w = view_size.x.max(1) as f32;
         let viewport_h = view_size.y.max(1) as f32;
         let (fwd, right, up) = self.orbit_camera.basis_vectors();
@@ -521,7 +531,7 @@ impl EditCamera {
         };
 
         let dir0 = ray_dir(0.0, 0.0);
-        let dir1 = ray_dir(delta.x as f32, delta.y as f32);
+        let dir1 = ray_dir(delta.x, delta.y);
         if let (Some(p0), Some(p1)) = (
             intersect_plane(cam_pos, dir0),
             intersect_plane(cam_pos, dir1),

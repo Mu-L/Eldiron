@@ -16,6 +16,8 @@ It is intended for:
 - moss, grass, dirt, and road breakup
 - cracks and ruin detail
 - generated brick or tile patterns
+- generated arch/trim-like pattern strokes for gates and openings
+- scene-aware stamps such as grass, rubble, leaves, flowers, vines, roots, bushes, trees, candles, footprints, and mud
 - puddle and wet-look details
 - color-only touchups
 - material/finish overlays on existing geometry
@@ -42,8 +44,18 @@ Current preset families include:
 - **Moss**
 - **Crack**
 - **Grass Detail**
+- **Rubble**
+- **Leaves**
+- **Flowers**
+- **Vines**
+- **Roots**
+- **Bushes**
+- **Tree**
+- **Candles**
+- **Footprints**
+- **Mud**
 - **Puddle**
-- **Color Only**
+- **Dirt / Color Touchup**
 
 Each preset can keep its own size, opacity, material, finish, brush shape, and palette colors.
 
@@ -58,6 +70,7 @@ The right detail view exposes the editable settings for the selected preset:
 - one or more Art Palette color slots
 - material mode
 - pattern settings when the selected preset uses generated patterns
+- stamp density, size jitter, and rotation jitter when the selected preset is in stamp mode
 
 Brush colors come from the **Art Palette**. A multi-color brush exposes multiple `Color` slots so terrain, moss, grass, and pattern brushes can use several related colors instead of a single flat swatch.
 
@@ -69,6 +82,9 @@ Material mode controls how the stroke interacts with the underlying surface:
 
 - **Coat**: paint over the existing surface while keeping the original surface as the base.
 - **Replace**: replace the painted color/material contribution for the covered pixels.
+- **Stamp**: place generated scene-aware stamp details instead of a continuous stroke.
+
+Stamp brushes honor the currently selected material family and finish. They also write material pixels for their generated shape, so a candle can be emissive, mud can stay wet, foliage can remain foliage, and custom user material choices are preserved per stamp.
 
 ## Pattern Brushes
 
@@ -76,13 +92,29 @@ Pattern brushes use surface hit data to generate aligned patterns, such as tiles
 
 Pattern options include:
 
-- tile or brick mode
+- tile, brick, or arch mode
 - pattern scale
 - mortar width
 - generated detail
 - color variation
 
 The generated pattern is still paint data, so it can be authored quickly without modeling every brick or tile as separate geometry.
+
+Pattern scale controls the generated tile/brick size independently from the brush size. Brush size controls how much area the stroke covers; pattern scale controls how large the repeated pattern is inside that area.
+
+## Stamp Brushes
+
+Stamp mode places individual generated details at the painted hit point. Stamps store the screen point, world anchor, optional surface/object ownership, camera scale, selected material ID, palette colors, size, opacity, rotation, and variation seed.
+
+This lets stamps:
+
+- stay tied to the scene instead of only the screen
+- sort and occlude with the 3D render path
+- repaint their material contribution into the material overlay
+- erase by nearby stamp, object clip, and active stamp kind
+- keep their apparent authored size as the fixed iso camera zoom changes
+
+Drag painting uses the stamp density setting to space repeated stamps. Size jitter and rotation jitter add variation without changing the active brush size.
 
 ## Rendering
 
@@ -94,6 +126,8 @@ The render path combines:
 - tile and palette-index sources
 - high-level material families and finishes
 - the authored Iso Paint layer
+- generated scene-aware stamps
+- stamp material overlays
 - the material-aware 3D renderer/post treatment
 
 This keeps the editable 3D structure clean while allowing a more organic, painterly isometric result.
