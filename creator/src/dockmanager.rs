@@ -39,6 +39,9 @@ impl DockManager {
         let dock: Box<dyn Dock> = Box::new(crate::docks::tiles::TilesDock::new());
         docks.insert("Tiles".into(), dock);
 
+        let dock: Box<dyn Dock> = Box::new(crate::docks::blocks::BlocksDock::new());
+        docks.insert("Blocks".into(), dock);
+
         let dock: Box<dyn Dock> = Box::new(crate::docks::builder::BuilderDock::new());
         docks.insert("Builder".into(), dock);
 

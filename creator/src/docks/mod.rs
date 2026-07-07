@@ -1,4 +1,5 @@
 pub mod authoring;
+pub mod blocks;
 pub mod builder;
 pub mod builder_editor;
 pub mod code;

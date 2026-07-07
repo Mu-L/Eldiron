@@ -1531,6 +1531,11 @@ impl SceneVM {
         self.active_vm().paint_surface_buffer(fb_w, fb_h)
     }
 
+    pub fn paint_surface_buffer_with_dynamics(&self, fb_w: u32, fb_h: u32) -> PaintSurfaceBuffer {
+        self.active_vm()
+            .paint_surface_buffer_with_dynamics(fb_w, fb_h)
+    }
+
     pub fn paint_surface_key(&self, fb_w: u32, fb_h: u32) -> u64 {
         self.active_vm().paint_surface_key(fb_w, fb_h)
     }

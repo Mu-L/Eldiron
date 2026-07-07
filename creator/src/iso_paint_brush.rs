@@ -874,5 +874,8 @@ pub fn sample_pixel(params: &IsoPaintBrushSample<'_>, ox: i32, oy: i32) -> Optio
         out = blend_over(out, color);
     }
 
-    out
+    out.map(|mut color| {
+        color[3] = color[3].min(global_alpha);
+        color
+    })
 }

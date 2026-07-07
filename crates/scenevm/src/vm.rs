@@ -1543,8 +1543,8 @@ fn hash12(p: vec2<f32>) -> f32 {
 fn apply_post(color_linear: vec3<f32>, frag_pos: vec4<f32>) -> vec3<f32> {
     let post_enabled = UBO.post_params.x > 0.5;
     let tone_mapper = u32(max(UBO.post_params.y, 0.0));
-    let first_person_post = UBO.cam_kind == 2u;
-    let post_style_strength = select(1.0, 0.45, first_person_post);
+    let readability_post = UBO.cam_kind == 0u || UBO.cam_kind == 2u;
+    let post_style_strength = select(1.0, 0.45, readability_post);
     let exposure = max(UBO.post_params.z, 0.0);
     let gamma = max(UBO.post_params.w, 0.001);
     let grit = clamp(UBO.post_style0.x, 0.0, 1.0);
@@ -1585,7 +1585,7 @@ fn apply_post(color_linear: vec3<f32>, frag_pos: vec4<f32>) -> vec3<f32> {
         let levels = mix(32.0, 7.0, posterize);
         c = mix(c, floor(c * levels + vec3<f32>(0.5)) / levels, posterize);
         let grain = hash12(floor(frag_pos.xy)) * 2.0 - 1.0;
-        let grain_amount = select(0.026, 0.014, first_person_post);
+        let grain_amount = select(0.026, 0.014, readability_post);
         c = c + vec3<f32>(grain) * grit * grain_amount;
         let paper = hash12(floor(frag_pos.xy * 0.5) + vec2<f32>(17.0, 3.0)) * 2.0 - 1.0;
         let nomad_luma = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
@@ -1764,9 +1764,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         n_ts = select(n_ts, vec3<f32>(0.0, 0.0, 1.0), paint_replace_material);
     }
     if (paint_color_weight > 0.001) {
+        let paint_replace_color_weight = max(paint_color_weight, paint_replace_opacity * paint_material_weight);
         color = select(
             vec4<f32>(mix(color.rgb, paint_overlay.rgb, paint_color_weight), color.a),
-            vec4<f32>(paint_overlay.rgb, color.a),
+            vec4<f32>(mix(color.rgb, paint_overlay.rgb, paint_replace_color_weight), color.a),
             paint_replace_active
         );
     }
@@ -1874,6 +1875,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let point_residual = 1.0 - smoothstep(0.025, 0.16, probe_luma) * 0.9;
     var ambient_probe = ambient + probe;
     // Sun lighting stays light-facing so iso camera motion does not change whether a surface is lit.
+    let iso_view = UBO.cam_kind == 0u;
     let first_person_view = UBO.cam_kind == 2u;
     let material_style_strength = select(1.0, 0.55, first_person_view);
     var roughness = clamp(mat.x, 0.04, 1.0);
@@ -1898,7 +1900,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // without extra user-facing settings.
     let non_first_person = select(1.0, 0.0, first_person_view);
     let clear_air = 1.0 - smoothstep(0.04, 0.55, UBO.fog_color_density.w);
-    let outdoor_space = scene_surface * non_first_person * sun_enabled * clear_air;
+    let iso_sky_fill_scale = select(1.0, 0.35, iso_view);
+    let outdoor_space = scene_surface * non_first_person * sun_enabled * clear_air * iso_sky_fill_scale;
     let sunward = smoothstep(0.08, 0.72, dot(Nf_sun, L));
     let sky_luma = dot(UBO.sky_color.xyz, vec3<f32>(0.2126, 0.7152, 0.0722));
     let sky_chroma = mix(vec3<f32>(sky_luma), UBO.sky_color.xyz, 0.55);
@@ -2323,8 +2326,8 @@ fn hash12(p: vec2<f32>) -> f32 {
 fn apply_post(color_linear: vec3<f32>, frag_pos: vec4<f32>) -> vec3<f32> {
     let post_enabled = UBO.post_params.x > 0.5;
     let tone_mapper = u32(max(UBO.post_params.y, 0.0));
-    let first_person_post = UBO.cam_kind == 2u;
-    let post_style_strength = select(1.0, 0.45, first_person_post);
+    let readability_post = UBO.cam_kind == 0u || UBO.cam_kind == 2u;
+    let post_style_strength = select(1.0, 0.45, readability_post);
     let exposure = max(UBO.post_params.z, 0.0);
     let gamma = max(UBO.post_params.w, 0.001);
     let grit = clamp(UBO.post_style0.x, 0.0, 1.0);
@@ -2360,7 +2363,7 @@ fn apply_post(color_linear: vec3<f32>, frag_pos: vec4<f32>) -> vec3<f32> {
         let levels = mix(32.0, 7.0, posterize);
         c = mix(c, floor(c * levels + vec3<f32>(0.5)) / levels, posterize);
         let grain = hash12(floor(frag_pos.xy)) * 2.0 - 1.0;
-        let grain_amount = select(0.026, 0.014, first_person_post);
+        let grain_amount = select(0.026, 0.014, readability_post);
         c = c + vec3<f32>(grain) * grit * grain_amount;
         let paper = hash12(floor(frag_pos.xy * 0.5) + vec2<f32>(17.0, 3.0)) * 2.0 - 1.0;
         let nomad_luma = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
@@ -2390,7 +2393,8 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VsOut {
 
 fn bright_part(c: vec3<f32>) -> vec3<f32> {
     let luma = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
-    let threshold = select(0.82, 1.05, UBO.cam_kind == 2u);
+    let readability_post = UBO.cam_kind == 0u || UBO.cam_kind == 2u;
+    let threshold = select(0.82, 1.05, readability_post);
     let knee = 0.48;
     let soft = clamp((luma - threshold + knee) / max(knee, 0.001), 0.0, 1.0);
     let weight = soft * soft * (3.0 - 2.0 * soft);
@@ -2426,7 +2430,8 @@ fn fs_composite(in: VsOut) -> @location(0) vec4<f32> {
     bloom += textureSampleLevel(bloom_tex, post_smp, in.uv + bloom_texel * vec2<f32>( 5.0, -5.0), 0.0).rgb * 0.045;
     bloom += textureSampleLevel(bloom_tex, post_smp, in.uv + bloom_texel * vec2<f32>(-5.0, -5.0), 0.0).rgb * 0.045;
 
-    let bloom_strength = select(0.34, 0.22, UBO.cam_kind == 2u);
+    let readability_post = UBO.cam_kind == 0u || UBO.cam_kind == 2u;
+    let bloom_strength = select(0.34, 0.22, readability_post);
     let color = scene.rgb + bloom * bloom_strength;
     return vec4<f32>(apply_post(color, in.pos), scene.a);
 }
@@ -10486,32 +10491,69 @@ impl VM {
     }
 
     pub fn paint_surface_buffer(&self, fb_w: u32, fb_h: u32) -> PaintSurfaceBuffer {
+        self.paint_surface_buffer_impl(fb_w, fb_h, false)
+    }
+
+    pub fn paint_surface_buffer_with_dynamics(&self, fb_w: u32, fb_h: u32) -> PaintSurfaceBuffer {
+        self.paint_surface_buffer_impl(fb_w, fb_h, true)
+    }
+
+    fn paint_surface_buffer_impl(
+        &self,
+        fb_w: u32,
+        fb_h: u32,
+        include_dynamic: bool,
+    ) -> PaintSurfaceBuffer {
         let mut buffer = PaintSurfaceBuffer::new(fb_w, fb_h);
-        if fb_w == 0
-            || fb_h == 0
-            || self.cached_static_i3.len() < 3
-            || self.cached_static_v3.is_empty()
-        {
+        let (vertices, indices, geo_ids) = if include_dynamic {
+            (
+                self.cached_v3.as_slice(),
+                self.cached_i3.as_slice(),
+                self.cached_tri_geo_ids.as_slice(),
+            )
+        } else {
+            (
+                self.cached_static_v3.as_slice(),
+                self.cached_static_i3.as_slice(),
+                self.cached_static_tri_geo_ids.as_slice(),
+            )
+        };
+        if fb_w == 0 || fb_h == 0 || indices.len() < 3 || vertices.is_empty() {
             return buffer;
         }
 
         let width = fb_w as i32;
         let height = fb_h as i32;
         let mut depth = vec![f32::INFINITY; fb_w as usize * fb_h as usize];
+        const TILE_INDEX_AVATAR_FLAG_CPU: u32 = 0x8000_0000u32;
+        const TILE_INDEX_PARTICLE_FLAG_CPU: u32 = 0x0800_0000u32;
 
-        for (tri_idx, tri) in self.cached_static_i3.chunks_exact(3).enumerate() {
-            if !self.static_triangle_visible(tri_idx) {
+        for (tri_idx, tri) in indices.chunks_exact(3).enumerate() {
+            let visible = if include_dynamic {
+                let word = tri_idx / 32;
+                let bit = tri_idx % 32;
+                self.cached_tri_visibility
+                    .get(word)
+                    .map(|w| ((w >> bit) & 1) != 0)
+                    .unwrap_or(true)
+            } else {
+                self.static_triangle_visible(tri_idx)
+            };
+            if !visible {
                 continue;
             }
-            let Some(a) = self.cached_static_v3.get(tri[0] as usize).copied() else {
+            let Some(a) = vertices.get(tri[0] as usize).copied() else {
                 continue;
             };
-            let Some(b) = self.cached_static_v3.get(tri[1] as usize).copied() else {
+            let Some(b) = vertices.get(tri[1] as usize).copied() else {
                 continue;
             };
-            let Some(c) = self.cached_static_v3.get(tri[2] as usize).copied() else {
+            let Some(c) = vertices.get(tri[2] as usize).copied() else {
                 continue;
             };
+            if (a.tile_index2 | b.tile_index2 | c.tile_index2) & TILE_INDEX_PARTICLE_FLAG_CPU != 0 {
+                continue;
+            }
 
             let Some((pa, da)) = paint_project_point(&self.camera3d, fb_w, fb_h, a.pos) else {
                 continue;
@@ -10536,12 +10578,15 @@ impl VM {
                 continue;
             }
 
-            let geo_id = self
-                .cached_static_tri_geo_ids
-                .get(tri_idx)
-                .copied()
-                .unwrap_or(GeoId::Unknown(0));
+            let geo_id = geo_ids.get(tri_idx).copied().unwrap_or(GeoId::Unknown(0));
             let face_id = tri_idx as u32;
+            let avatar = if include_dynamic
+                && (a.tile_index2 | b.tile_index2 | c.tile_index2) & TILE_INDEX_AVATAR_FLAG_CPU != 0
+            {
+                self.dynamic_avatar_data.get(&geo_id)
+            } else {
+                None
+            };
 
             for y in min_y..=max_y {
                 for x in min_x..=max_x {
@@ -10551,6 +10596,25 @@ impl VM {
                     let w2 = paint_edge(pa, pb, p) / area;
                     if w0 < -0.0001 || w1 < -0.0001 || w2 < -0.0001 {
                         continue;
+                    }
+                    if let Some(avatar) = avatar
+                        && avatar.size > 0
+                    {
+                        let uv = [
+                            a.uv[0] * w0 + b.uv[0] * w1 + c.uv[0] * w2,
+                            a.uv[1] * w0 + b.uv[1] * w1 + c.uv[1] * w2,
+                        ];
+                        let size = avatar.size as usize;
+                        let sample_x =
+                            (uv[0].clamp(0.0, 0.9999) * avatar.size as f32).floor() as usize;
+                        let sample_y =
+                            (uv[1].clamp(0.0, 0.9999) * avatar.size as f32).floor() as usize;
+                        let sample_x = sample_x.min(size.saturating_sub(1));
+                        let sample_y = sample_y.min(size.saturating_sub(1));
+                        let alpha_index = (sample_y * size + sample_x) * 4 + 3;
+                        if avatar.rgba.get(alpha_index).copied().unwrap_or(0) == 0 {
+                            continue;
+                        }
                     }
 
                     let d = w0 * da + w1 * db + w2 * dc;

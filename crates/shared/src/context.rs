@@ -442,6 +442,32 @@ pub struct ServerContext {
 
     /// Whether the Builder tool should place vertex-hosted builders directly on 3D clicks.
     pub builder_auto_vertex_mode: bool,
+    /// The currently selected block asset for the block placement workflow.
+    pub curr_block_asset_id: Option<Uuid>,
+    /// The selected block asset display name.
+    pub curr_block_asset_name: Option<String>,
+    /// Whether the Block tool is currently active.
+    pub block_tool_active: bool,
+    /// World size of one block grid cell.
+    pub block_grid_cell_size: f32,
+    /// Active block stack level.
+    pub block_grid_level: i32,
+    /// Active block rotation in 90-degree turns around Y.
+    pub block_rotation_quarters: i32,
+    /// Remembered block component height in grid cells.
+    pub block_height_cells: i32,
+    /// Remembered horizontal block span expansion in grid cells on each side.
+    pub block_span_extra_cells: i32,
+    /// Active block operation: place, replace, or erase.
+    pub block_operation: i32,
+    /// Active block stroke: line or rectangle.
+    pub block_stroke_mode: i32,
+    /// Whether newly stamped block geometry should receive deterministic damage.
+    pub block_damage_enabled: bool,
+    /// Drag stroke start cell while the Block tool is dragging.
+    pub block_drag_start_cell: Option<Vec3<i32>>,
+    /// Drag stroke end cell while the Block tool is dragging.
+    pub block_drag_end_cell: Option<Vec3<i32>>,
     /// Whether the Palette tool is currently active.
     pub palette_tool_active: bool,
 
@@ -672,6 +698,19 @@ impl ServerContext {
             curr_builder_graph_data: None,
             builder_tool_active: false,
             builder_auto_vertex_mode: false,
+            curr_block_asset_id: None,
+            curr_block_asset_name: None,
+            block_tool_active: false,
+            block_grid_cell_size: 1.0,
+            block_grid_level: 0,
+            block_rotation_quarters: 0,
+            block_height_cells: 2,
+            block_span_extra_cells: 0,
+            block_operation: 0,
+            block_stroke_mode: 0,
+            block_damage_enabled: false,
+            block_drag_start_cell: None,
+            block_drag_end_cell: None,
             palette_tool_active: false,
             curr_tile_frame_index: 0,
 
@@ -870,6 +909,19 @@ impl ServerContext {
         self.curr_builder_graph_data = None;
         self.builder_tool_active = false;
         self.builder_auto_vertex_mode = false;
+        self.curr_block_asset_id = None;
+        self.curr_block_asset_name = None;
+        self.block_tool_active = false;
+        self.block_grid_cell_size = 1.0;
+        self.block_grid_level = 0;
+        self.block_rotation_quarters = 0;
+        self.block_height_cells = 2;
+        self.block_span_extra_cells = 0;
+        self.block_operation = 0;
+        self.block_stroke_mode = 0;
+        self.block_damage_enabled = false;
+        self.block_drag_start_cell = None;
+        self.block_drag_end_cell = None;
         self.palette_tool_active = false;
         self.interactions.clear();
         self.moved_entities.clear();

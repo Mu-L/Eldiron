@@ -1315,7 +1315,9 @@ impl ToolList {
             Box::new(IsoPaintTool::new()),
             Box::new(RectTool::new()),
             Box::new(crate::tools::entity::EntityTool::new()),
-            Box::new(crate::tools::builder::BuilderTool::new()),
+            Box::new(crate::tools::blocks::BlockTool::new()),
+            // Builder Tool is hidden while the block-driven workflow replaces it.
+            // Box::new(crate::tools::builder::BuilderTool::new()),
             // Hidden for now: the collision probe route overlay still needs clearer UX
             // before it deserves a visible tool slot again.
             // Box::new(crate::tools::collision_probe::CollisionProbeTool::new()),
@@ -1958,6 +1960,32 @@ impl ToolList {
                     None
                 };
                 let suppress_tool_accel = shortcut_resolution.is_some();
+
+                if plain_key
+                    && polyview_focused
+                    && !text_input_focused
+                    && !server_ctx.game_input_mode
+                    && !server_ctx.text_game_mode
+                    && !self.editor_mode
+                    && self.get_current_tool().id().name == "Block Tool"
+                    && matches!(
+                        c,
+                        'r' | 'R' | 'e' | 'E' | 'h' | 'H' | 'w' | 'W' | '[' | '{' | ']' | '}'
+                    )
+                {
+                    let undo_atom = self.current_tool_map_event(
+                        MapEvent::MapKey(*c),
+                        ui,
+                        ctx,
+                        project,
+                        server_ctx,
+                    );
+                    self.update_map_context(ui, ctx, project, server_ctx, undo_atom);
+                    if server_ctx.editor_view_mode != EditorViewMode::D2 {
+                        self.update_geometry_overlay_3d(project, server_ctx);
+                    }
+                    return true;
+                }
 
                 let preserve_geometry_object_shortcut = plain_key
                     && polyview_focused
@@ -2947,7 +2975,9 @@ impl ToolList {
                                 == MapToolType::Rect
                                 || paint_only_undo;
 
-                            if hover_changed && !fast_preview_tool {
+                            if server_ctx.block_tool_active && self.should_refresh_3d_overlay() {
+                                self.update_geometry_overlay_3d(project, server_ctx);
+                            } else if hover_changed && !fast_preview_tool {
                                 self.update_geometry_overlay_3d(project, server_ctx);
                             } else if self.should_refresh_3d_overlay() {
                                 self.update_tool_preview_overlay_3d(project, server_ctx);
@@ -3489,8 +3519,13 @@ impl ToolList {
                     .add_line_3d(id, tile_id, a, b, thickness, normal, 100);
             };
 
+            let block_grid_active = server_ctx.block_tool_active;
             let grid_bbox = map.bbox().expanded(Vec2::new(16.0, 16.0));
-            let grid_step = ServerContext::edit_grid_step(map.subdivisions);
+            let grid_step = if block_grid_active {
+                server_ctx.block_grid_cell_size.max(0.05)
+            } else {
+                ServerContext::edit_grid_step(map.subdivisions)
+            };
             let min_x_step = (grid_bbox.min.x.min(-8.0) / grid_step).floor() as i32;
             let max_x_step = (grid_bbox.max.x.max(8.0) / grid_step).ceil() as i32;
             let min_z_step = (grid_bbox.min.y.min(-8.0) / grid_step).floor() as i32;
@@ -3499,7 +3534,11 @@ impl ToolList {
             let max_x = max_x_step as f32 * grid_step;
             let min_z = min_z_step as f32 * grid_step;
             let max_z = max_z_step as f32 * grid_step;
-            let grid_y = 0.012;
+            let grid_y = if block_grid_active {
+                server_ctx.block_grid_level as f32 * grid_step + 0.012
+            } else {
+                0.012
+            };
             let mut grid_index = 0u32;
 
             for x_step in min_x_step..=max_x_step {
@@ -3514,7 +3553,11 @@ impl ToolList {
                     GeoId::Unknown(0xE300_0000u32.wrapping_add(grid_index)),
                     Vec3::new(x, grid_y, min_z),
                     Vec3::new(x, grid_y, max_z),
-                    if is_major {
+                    if block_grid_active && is_major {
+                        [0.12, 0.42, 0.42, 0.58]
+                    } else if block_grid_active {
+                        [0.08, 0.34, 0.34, 0.42]
+                    } else if is_major {
                         [0.15, 0.15, 0.15, 0.36]
                     } else if is_whole {
                         [0.11, 0.11, 0.11, 0.28]
@@ -3538,7 +3581,11 @@ impl ToolList {
                     GeoId::Unknown(0xE301_0000u32.wrapping_add(grid_index)),
                     Vec3::new(min_x, grid_y, z),
                     Vec3::new(max_x, grid_y, z),
-                    if is_major {
+                    if block_grid_active && is_major {
+                        [0.12, 0.42, 0.42, 0.58]
+                    } else if block_grid_active {
+                        [0.08, 0.34, 0.34, 0.42]
+                    } else if is_major {
                         [0.15, 0.15, 0.15, 0.36]
                     } else if is_whole {
                         [0.11, 0.11, 0.11, 0.28]
@@ -3554,16 +3601,205 @@ impl ToolList {
                 GeoId::Unknown(0xE302_0000),
                 Vec3::new(min_x, grid_y + 0.004, 0.0),
                 Vec3::new(max_x, grid_y + 0.004, 0.0),
-                [0.15, 0.15, 0.15, 0.42],
+                if block_grid_active {
+                    [0.16, 0.58, 0.58, 0.72]
+                } else {
+                    [0.15, 0.15, 0.15, 0.42]
+                },
                 11,
             );
             rusterix.scene_handler.overlay_3d.add_hardware_line_3d(
                 GeoId::Unknown(0xE302_0001),
                 Vec3::new(0.0, grid_y + 0.004, min_z),
                 Vec3::new(0.0, grid_y + 0.004, max_z),
-                [0.15, 0.15, 0.15, 0.42],
+                if block_grid_active {
+                    [0.16, 0.58, 0.58, 0.72]
+                } else {
+                    [0.15, 0.15, 0.15, 0.42]
+                },
                 11,
             );
+
+            if block_grid_active
+                && let Some(asset_id) = server_ctx.curr_block_asset_id
+                && let Some(asset) = crate::blocks::block_asset(asset_id)
+                && let Some(hit) = crate::blocks::block_grid_plane_hit(server_ctx)
+                    .or(server_ctx.hover_cursor_3d)
+                    .or(server_ctx.hover_surface_hit_pos)
+                    .or_else(|| server_ctx.geo_hit.map(|_| server_ctx.geo_hit_pos))
+            {
+                let rotation = server_ctx.block_rotation_quarters.rem_euclid(4);
+                let size_x = (if rotation % 2 == 0 {
+                    asset.footprint.x
+                } else {
+                    asset.footprint.z
+                }) as f32
+                    * grid_step;
+                let size_z = (if rotation % 2 == 0 {
+                    asset.footprint.z
+                } else {
+                    asset.footprint.x
+                }) as f32
+                    * grid_step;
+                let hover_cell = Vec3::new(
+                    (hit.x / grid_step).floor() as i32,
+                    server_ctx.block_grid_level,
+                    (hit.z / grid_step).floor() as i32,
+                );
+                let cells = if let Some(start) = server_ctx.block_drag_start_cell {
+                    crate::blocks::block_stroke_cells(
+                        start,
+                        server_ctx.block_drag_end_cell.unwrap_or(start),
+                        server_ctx.block_stroke_mode,
+                    )
+                } else {
+                    vec![hover_cell]
+                };
+                let y = grid_y + 0.018;
+                let preview_color = [0.08, 0.72, 0.72, 0.92];
+                let preview_fill = rusterix.scene_handler.selected;
+                let erase_preview =
+                    server_ctx.block_operation == crate::blocks::BLOCK_OPERATION_ERASE;
+                let fill_preview_boxes = !erase_preview && asset.name != "Stairs";
+                let block_sizing = crate::blocks::block_sizing_from_context(server_ctx);
+
+                for (cell_index, cell) in cells.iter().enumerate() {
+                    let x0 = cell.x as f32 * grid_step;
+                    let z0 = cell.z as f32 * grid_step;
+                    let base = Vec3::new(x0, cell.y as f32 * grid_step, z0);
+                    let corners = [
+                        Vec3::new(x0, y, z0),
+                        Vec3::new(x0 + if erase_preview { grid_step } else { size_x }, y, z0),
+                        Vec3::new(
+                            x0 + if erase_preview { grid_step } else { size_x },
+                            y,
+                            z0 + if erase_preview { grid_step } else { size_z },
+                        ),
+                        Vec3::new(x0, y, z0 + if erase_preview { grid_step } else { size_z }),
+                    ];
+                    for (edge_index, (a, b)) in
+                        [(0, 1), (1, 2), (2, 3), (3, 0)].into_iter().enumerate()
+                    {
+                        rusterix.scene_handler.overlay_3d.add_hardware_line_3d(
+                            GeoId::Unknown(
+                                0xE306_0000u32
+                                    .wrapping_add((cell_index as u32) << 4)
+                                    .wrapping_add(edge_index as u32),
+                            ),
+                            corners[a],
+                            corners[b],
+                            if erase_preview {
+                                [0.90, 0.22, 0.14, 0.95]
+                            } else {
+                                [0.08, 0.72, 0.72, 0.95]
+                            },
+                            14,
+                        );
+                    }
+
+                    if erase_preview {
+                        continue;
+                    }
+
+                    for box_index in 0..asset.boxes.len() {
+                        let Some((min, max)) = crate::blocks::adjusted_rotated_bounds(
+                            asset,
+                            box_index,
+                            block_sizing,
+                            rotation,
+                        ) else {
+                            continue;
+                        };
+                        let min = base + min * grid_step;
+                        let max = base + max * grid_step;
+                        let corners = [
+                            Vec3::new(min.x, min.y, min.z),
+                            Vec3::new(max.x, min.y, min.z),
+                            Vec3::new(max.x, max.y, min.z),
+                            Vec3::new(min.x, max.y, min.z),
+                            Vec3::new(min.x, min.y, max.z),
+                            Vec3::new(max.x, min.y, max.z),
+                            Vec3::new(max.x, max.y, max.z),
+                            Vec3::new(min.x, max.y, max.z),
+                        ];
+                        let vertices = corners
+                            .iter()
+                            .map(|point| [point.x, point.y, point.z, 1.0])
+                            .collect::<Vec<_>>();
+                        let uvs = vec![
+                            [0.0, 0.0],
+                            [1.0, 0.0],
+                            [1.0, 1.0],
+                            [0.0, 1.0],
+                            [0.0, 0.0],
+                            [1.0, 0.0],
+                            [1.0, 1.0],
+                            [0.0, 1.0],
+                        ];
+                        let indices = vec![
+                            (0, 1, 2),
+                            (0, 2, 3),
+                            (5, 4, 7),
+                            (5, 7, 6),
+                            (4, 0, 3),
+                            (4, 3, 7),
+                            (1, 5, 6),
+                            (1, 6, 2),
+                            (3, 2, 6),
+                            (3, 6, 7),
+                            (4, 5, 1),
+                            (4, 1, 0),
+                        ];
+                        if fill_preview_boxes {
+                            let mut fill = scenevm::Poly3D::poly(
+                                GeoId::Unknown(
+                                    0xE307_0000u32
+                                        .wrapping_add((cell_index as u32) << 8)
+                                        .wrapping_add(box_index as u32),
+                                ),
+                                preview_fill,
+                                vertices,
+                                uvs,
+                                indices,
+                            )
+                            .with_opacity(0.20);
+                            fill.layer = 13;
+                            rusterix.scene_handler.overlay_3d.add_3d(fill);
+                        }
+
+                        for (edge_index, (a, b)) in [
+                            (0, 1),
+                            (1, 2),
+                            (2, 3),
+                            (3, 0),
+                            (4, 5),
+                            (5, 6),
+                            (6, 7),
+                            (7, 4),
+                            (0, 4),
+                            (1, 5),
+                            (2, 6),
+                            (3, 7),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            rusterix.scene_handler.overlay_3d.add_hardware_line_3d(
+                                GeoId::Unknown(
+                                    0xE308_0000u32
+                                        .wrapping_add((cell_index as u32) << 8)
+                                        .wrapping_add((box_index as u32) << 5)
+                                        .wrapping_add(edge_index as u32),
+                                ),
+                                corners[a] + cam_forward * -0.006,
+                                corners[b] + cam_forward * -0.006,
+                                preview_color,
+                                15,
+                            );
+                        }
+                    }
+                }
+            }
 
             if !map.linedefs.is_empty() {
                 let reference_y = grid_y + 0.010;

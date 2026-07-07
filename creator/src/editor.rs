@@ -3775,21 +3775,10 @@ impl Editor {
                 255,
                 255,
                 255,
-                if replace_material {
-                    255
-                } else {
-                    (stroke.opacity.clamp(0.0, 1.0) * 255.0).round() as u8
-                },
+                (stroke.opacity.clamp(0.0, 1.0) * 255.0).round() as u8,
             ]
         } else {
-            Self::iso_paint_color_with_opacity(
-                stroke.color,
-                if replace_material {
-                    1.0
-                } else {
-                    stroke.opacity
-                },
-            )
+            Self::iso_paint_color_with_opacity(stroke.color, stroke.opacity)
         };
         let radius = (stroke.size * 2.0).round().max(1.0) as i32;
         let mut shape_hasher = DefaultHasher::new();
@@ -7242,6 +7231,7 @@ impl Editor {
             "Tiles" | "Tilemap" | "Tile Editor Dock RGBA Layout View" | "Tile Editor Tree" => {
                 Some("docs/creator/docks/tile_picker_editor".into())
             }
+            "Blocks" => Some("docs/creator/tools/blocks".into()),
             "Builder" => Some("docs/creator/tools/builder".into()),
             "Palette" => Some("docs/creator/tools/palette".into()),
             "Iso Paint" => Some("docs/creator/tools/iso-paint".into()),
@@ -7307,6 +7297,7 @@ impl Editor {
             if dm.state != DockManagerState::Minimized {
                 return match dm.dock.as_str() {
                     "Tiles" => Some("docs/creator/docks/tile_picker_editor".into()),
+                    "Blocks" => Some("docs/creator/tools/blocks".into()),
                     "Builder" => Some("docs/creator/tools/builder".into()),
                     "Palette" => Some("docs/creator/tools/palette".into()),
                     "Iso Paint" => Some("docs/creator/tools/iso-paint".into()),
@@ -8640,6 +8631,11 @@ impl TheTrait for Editor {
                                             dim.width as u32,
                                             dim.height as u32,
                                         );
+                                        let stamp_surface =
+                                            scene_handler.vm.paint_surface_buffer_with_dynamics(
+                                                dim.width as u32,
+                                                dim.height as u32,
+                                            );
                                         let paint_surface_key = scene_handler
                                             .vm
                                             .paint_surface_key(dim.width as u32, dim.height as u32);
@@ -8720,7 +8716,7 @@ impl TheTrait for Editor {
                                             &iso_paint,
                                             view,
                                             proj,
-                                            Some(&paint_surface),
+                                            Some(&stamp_surface),
                                             scene_camera,
                                             camera_scale,
                                         );
@@ -9194,10 +9190,13 @@ impl TheTrait for Editor {
                                     .client
                                     .camera_d3
                                     .projection_matrix(dim.width as f32, dim.height as f32);
-                                let paint_surface = rusterix
+                                let stamp_surface = rusterix
                                     .scene_handler
                                     .vm
-                                    .paint_surface_buffer(dim.width as u32, dim.height as u32);
+                                    .paint_surface_buffer_with_dynamics(
+                                        dim.width as u32,
+                                        dim.height as u32,
+                                    );
                                 let camera = rusterix.client.camera_d3.as_scenevm_camera();
                                 let camera_scale = Some(rusterix.client.camera_d3.scale());
                                 Self::draw_iso_paint_stamps(
@@ -9205,7 +9204,7 @@ impl TheTrait for Editor {
                                     &iso_paint,
                                     view,
                                     proj,
-                                    Some(&paint_surface),
+                                    Some(&stamp_surface),
                                     camera,
                                     camera_scale,
                                 );

@@ -13,6 +13,7 @@ Some tools are specifically designed for **map editing** and display a common **
 - **Linedef / Edge Tool**
 - **Sector / Face Tool**
 - **Rect Tool**
+- **Block Tool**
 - **Builder Tool**
 - **Iso Paint Tool**
 
@@ -63,7 +64,7 @@ In 3D geometry views you can also use:
 - `V`: Vertex Tool
 - `E`: Linedef / Edge Tool
 - `F`: Sector / Face Tool
-- `B`: Builder Tool
+- `B`: Block Tool
 - `M`: Move object gizmo
 - `S`: Size object gizmo
 
@@ -99,6 +100,14 @@ With the [Iso Paint Tool](iso_paint), the lower picker area shows the **Iso Pain
 - Art Palette color slots
 - material, finish, shape, and pattern settings for isometric paint strokes
 
+With the [Block Tool](blocks), the lower picker area shows the **Blocks** dock instead:
+
+- rendered 3D previews for block stamps
+- Place / Replace / Erase operation controls
+- Line / Rect drag-stamping controls
+- grid cell size, stack level, rotation, height, and width settings
+- practical stamps such as floor+wall, floor+corner, floor+doorway, stairs, ceilings, columns, and solids
+
 ## Direct 3D Geometry Editing
 
 The direct 3D path uses editable geometry objects as the main construction model.
@@ -131,6 +140,14 @@ Palette mode is used for:
 - applying palette-index sources to geometry
 
 For the full workflow, see [Palette Tool](palette).
+
+## Block Building
+
+The **Block Tool** builds 3D rooms, corridors, dungeon layouts, houses, and blockouts from modular editable Geometry Object stamps.
+
+It uses a dedicated block grid in 3D views, supports click placement, line and rectangle drag stamping, whole-instance replace/erase, 90-degree rotation, stack levels, and component-aware height/width shortcuts. Floors ignore height changes, walls and posts can grow taller, and widened doorways grow their opening instead of thickening the side posts.
+
+For the full workflow, see [Block Tool](blocks).
 
 ## Iso Paint Mode
 
