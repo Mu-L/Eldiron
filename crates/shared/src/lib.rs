@@ -3,6 +3,8 @@ pub mod character;
 pub mod context;
 pub mod interaction;
 pub mod iso_paint;
+pub mod iso_paint_brush;
+pub mod iso_paint_render;
 pub mod item;
 pub mod project;
 pub mod region;

@@ -15,7 +15,6 @@ pub mod editor_tools;
 pub mod hud;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod i18n;
-pub mod iso_paint_brush;
 pub mod mapeditor;
 pub mod minimap;
 pub mod misc;

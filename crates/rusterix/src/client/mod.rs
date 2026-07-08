@@ -1335,6 +1335,7 @@ impl Client {
         scene_handler: &mut SceneHandler,
         editor_neutral_background: bool,
     ) {
+        scene_handler.vm.set_active_vm(0);
         self.scene.animation_frame = self.animation_frame;
 
         let hour = self.server_time.to_f32();
@@ -2092,6 +2093,7 @@ impl Client {
     ) where
         F: FnMut(&mut GameWidget, &mut SceneHandler) -> bool,
     {
+        scene_handler.vm.set_active_vm(0);
         // Keep scene timing in sync with config
         scene_handler.set_timings(self.target_fps as f32, self.game_tick_ms);
         self.update_active_player_camera(map);

@@ -3,7 +3,11 @@ use crate::prelude::*;
 use instant::Duration;
 use rusterix::server::message::AudioCommand;
 use rusterix::{EntityAction, Rusterix, Value};
-use shared::{project::Project, rusterix_utils::*};
+use shared::{
+    iso_paint_render::{IsoPaintRenderCache, IsoPaintRenderer},
+    project::Project,
+    rusterix_utils::*,
+};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::mpsc::Receiver;
@@ -16,6 +20,7 @@ pub struct Client {
     event_receiver: Option<Receiver<TheEvent>>,
 
     rusterix: Rusterix,
+    iso_paint_overlay_cache: IsoPaintRenderCache,
     cmd_line_path: Option<PathBuf>,
 }
 
@@ -128,6 +133,7 @@ impl TheTrait for Client {
             event_receiver: None,
 
             rusterix,
+            iso_paint_overlay_cache: IsoPaintRenderCache::default(),
             cmd_line_path: None,
         }
     }
@@ -306,7 +312,63 @@ impl TheTrait for Client {
                         }
                     }
                 }
-                self.rusterix.draw_game(&r.map, messages, says, choices);
+                let iso_paint = r.iso_paint.clone();
+                self.rusterix.draw_game_with_widget_overlay(
+                    &r.map,
+                    messages,
+                    says,
+                    choices,
+                    |widget, scene_handler| {
+                        let camera = widget.camera_d3.as_scenevm_camera();
+                        let render_dim = widget.render_surface_dim();
+                        let display_dim = *widget.buffer.dim();
+                        if render_dim.width <= 0
+                            || render_dim.height <= 0
+                            || display_dim.width <= 0
+                            || display_dim.height <= 0
+                        {
+                            return false;
+                        }
+                        let active_vm = scene_handler.vm.active_vm_index();
+                        scene_handler.vm.set_active_vm(0);
+                        let view = widget.camera_d3.view_matrix();
+                        let render_proj = widget
+                            .camera_d3
+                            .projection_matrix(render_dim.width as f32, render_dim.height as f32);
+                        let camera_scale = Some(widget.camera_d3.scale());
+                        let uploaded = IsoPaintRenderer::upload_overlay_cached(
+                            &mut self.iso_paint_overlay_cache,
+                            r.id,
+                            0,
+                            &iso_paint,
+                            &mut scene_handler.vm,
+                            camera,
+                            view,
+                            render_proj,
+                            render_dim.width as u32,
+                            render_dim.height as u32,
+                            camera_scale,
+                        );
+                        let stamp_proj = widget
+                            .camera_d3
+                            .projection_matrix(display_dim.width as f32, display_dim.height as f32);
+                        let stamp_surface = scene_handler.vm.paint_surface_buffer_with_dynamics(
+                            display_dim.width as u32,
+                            display_dim.height as u32,
+                        );
+                        scene_handler.vm.set_active_vm(active_vm);
+                        IsoPaintRenderer::draw_stamps(
+                            &mut widget.buffer,
+                            &iso_paint,
+                            view,
+                            stamp_proj,
+                            Some(&stamp_surface),
+                            camera,
+                            camera_scale,
+                        );
+                        uploaded
+                    },
+                );
                 self.rusterix
                     .client
                     .insert_game_buffer(&mut ui.canvas.buffer);

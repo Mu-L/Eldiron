@@ -3314,7 +3314,11 @@ impl ToolList {
                 && previous_geometry_selection
                     .as_ref()
                     .is_some_and(|snapshot| !snapshot.faces.is_empty());
-            if switched_tool && server_ctx.editor_view_mode != EditorViewMode::D2 {
+            let switched_to_game_tool = self.get_current_tool().id().name == "Game Tool";
+            if switched_tool
+                && server_ctx.editor_view_mode != EditorViewMode::D2
+                && !switched_to_game_tool
+            {
                 if preserve_surface_detail_host {
                     server_ctx.geometry_edit_mode = GeometryEditMode::Detail;
                 } else {

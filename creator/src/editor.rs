@@ -1,5 +1,4 @@
 use crate::Embedded;
-use crate::iso_paint_brush::{self, IsoPaintBrushSample};
 use crate::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::scepter::{ScepterEvent, ScepterRegionRequest, ScepterService};
@@ -24,6 +23,7 @@ use rusterix::{
     any(target_os = "windows", target_os = "linux", target_os = "macos")
 ))]
 use self_update::update::Release;
+use shared::iso_paint_brush::{self, IsoPaintBrushSample};
 use shared::rusterix_utils::*;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -138,6 +138,7 @@ struct IsoPaintRenderCache {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct IsoPaintPreparedOverlayKey {
     region_id: Uuid,
+    render_context: u8,
     width: i32,
     height: i32,
     layer_key: u64,
@@ -1845,7 +1846,7 @@ impl Editor {
             return true;
         }
         if let Some(stamp_depth) = stamp_depth {
-            return surface_pixel.depth + 0.03 >= stamp_depth;
+            return surface_pixel.depth + 0.12 >= stamp_depth;
         };
         owner_geo_id.is_none_or(|owner_geo_id| {
             Self::iso_paint_geo_object_matches(owner_geo_id, surface_pixel.geo_id)
@@ -3665,13 +3666,6 @@ impl Editor {
         }
     }
 
-    fn iso_paint_current_camera_scale() -> Option<f32> {
-        RUSTERIX
-            .read()
-            .ok()
-            .map(|rusterix| rusterix.client.camera_d3.scale())
-    }
-
     fn iso_paint_stroke_anchor(
         stroke: &IsoPaintStroke,
     ) -> (Option<[i32; 2]>, Option<[f32; 3]>, Option<f32>) {
@@ -3974,7 +3968,7 @@ impl Editor {
             origin,
             screen_anchor,
             world_anchor,
-            camera_scale: camera_scale.or_else(Self::iso_paint_current_camera_scale),
+            camera_scale,
             clip_geo_id,
             color_coverage_scale,
             replace_material,
@@ -4074,6 +4068,7 @@ impl Editor {
 
     fn iso_paint_overlay_key(
         region_id: Uuid,
+        render_context: u8,
         layer: &IsoPaintLayer,
         target_dim: TheDim,
         paint_surface_key: u64,
@@ -4082,6 +4077,7 @@ impl Editor {
     ) -> IsoPaintPreparedOverlayKey {
         IsoPaintPreparedOverlayKey {
             region_id,
+            render_context,
             width: target_dim.width,
             height: target_dim.height,
             layer_key: Self::iso_paint_layer_key(layer),
@@ -4094,6 +4090,7 @@ impl Editor {
     fn build_iso_paint_overlay_prepared(
         render_cache: &mut IsoPaintRenderCache,
         region_id: Uuid,
+        render_context: u8,
         layer: &IsoPaintLayer,
         paint_surface: Option<&scenevm::PaintSurfaceBuffer>,
         paint_surface_key: u64,
@@ -4120,6 +4117,7 @@ impl Editor {
 
         let overlay_key = Self::iso_paint_overlay_key(
             region_id,
+            render_context,
             layer,
             target_dim,
             paint_surface_key,
@@ -7312,8 +7310,7 @@ impl Editor {
     }
 
     fn is_realtime_mode(&self) -> bool {
-        self.server_ctx.game_mode
-            || RUSTERIX.read().unwrap().server.state == rusterix::ServerState::Running
+        RUSTERIX.read().unwrap().server.state == rusterix::ServerState::Running
     }
 
     fn firstp_editor_camera_moving(&self) -> bool {
@@ -8521,11 +8518,14 @@ impl TheTrait for Editor {
             let mut messages = Vec::new();
             let mut says = Vec::new();
             let mut choices = Vec::new();
+            let is_running =
+                RUSTERIX.read().unwrap().server.state == rusterix::ServerState::Running;
+            let running_game_mode = is_running && self.server_ctx.game_mode;
 
             // Update entities when the server is running
             {
                 let rusterix = &mut RUSTERIX.write().unwrap();
-                if rusterix.server.state == rusterix::ServerState::Running {
+                if is_running {
                     // Send a game tick to all servers
                     if tick_update {
                         rusterix.server.system_tick();
@@ -8566,7 +8566,7 @@ impl TheTrait for Editor {
                     for r in &mut self.project.regions {
                         rusterix.server.apply_entities_items(&mut r.map);
 
-                        let is_active_region = if self.server_ctx.game_mode {
+                        let is_active_region = if running_game_mode {
                             r.map.name == active_game_map
                         } else {
                             r.id == self.server_ctx.curr_region
@@ -8584,7 +8584,7 @@ impl TheTrait for Editor {
                             says = rusterix.server.get_says(&r.map.id);
                             choices = rusterix.server.get_choices(&r.map.id);
 
-                            if !self.server_ctx.game_mode {
+                            if !running_game_mode {
                                 self.pending_game_messages.append(&mut messages);
                                 self.pending_game_says.append(&mut says);
                                 self.pending_game_choices.append(&mut choices);
@@ -8641,9 +8641,6 @@ impl TheTrait for Editor {
                     }
                 }
             }
-            let is_running =
-                RUSTERIX.read().unwrap().server.state == rusterix::ServerState::Running;
-
             DOCKMANAGER.write().unwrap().sync_text_play_dock(
                 ui,
                 ctx,
@@ -8680,7 +8677,7 @@ impl TheTrait for Editor {
 
                 {
                     // If we are drawing billboard vertices in the geometry overlay, update them.
-                    if !self.server_ctx.game_mode
+                    if !running_game_mode
                         && self.server_ctx.editor_view_mode != EditorViewMode::D2
                         && self.server_ctx.curr_map_tool_type == MapToolType::Vertex
                     {
@@ -8692,7 +8689,7 @@ impl TheTrait for Editor {
 
                     let rusterix = &mut RUSTERIX.write().unwrap();
 
-                    if is_running && self.server_ctx.game_mode {
+                    if running_game_mode {
                         let game_messages = if self.server_ctx.text_game_mode {
                             Vec::new()
                         } else {
@@ -8745,8 +8742,13 @@ impl TheTrait for Editor {
                                             self.iso_paint_render_cache.uploaded_key = None;
                                             return has_iso_paint;
                                         }
-                                        let dim = *widget.buffer.dim();
-                                        if dim.width <= 0 || dim.height <= 0 {
+                                        let render_dim = widget.render_surface_dim();
+                                        let display_dim = *widget.buffer.dim();
+                                        if render_dim.width <= 0
+                                            || render_dim.height <= 0
+                                            || display_dim.width <= 0
+                                            || display_dim.height <= 0
+                                        {
                                             scene_handler
                                                 .vm
                                                 .execute(scenevm::Atom::ClearRaster3DPaintOverlay);
@@ -8755,37 +8757,44 @@ impl TheTrait for Editor {
                                         let active_vm = scene_handler.vm.active_vm_index();
                                         scene_handler.vm.set_active_vm(0);
                                         let paint_surface = scene_handler.vm.paint_surface_buffer(
-                                            dim.width as u32,
-                                            dim.height as u32,
+                                            render_dim.width as u32,
+                                            render_dim.height as u32,
                                         );
                                         let stamp_surface =
                                             scene_handler.vm.paint_surface_buffer_with_dynamics(
-                                                dim.width as u32,
-                                                dim.height as u32,
+                                                display_dim.width as u32,
+                                                display_dim.height as u32,
                                             );
-                                        let paint_surface_key = scene_handler
-                                            .vm
-                                            .paint_surface_key(dim.width as u32, dim.height as u32);
+                                        let paint_surface_key = scene_handler.vm.paint_surface_key(
+                                            render_dim.width as u32,
+                                            render_dim.height as u32,
+                                        );
                                         let view = widget.camera_d3.view_matrix();
-                                        let proj = widget
-                                            .camera_d3
-                                            .projection_matrix(dim.width as f32, dim.height as f32);
+                                        let render_proj = widget.camera_d3.projection_matrix(
+                                            render_dim.width as f32,
+                                            render_dim.height as f32,
+                                        );
+                                        let stamp_proj = widget.camera_d3.projection_matrix(
+                                            display_dim.width as f32,
+                                            display_dim.height as f32,
+                                        );
                                         let camera_scale = Some(widget.camera_d3.scale());
                                         let camera_key = Self::iso_paint_camera_key(scene_camera);
                                         let overlay = Self::build_iso_paint_overlay_prepared(
                                             &mut self.iso_paint_render_cache,
                                             region_id,
+                                            1,
                                             &iso_paint,
                                             Some(&paint_surface),
                                             paint_surface_key,
                                             camera_key,
                                             camera_scale,
-                                            TheDim::sized(dim.width, dim.height),
+                                            TheDim::sized(render_dim.width, render_dim.height),
                                             |point, width, height| {
                                                 if width <= 0 || height <= 0 {
                                                     return None;
                                                 }
-                                                let clip = (proj * view)
+                                                let clip = (render_proj * view)
                                                     * Vec4::new(point[0], point[1], point[2], 1.0);
                                                 if clip.w.abs() <= f32::EPSILON {
                                                     return None;
@@ -8842,7 +8851,7 @@ impl TheTrait for Editor {
                                             &mut widget.buffer,
                                             &iso_paint,
                                             view,
-                                            proj,
+                                            stamp_proj,
                                             Some(&stamp_surface),
                                             scene_camera,
                                             camera_scale,
@@ -8913,8 +8922,7 @@ impl TheTrait for Editor {
                                 let animation_frame = rusterix.client.animation_frame;
                                 rusterix.scene_handler.mark_dynamics_dirty();
                                 rusterix.build_dynamics_3d(&region.map, animation_frame);
-                                let editor_neutral_background =
-                                    !is_running && !self.server_ctx.game_mode;
+                                let editor_neutral_background = !is_running;
                                 let iso_paint = region.iso_paint.clone();
                                 let has_iso_paint =
                                     iso_paint.visible && !iso_paint.chunks.is_empty();
@@ -8938,6 +8946,7 @@ impl TheTrait for Editor {
                                         .paint_surface_key(dim.width as u32, dim.height as u32);
                                     let expected_key = Self::iso_paint_overlay_key(
                                         region.id,
+                                        0,
                                         &iso_paint,
                                         TheDim::sized(dim.width, dim.height),
                                         surface_key_before,
@@ -8975,6 +8984,7 @@ impl TheTrait for Editor {
                                         let overlay = Self::build_iso_paint_overlay_prepared(
                                             &mut self.iso_paint_render_cache,
                                             region.id,
+                                            0,
                                             &iso_paint,
                                             Some(&paint_surface),
                                             paint_surface_key,
@@ -9295,7 +9305,7 @@ impl TheTrait for Editor {
                         }
                     }
                 }
-                if !self.server_ctx.game_mode
+                if !running_game_mode
                     && self.server_ctx.get_map_context() == MapContext::Region
                     && self.server_ctx.editor_view_mode == EditorViewMode::Iso
                 {

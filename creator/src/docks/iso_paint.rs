@@ -1,10 +1,10 @@
 use crate::editor::UNDOMANAGER;
-use crate::iso_paint_brush::{self, IsoPaintBrushSample};
 use crate::prelude::*;
 use rusterix::material_library::{
     MATERIAL_FINISH_NAMES as MATERIAL_FINISH_VALUES,
     MATERIAL_PRESET_NAMES as MATERIAL_PRESET_VALUES, MaterialDefinition,
 };
+use shared::iso_paint_brush::{self, IsoPaintBrushSample};
 
 const ISO_PAINT_PRESET_STRIP: &str = "Iso Paint Preset Strip";
 const ISO_PAINT_MATERIAL_STRIP: &str = "Iso Paint Material Strip";

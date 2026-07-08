@@ -125,6 +125,17 @@ impl GameWidget {
         matches!(camera, PlayerCamera::D2 | PlayerCamera::D2Grid)
     }
 
+    pub fn render_surface_dim(&self) -> TheDim {
+        let dim = *self.buffer.dim();
+        if self.upscale > 1.0 && dim.width > 0 && dim.height > 0 {
+            return TheDim::sized(
+                ((dim.width as f32 / self.upscale).round() as i32).max(1),
+                ((dim.height as f32 / self.upscale).round() as i32).max(1),
+            );
+        }
+        dim
+    }
+
     pub fn new() -> Self {
         Self {
             name: String::new(),

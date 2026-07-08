@@ -4,7 +4,11 @@ use rusterix::server::message::AudioCommand;
 use rusterix::{EntityAction, MultipleChoice, Rusterix, Value, server::Message};
 use scenevm::prelude::Mat3;
 use scenevm::{Atom, SceneVM, SceneVMApp, SceneVMRenderCtx};
-use shared::{project::Project, rusterix_utils::*};
+use shared::{
+    iso_paint_render::{IsoPaintRenderCache, IsoPaintRenderer},
+    project::Project,
+    rusterix_utils::*,
+};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -61,6 +65,7 @@ pub struct EldironPlayerApp {
     pub ui_overlay_size: (u32, u32),
     pub ui_overlay_display_rect: [f32; 4],
     pub window_scale: f32,
+    pub iso_paint_overlay_cache: IsoPaintRenderCache,
     pub render_debug: bool,
     render_debug_frames: u32,
     render_debug_last_log: Instant,
@@ -104,6 +109,7 @@ impl EldironPlayerApp {
             ui_overlay_size: (0, 0),
             ui_overlay_display_rect: [0.0, 0.0, 0.0, 0.0],
             window_scale: 1.0,
+            iso_paint_overlay_cache: IsoPaintRenderCache::default(),
             render_debug,
             render_debug_frames: 0,
             render_debug_last_log: Instant::now(),
@@ -397,6 +403,33 @@ impl SceneVMApp for EldironPlayerApp {
                     self.rusterix.client.viewport.x.max(1) as u32,
                     self.rusterix.client.viewport.y.max(1) as u32,
                 );
+                {
+                    let iso_paint = self.project.regions[region_index].iso_paint.clone();
+                    let active_vm = self.rusterix.scene_handler.vm.active_vm_index();
+                    self.rusterix.scene_handler.vm.set_active_vm(0);
+                    let camera = self.rusterix.client.camera_d3.as_scenevm_camera();
+                    let view = self.rusterix.client.camera_d3.view_matrix();
+                    let proj = self
+                        .rusterix
+                        .client
+                        .camera_d3
+                        .projection_matrix(viewport_size.0 as f32, viewport_size.1 as f32);
+                    let camera_scale = Some(self.rusterix.client.camera_d3.scale());
+                    IsoPaintRenderer::upload_overlay_cached(
+                        &mut self.iso_paint_overlay_cache,
+                        self.project.regions[region_index].id,
+                        0,
+                        &iso_paint,
+                        &mut self.rusterix.scene_handler.vm,
+                        camera,
+                        view,
+                        proj,
+                        viewport_size.0,
+                        viewport_size.1,
+                        camera_scale,
+                    );
+                    self.rusterix.scene_handler.vm.set_active_vm(active_vm);
+                }
                 let (scale, offset_x, offset_y) =
                     self.rusterix.presentation_transform_for_surface(size);
                 let game_rect = self.rusterix.game_widget_rect().unwrap_or_else(|| {
