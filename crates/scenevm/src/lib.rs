@@ -56,7 +56,7 @@ pub mod prelude {
         core::{
             Atom, GeoId, LayerBlendMode, LineStrip2D, OrganicBillboardInstance,
             OrganicBillboardSprite, PaintSurfaceBuffer, PaintSurfacePixel, PaletteRemap2DMode,
-            RenderMode, VMDebugStats,
+            Raster3DPaintGpuStroke, Raster3DPaintGpuSurface, RenderMode, VMDebugStats,
         },
         dynamic::{AlphaMode, DynamicKind, DynamicMeshVertex, DynamicObject, RepeatMode},
         intodata::IntoDataInput,
@@ -113,7 +113,8 @@ pub use crate::{
     chunk::Chunk,
     core::{
         Atom, GeoId, LayerBlendMode, LineStrip2D, OrganicBillboardInstance, OrganicBillboardSprite,
-        PaintSurfaceBuffer, PaintSurfacePixel, PaletteRemap2DMode, RenderMode, VMDebugStats,
+        PaintSurfaceBuffer, PaintSurfacePixel, PaletteRemap2DMode, Raster3DPaintGpuStroke,
+        Raster3DPaintGpuSurface, RenderMode, VMDebugStats,
     },
     dynamic::{AlphaMode, DynamicKind, DynamicMeshVertex, DynamicObject, RepeatMode},
     intodata::IntoDataInput,
@@ -1529,6 +1530,40 @@ impl SceneVM {
 
     pub fn paint_surface_buffer(&self, fb_w: u32, fb_h: u32) -> PaintSurfaceBuffer {
         self.active_vm().paint_surface_buffer(fb_w, fb_h)
+    }
+
+    #[cfg(feature = "gpu")]
+    pub fn paint_surface_buffer_gpu(&mut self, fb_w: u32, fb_h: u32) -> Option<PaintSurfaceBuffer> {
+        let gpu = self.gpu.as_ref()?;
+        let device = gpu.device.clone();
+        let queue = gpu.queue.clone();
+        self.active_vm_mut()
+            .paint_surface_buffer_gpu_with(&device, &queue, fb_w, fb_h, false)
+    }
+
+    #[cfg(feature = "gpu")]
+    pub fn set_raster3d_paint_overlay_gpu(
+        &mut self,
+        width: u32,
+        height: u32,
+        strokes: &[crate::core::Raster3DPaintGpuStroke],
+        surface: Option<&crate::core::Raster3DPaintGpuSurface>,
+        paint_alpha_geo_ids: Vec<GeoId>,
+    ) -> bool {
+        let Some(gpu) = self.gpu.as_ref() else {
+            return false;
+        };
+        let device = gpu.device.clone();
+        let queue = gpu.queue.clone();
+        self.active_vm_mut().set_raster3d_paint_overlay_gpu_with(
+            &device,
+            &queue,
+            width,
+            height,
+            strokes,
+            surface,
+            paint_alpha_geo_ids,
+        )
     }
 
     pub fn paint_surface_buffer_with_dynamics(&self, fb_w: u32, fb_h: u32) -> PaintSurfaceBuffer {

@@ -101,6 +101,10 @@ fn default_revision() -> u64 {
     0
 }
 
+fn default_order() -> u64 {
+    0
+}
+
 /// Stable reference to the scene element under an Iso Paint point.
 ///
 /// The paint remains authored in fixed isometric screen space. This optional
@@ -180,6 +184,8 @@ impl IsoPaintPoint {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct IsoPaintStamp {
     pub id: Uuid,
+    #[serde(default = "default_order")]
+    pub order: u64,
     pub kind: String,
     pub screen: [i32; 2],
     pub world: Option<[f32; 3]>,
@@ -231,6 +237,7 @@ impl IsoPaintStamp {
             * rotation_jitter.clamp(0.0, 1.0);
         Self {
             id: Uuid::new_v4(),
+            order: 0,
             kind,
             screen: point.screen,
             world: point.world,
@@ -278,6 +285,8 @@ impl IsoPaintStamp {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct IsoPaintStroke {
     pub id: Uuid,
+    #[serde(default = "default_order")]
+    pub order: u64,
     pub operation: String,
     pub brush: String,
     #[serde(default = "default_brush_shape")]
@@ -337,6 +346,7 @@ impl IsoPaintStroke {
         let screen = first_point.screen;
         Self {
             id: Uuid::new_v4(),
+            order: 0,
             operation,
             brush,
             brush_shape,
@@ -560,10 +570,25 @@ impl IsoPaintLayer {
         format!("{},{}", origin[0], origin[1])
     }
 
+    fn next_paint_order(&self) -> u64 {
+        self.chunks
+            .values()
+            .flat_map(|chunk| {
+                chunk
+                    .strokes
+                    .iter()
+                    .map(|stroke| stroke.order)
+                    .chain(chunk.stamps.iter().map(|stamp| stamp.order))
+            })
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    }
+
     pub fn begin_stroke(&mut self, first_point: IsoPaintPoint) -> Uuid {
         let origin = self.chunk_origin_for_screen(first_point.screen);
         let key = Self::chunk_key(origin);
-        let stroke = IsoPaintStroke::new(
+        let mut stroke = IsoPaintStroke::new(
             self.active_operation.clone(),
             self.active_brush.clone(),
             self.active_brush_shape.clone(),
@@ -584,6 +609,7 @@ impl IsoPaintLayer {
             self.active_opacity,
             first_point,
         );
+        stroke.order = self.next_paint_order();
         let id = stroke.id;
         let chunk = self
             .chunks
@@ -597,7 +623,7 @@ impl IsoPaintLayer {
     pub fn add_stamp(&mut self, point: IsoPaintPoint) -> Uuid {
         let origin = self.chunk_origin_for_screen(point.screen);
         let key = Self::chunk_key(origin);
-        let stamp = IsoPaintStamp::new(
+        let mut stamp = IsoPaintStamp::new(
             self.active_brush.clone(),
             point,
             self.active_color,
@@ -610,6 +636,7 @@ impl IsoPaintLayer {
             self.active_stamp_size_jitter,
             self.active_stamp_rotation_jitter,
         );
+        stamp.order = self.next_paint_order();
         let id = stamp.id;
         let chunk = self
             .chunks

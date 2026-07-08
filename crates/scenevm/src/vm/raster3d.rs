@@ -27,6 +27,36 @@ pub struct Line3DPod {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
+pub struct PaintSurfaceVertPod {
+    pub pos: [f32; 3],
+    pub face_id: u32,
+    pub uv: [f32; 2],
+    pub _pad0: [f32; 2],
+    pub normal: [f32; 3],
+    pub _pad1: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct PaintSurfaceUniforms {
+    pub cam_pos: [f32; 4],
+    pub cam_fwd: [f32; 4],
+    pub cam_right: [f32; 4],
+    pub cam_up: [f32; 4],
+    pub fb_size: [f32; 2],
+    pub cam_vfov_deg: f32,
+    pub cam_ortho_half_h: f32,
+    pub cam_near: f32,
+    pub cam_far: f32,
+    pub cam_kind: u32,
+    pub _pad: [u32; 5],
+}
+
+const _: [(); 0] = [(); std::mem::size_of::<PaintSurfaceUniforms>() % 16];
+const _: [(); 112] = [(); std::mem::size_of::<PaintSurfaceUniforms>()];
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
 pub struct Raster3DUniforms {
     pub cam_pos: [f32; 4],
     pub cam_fwd: [f32; 4],

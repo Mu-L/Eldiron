@@ -541,9 +541,8 @@ impl Tool for IsoPaintTool {
                     ));
                     return None;
                 }
-                let stroke_id = region
-                    .iso_paint
-                    .begin_stroke(Self::paint_point(coord, server_ctx));
+                let point = Self::paint_point(coord, server_ctx);
+                let stroke_id = region.iso_paint.begin_stroke(point);
                 let (stroke_opacity, stroke_material_mode) = region
                     .iso_paint
                     .chunks
@@ -591,12 +590,12 @@ impl Tool for IsoPaintTool {
                 }
                 if self.painting
                     && let Some(stroke_id) = self.active_stroke
-                    && region
-                        .iso_paint
-                        .append_point(stroke_id, Self::paint_point(coord, server_ctx))
                 {
-                    self.stroke_changed = true;
-                    Self::request_paint_redraw(ctx);
+                    let point = Self::paint_point(coord, server_ctx);
+                    if region.iso_paint.append_point(stroke_id, point) {
+                        self.stroke_changed = true;
+                        Self::request_paint_redraw(ctx);
+                    }
                 }
             }
             MapHover(coord) => {
@@ -620,11 +619,11 @@ impl Tool for IsoPaintTool {
                     self.stroke_changed |= changed;
                 } else if self.painting
                     && let Some(stroke_id) = self.active_stroke
-                    && region
-                        .iso_paint
-                        .append_point(stroke_id, Self::paint_point(coord, server_ctx))
                 {
-                    self.stroke_changed = true;
+                    let point = Self::paint_point(coord, server_ctx);
+                    if region.iso_paint.append_point(stroke_id, point) {
+                        self.stroke_changed = true;
+                    }
                 }
 
                 let undo_atom = if self.stroke_changed {

@@ -1,4 +1,5 @@
 use crate::{Camera3D, Chunk, Light, Line3D, Poly2D, Poly3D, dynamic::DynamicObject};
+use std::hash::{Hash, Hasher};
 use uuid::Uuid;
 use vek::{Mat3, Vec2, Vec4};
 
@@ -67,6 +68,103 @@ impl PaintSurfaceBuffer {
         }
         self.pixels
             .get(y as usize * self.width as usize + x as usize)
+    }
+
+    pub fn content_key(&self) -> u64 {
+        let mut hasher = rustc_hash::FxHasher::default();
+        self.width.hash(&mut hasher);
+        self.height.hash(&mut hasher);
+        let stride = (self.pixels.len() / 4096).max(1);
+        let mut valid_count = 0usize;
+        for (index, pixel) in self.pixels.iter().enumerate() {
+            if !pixel.valid {
+                continue;
+            }
+            valid_count += 1;
+            if index % stride != 0 {
+                continue;
+            }
+            index.hash(&mut hasher);
+            pixel.geo_id.hash(&mut hasher);
+            pixel.face_id.hash(&mut hasher);
+            pixel.depth.to_bits().hash(&mut hasher);
+        }
+        valid_count.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Raster3DPaintGpuStroke {
+    pub brush_width: u32,
+    pub brush_height: u32,
+    pub brush_rgba: Vec<u8>,
+    pub draw_x: i32,
+    pub draw_y: i32,
+    pub draw_width: u32,
+    pub draw_height: u32,
+    pub scale: f32,
+    pub clip_mode: u32,
+    pub start_screen: Option<[i32; 2]>,
+    pub clip_geo_id: Option<GeoId>,
+    pub color_coverage_scale: f32,
+    pub replace_material: bool,
+    pub replace_opacity: u8,
+    pub writes_material: bool,
+    pub material_id: u8,
+    pub erase: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct Raster3DPaintGpuSurface {
+    pub width: u32,
+    pub height: u32,
+    pub geo_rgba: Vec<[u32; 4]>,
+}
+
+impl Raster3DPaintGpuSurface {
+    pub fn from_paint_surface(surface: &PaintSurfaceBuffer) -> Self {
+        Self {
+            width: surface.width,
+            height: surface.height,
+            geo_rgba: surface
+                .pixels
+                .iter()
+                .map(|pixel| {
+                    if pixel.valid {
+                        Self::pack_geo_id(pixel.geo_id)
+                    } else {
+                        [0, 0, 0, 0]
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    fn pack_geo_id(geo_id: GeoId) -> [u32; 4] {
+        match geo_id {
+            GeoId::Unknown(id) => [1, id, 0, 0],
+            GeoId::Vertex(id) => [2, id, 0, 0],
+            GeoId::Linedef(id) => [3, id, 0, 0],
+            GeoId::Sector(id) => [4, id, 0, 0],
+            GeoId::Character(id) => [5, id, 0, 0],
+            GeoId::Item(id) => [6, id, 0, 0],
+            GeoId::Light(id) => [7, id, 0, 0],
+            GeoId::ItemLight(id) => [8, id, 0, 0],
+            GeoId::Triangle(id) => [9, id, 0, 0],
+            GeoId::Terrain(x, z) => [10, x as u32, z as u32, 0],
+            GeoId::GeometryObject(id) => {
+                let value = id.as_u128();
+                [
+                    11,
+                    (value & 0xffff_ffff) as u32,
+                    ((value >> 32) & 0xffff_ffff) as u32,
+                    ((value >> 64) & 0xffff_ffff) as u32,
+                ]
+            }
+            GeoId::Hole(sector_id, hole_id) => [12, sector_id, hole_id, 0],
+            GeoId::Gizmo(id) => [13, id, 0, 0],
+        }
     }
 }
 
