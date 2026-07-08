@@ -623,12 +623,7 @@ pub fn block_component_kind(asset: &BlockAsset, index: usize) -> BlockComponentK
 }
 
 pub fn component_uses_cylinder(component: BlockComponentKind) -> bool {
-    matches!(
-        component,
-        BlockComponentKind::ColumnBase
-            | BlockComponentKind::ColumnShaft
-            | BlockComponentKind::ColumnCapital
-    )
+    matches!(component, BlockComponentKind::ColumnShaft)
 }
 
 pub fn cylinder_vertices_and_faces(
@@ -747,6 +742,20 @@ pub fn block_grid_plane_hit(server_ctx: &ServerContext) -> Option<Vec3<f32>> {
     }
     let t = (grid_y - ray_origin.y) / ray_dir.y;
     (t >= 0.0).then_some(ray_origin + ray_dir * t)
+}
+
+pub fn block_surface_base_y(server_ctx: &ServerContext, fallback_y: f32) -> Option<f32> {
+    let normal = server_ctx.hover_surface_normal?;
+    if normal.y.abs() <= 0.55 {
+        return None;
+    }
+    let hit = server_ctx
+        .hover_surface_hit_pos
+        .or_else(|| server_ctx.geo_hit.map(|_| server_ctx.geo_hit_pos))?;
+    if !hit.y.is_finite() || hit.y + 0.001 < fallback_y {
+        return None;
+    }
+    Some(hit.y)
 }
 
 pub fn block_stroke_cells(start: Vec3<i32>, end: Vec3<i32>, stroke_mode: i32) -> Vec<Vec3<i32>> {

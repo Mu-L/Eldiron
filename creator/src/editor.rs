@@ -330,6 +330,31 @@ impl Editor {
         pixels[index + 3] = out_a as u8;
     }
 
+    fn iso_paint_coat_pixel_at(pixels: &mut [u8], index: usize, color: [u8; 4]) {
+        if color[3] == 0 || index + 3 >= pixels.len() {
+            return;
+        }
+
+        let src_a = color[3] as u32;
+        let dst_a = pixels[index + 3] as u32;
+        if dst_a == 0 || src_a >= dst_a {
+            pixels[index] = color[0];
+            pixels[index + 1] = color[1];
+            pixels[index + 2] = color[2];
+            pixels[index + 3] = color[3];
+            return;
+        }
+
+        let keep_a = dst_a.saturating_sub(src_a);
+        pixels[index] =
+            ((color[0] as u32 * src_a + pixels[index] as u32 * keep_a) / dst_a).min(255) as u8;
+        pixels[index + 1] =
+            ((color[1] as u32 * src_a + pixels[index + 1] as u32 * keep_a) / dst_a).min(255) as u8;
+        pixels[index + 2] =
+            ((color[2] as u32 * src_a + pixels[index + 2] as u32 * keep_a) / dst_a).min(255) as u8;
+        pixels[index + 3] = dst_a as u8;
+    }
+
     fn iso_paint_write_overlay_pixel_at(pixels: &mut [u8], index: usize, color: [u8; 4]) {
         if color[3] == 0 || index + 3 >= pixels.len() || color[3] <= pixels[index + 3] {
             return;
@@ -575,6 +600,24 @@ impl Editor {
         Self::iso_paint_blend_pixel_at(pixels, index, color);
     }
 
+    fn iso_paint_coat_pixel(
+        pixels: &mut [u8],
+        width: usize,
+        height: usize,
+        x: i32,
+        y: i32,
+        color: [u8; 4],
+    ) {
+        if x < 0 || y < 0 || x as usize >= width || y as usize >= height || color[3] == 0 {
+            return;
+        }
+        let index = (y as usize * width + x as usize) * 4;
+        if index + 3 >= pixels.len() {
+            return;
+        }
+        Self::iso_paint_coat_pixel_at(pixels, index, color);
+    }
+
     fn iso_paint_write_coverage_pixel(
         pixels: &mut [u8],
         width: usize,
@@ -671,7 +714,9 @@ impl Editor {
     ) {
         let dx = b[0] - a[0];
         let dy = b[1] - a[1];
-        let steps = dx.abs().max(dy.abs()).max(1);
+        let distance = ((dx * dx + dy * dy) as f32).sqrt();
+        let step_spacing = (radius as f32 * 0.35).clamp(1.0, 10.0);
+        let steps = (distance / step_spacing).ceil().max(1.0) as i32;
         for step in 0..=steps {
             let t = step as f32 / steps as f32;
             let x = (a[0] as f32 + dx as f32 * t).round() as i32;
@@ -1048,7 +1093,7 @@ impl Editor {
                                 target_row, row_index, color_src,
                             );
                         } else if color_src[3] > 0 {
-                            Self::iso_paint_blend_pixel_at(target_row, row_index, color_src);
+                            Self::iso_paint_coat_pixel_at(target_row, row_index, color_src);
                         }
                         if writes_material {
                             Self::iso_paint_set_material_pixel_at(
@@ -1114,7 +1159,7 @@ impl Editor {
                         color_src,
                     );
                 } else if color_src[3] > 0 {
-                    Self::iso_paint_blend_pixel(
+                    Self::iso_paint_coat_pixel(
                         target_pixels,
                         target_w,
                         target_h,
@@ -1290,7 +1335,7 @@ impl Editor {
                                     target_row, row_index, color,
                                 );
                             } else {
-                                Self::iso_paint_blend_pixel_at(target_row, row_index, color);
+                                Self::iso_paint_coat_pixel_at(target_row, row_index, color);
                             }
                         }
                         Self::iso_paint_set_material_pixel_at(
@@ -1392,7 +1437,7 @@ impl Editor {
                             color,
                         );
                     } else {
-                        Self::iso_paint_blend_pixel(
+                        Self::iso_paint_coat_pixel(
                             target_pixels,
                             target_w,
                             target_h,
@@ -1668,7 +1713,7 @@ impl Editor {
         loop {
             if Self::iso_paint_stamp_pixel_visible(surface_buffer, stamp_depth, owner_geo_id, x, y)
             {
-                Self::iso_paint_blend_pixel(pixels, width, height, x, y, color);
+                Self::iso_paint_blend_lit_stamp_pixel(pixels, width, height, x, y, color);
             }
             if x == x1 && y == y1 {
                 break;
@@ -1689,6 +1734,101 @@ impl Editor {
         let point = Vec3::new(point[0], point[1], point[2]);
         let depth = (point - camera.pos).dot(camera.forward);
         (depth.is_finite() && depth > camera.near && depth < camera.far).then_some(depth)
+    }
+
+    fn iso_paint_stamp_lit_color(
+        pixels: &[u8],
+        width: usize,
+        height: usize,
+        x: i32,
+        y: i32,
+        color: [u8; 4],
+    ) -> [u8; 4] {
+        if x < 0 || y < 0 || x as usize >= width || y as usize >= height || color[3] == 0 {
+            return color;
+        }
+        let sample_luma = |sx: i32, sy: i32| -> f32 {
+            if sx < 0 || sy < 0 || sx as usize >= width || sy as usize >= height {
+                return 0.0;
+            }
+            let index = (sy as usize * width + sx as usize) * 4;
+            if index + 2 >= pixels.len() {
+                return 0.0;
+            }
+            (pixels[index] as f32 * 0.2126
+                + pixels[index + 1] as f32 * 0.7152
+                + pixels[index + 2] as f32 * 0.0722)
+                / 255.0
+        };
+
+        let local_offsets = [
+            (0, 0),
+            (-24, 0),
+            (24, 0),
+            (0, -18),
+            (0, 18),
+            (-36, -24),
+            (36, -24),
+            (-36, 24),
+            (36, 24),
+        ];
+        let local_luma = local_offsets
+            .iter()
+            .map(|(ox, oy)| sample_luma(x + ox, y + oy))
+            .fold(0.0_f32, f32::max);
+
+        let width_i = width as i32;
+        let height_i = height as i32;
+        let broad_points = [
+            (width_i / 2, height_i / 2),
+            (width_i / 4, height_i / 4),
+            (width_i * 3 / 4, height_i / 4),
+            (width_i / 4, height_i * 3 / 4),
+            (width_i * 3 / 4, height_i * 3 / 4),
+            (width_i / 2, height_i / 4),
+            (width_i / 2, height_i * 3 / 4),
+            (width_i / 4, height_i / 2),
+            (width_i * 3 / 4, height_i / 2),
+        ];
+        let broad_luma = broad_points
+            .iter()
+            .map(|(sx, sy)| sample_luma(*sx, *sy))
+            .sum::<f32>()
+            / broad_points.len() as f32;
+
+        let global_light = (0.30 + broad_luma * 1.35).clamp(0.34, 1.08);
+        let local_light = (0.30 + local_luma * 1.35).clamp(0.34, 1.08);
+        let mut light = if local_light < global_light {
+            let ratio = (local_light / global_light.max(0.001)).clamp(0.0, 1.0);
+            global_light * (0.86 + ratio * 0.14)
+        } else {
+            (global_light * 0.75 + local_light * 0.25).min(1.08)
+        };
+
+        if color[0] > 220 && color[1] > 120 && color[2] < 130 {
+            light = light.max(0.72);
+        } else if color[0] > 220 && color[1] > 210 && color[2] > 90 {
+            light = light.max(0.82);
+        }
+
+        [
+            (color[0] as f32 * light).round().clamp(0.0, 255.0) as u8,
+            (color[1] as f32 * light).round().clamp(0.0, 255.0) as u8,
+            (color[2] as f32 * light).round().clamp(0.0, 255.0) as u8,
+            color[3],
+        ]
+    }
+
+    fn iso_paint_blend_lit_stamp_pixel(
+        pixels: &mut [u8],
+        width: usize,
+        height: usize,
+        x: i32,
+        y: i32,
+        color: [u8; 4],
+    ) {
+        let color = Self::iso_paint_stamp_lit_color(pixels, width, height, x, y, color);
+        Self::iso_paint_blend_pixel(pixels, width, height, x, y, color);
     }
 
     fn iso_paint_stamp_pixel_visible(
@@ -1736,7 +1876,7 @@ impl Editor {
         let dim = *buffer.dim();
         let width = dim.width.max(0) as usize;
         let height = dim.height.max(0) as usize;
-        Self::iso_paint_blend_pixel(buffer.pixels_mut(), width, height, x, y, color);
+        Self::iso_paint_blend_lit_stamp_pixel(buffer.pixels_mut(), width, height, x, y, color);
     }
 
     fn draw_iso_paint_rotated_ellipse(
@@ -3811,19 +3951,6 @@ impl Editor {
             );
         } else {
             for pair in render_points.windows(2) {
-                Self::iso_paint_stamp_coverage(
-                    pixels,
-                    paint_w,
-                    paint_h,
-                    pair[0][0] - origin[0],
-                    pair[0][1] - origin[1],
-                    radius,
-                    color,
-                    &stroke.palette_colors,
-                    &stroke.brush,
-                    &stroke.brush_shape,
-                    shape_seed,
-                );
                 Self::iso_paint_draw_segment_coverage(
                     pixels,
                     paint_w,

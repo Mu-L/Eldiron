@@ -104,9 +104,10 @@ With the [Block Tool](blocks), the lower picker area shows the **Blocks** dock i
 
 - rendered 3D previews for block stamps
 - Place / Replace / Erase operation controls
+- Clean / Damaged stamping controls
 - Line / Rect drag-stamping controls
-- grid cell size, stack level, rotation, height, and width settings
-- practical stamps such as floor+wall, floor+corner, floor+doorway, stairs, ceilings, columns, and solids
+- compact selected-block state and shortcut guidance
+- practical stamps such as floor+wall, floor+corner, floor+doorway, stairs, ceilings, faceted columns, and solids
 
 ## Direct 3D Geometry Editing
 
@@ -145,7 +146,7 @@ For the full workflow, see [Palette Tool](palette).
 
 The **Block Tool** builds 3D rooms, corridors, dungeon layouts, houses, and blockouts from modular editable Geometry Object stamps.
 
-It uses a dedicated block grid in 3D views, supports click placement, line and rectangle drag stamping, whole-instance replace/erase, 90-degree rotation, stack levels, and component-aware height/width shortcuts. Floors ignore height changes, walls and posts can grow taller, and widened doorways grow their opening instead of thickening the side posts.
+It uses a dedicated block grid in 3D views, supports click placement, line and rectangle drag stamping, whole-instance replace/erase, clean or damaged stamping, 90-degree rotation, stack levels, and component-aware height/width shortcuts. Floors ignore height changes, walls and posts can grow taller, columns stamp as faceted cylinder geometry, and widened doorways grow their opening instead of thickening the side posts.
 
 For the full workflow, see [Block Tool](blocks).
 

@@ -2459,6 +2459,24 @@ impl IsoPaintDock {
             density: 0.7,
         },
         IsoPaintBrushPreset {
+            key: "grass",
+            size: 1.2,
+            opacity: 1.0,
+            shape: IsoPaintBrushShape::Speckle,
+            pattern_scale: 1.0,
+            mortar: 0.08,
+            density: 0.6,
+        },
+        IsoPaintBrushPreset {
+            key: "dirt",
+            size: 1.4,
+            opacity: 0.82,
+            shape: IsoPaintBrushShape::Dirt,
+            pattern_scale: 1.0,
+            mortar: 0.08,
+            density: 0.6,
+        },
+        IsoPaintBrushPreset {
             key: "crack",
             size: 0.6,
             opacity: 1.0,
@@ -2468,13 +2486,22 @@ impl IsoPaintDock {
             density: 0.6,
         },
         IsoPaintBrushPreset {
-            key: "grass",
-            size: 1.2,
-            opacity: 1.0,
-            shape: IsoPaintBrushShape::Speckle,
+            key: "puddle",
+            size: 1.8,
+            opacity: 0.68,
+            shape: IsoPaintBrushShape::Wash,
             pattern_scale: 1.0,
             mortar: 0.08,
             density: 0.6,
+        },
+        IsoPaintBrushPreset {
+            key: "mud",
+            size: 1.1,
+            opacity: 0.82,
+            shape: IsoPaintBrushShape::Soft,
+            pattern_scale: 1.0,
+            mortar: 0.08,
+            density: 0.62,
         },
         IsoPaintBrushPreset {
             key: "rubble",
@@ -2557,33 +2584,6 @@ impl IsoPaintDock {
             mortar: 0.08,
             density: 0.55,
         },
-        IsoPaintBrushPreset {
-            key: "mud",
-            size: 1.1,
-            opacity: 0.82,
-            shape: IsoPaintBrushShape::Soft,
-            pattern_scale: 1.0,
-            mortar: 0.08,
-            density: 0.62,
-        },
-        IsoPaintBrushPreset {
-            key: "puddle",
-            size: 1.8,
-            opacity: 0.68,
-            shape: IsoPaintBrushShape::Wash,
-            pattern_scale: 1.0,
-            mortar: 0.08,
-            density: 0.6,
-        },
-        IsoPaintBrushPreset {
-            key: "dirt",
-            size: 1.4,
-            opacity: 0.82,
-            shape: IsoPaintBrushShape::Dirt,
-            pattern_scale: 1.0,
-            mortar: 0.08,
-            density: 0.6,
-        },
     ];
 
     fn material_preset_labels() -> Vec<String> {
@@ -2629,23 +2629,23 @@ impl IsoPaintDock {
 
     fn default_brush_color_slots() -> [[u16; 4]; ISO_PAINT_BRUSH_COUNT] {
         [
-            [6, 6, 6, 6],
-            [19, 20, 21, 18],
-            [37, 36, 34, 38],
-            [1, 2, 4, 7],
-            [37, 36, 35, 34],
-            [4, 7, 2, 1],
-            [34, 37, 18, 20],
-            [37, 32, 46, 47],
-            [37, 36, 34, 18],
-            [18, 17, 16, 27],
-            [37, 36, 34, 35],
-            [37, 36, 18, 34],
-            [46, 47, 21, 32],
-            [18, 17, 16, 27],
-            [18, 16, 17, 27],
-            [39, 41, 43, 45],
-            [18, 17, 27, 16],
+            [6, 6, 6, 6],     // material
+            [19, 20, 21, 18], // brick
+            [37, 36, 34, 38], // moss
+            [37, 36, 35, 34], // grass
+            [18, 17, 27, 16], // dirt
+            [1, 2, 4, 7],     // crack
+            [39, 41, 43, 45], // puddle
+            [18, 16, 17, 27], // mud
+            [4, 7, 2, 1],     // rubble
+            [34, 37, 18, 20], // leaves
+            [37, 32, 46, 47], // flowers
+            [37, 36, 34, 18], // vines
+            [18, 17, 16, 27], // roots
+            [37, 36, 34, 35], // bushes
+            [37, 36, 18, 34], // tree
+            [46, 47, 21, 32], // candles
+            [18, 17, 16, 27], // footprints
         ]
     }
 

@@ -464,6 +464,8 @@ pub struct ServerContext {
     pub block_stroke_mode: i32,
     /// Whether newly stamped block geometry should receive deterministic damage.
     pub block_damage_enabled: bool,
+    /// World-space base height for the current Block tool drag stroke.
+    pub block_drag_base_y: Option<f32>,
     /// Drag stroke start cell while the Block tool is dragging.
     pub block_drag_start_cell: Option<Vec3<i32>>,
     /// Drag stroke end cell while the Block tool is dragging.
@@ -709,6 +711,7 @@ impl ServerContext {
             block_operation: 0,
             block_stroke_mode: 0,
             block_damage_enabled: false,
+            block_drag_base_y: None,
             block_drag_start_cell: None,
             block_drag_end_cell: None,
             palette_tool_active: false,
@@ -920,6 +923,7 @@ impl ServerContext {
         self.block_operation = 0;
         self.block_stroke_mode = 0;
         self.block_damage_enabled = false;
+        self.block_drag_base_y = None;
         self.block_drag_start_cell = None;
         self.block_drag_end_cell = None;
         self.palette_tool_active = false;

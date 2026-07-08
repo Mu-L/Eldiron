@@ -3534,8 +3534,13 @@ impl ToolList {
             let max_x = max_x_step as f32 * grid_step;
             let min_z = min_z_step as f32 * grid_step;
             let max_z = max_z_step as f32 * grid_step;
+            let grid_base_y = if block_grid_active {
+                server_ctx.block_grid_level as f32 * grid_step
+            } else {
+                0.0
+            };
             let grid_y = if block_grid_active {
-                server_ctx.block_grid_level as f32 * grid_step + 0.012
+                grid_base_y + 0.012
             } else {
                 0.012
             };
@@ -3655,7 +3660,11 @@ impl ToolList {
                 } else {
                     vec![hover_cell]
                 };
-                let y = grid_y + 0.018;
+                let preview_base_y = server_ctx
+                    .block_drag_base_y
+                    .or_else(|| crate::blocks::block_surface_base_y(server_ctx, grid_base_y))
+                    .unwrap_or(grid_base_y);
+                let y = preview_base_y + 0.030;
                 let preview_color = [0.08, 0.72, 0.72, 0.92];
                 let preview_fill = rusterix.scene_handler.selected;
                 let erase_preview =
@@ -3666,7 +3675,7 @@ impl ToolList {
                 for (cell_index, cell) in cells.iter().enumerate() {
                     let x0 = cell.x as f32 * grid_step;
                     let z0 = cell.z as f32 * grid_step;
-                    let base = Vec3::new(x0, cell.y as f32 * grid_step, z0);
+                    let base = Vec3::new(x0, preview_base_y, z0);
                     let corners = [
                         Vec3::new(x0, y, z0),
                         Vec3::new(x0 + if erase_preview { grid_step } else { size_x }, y, z0),

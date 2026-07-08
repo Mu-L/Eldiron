@@ -677,7 +677,7 @@ impl IsoPaintLayer {
                 .find(|stroke| stroke.id == stroke_id)
             {
                 if let Some(last) = stroke.points.last() {
-                    let min_spacing = (stroke.size * 0.35).round().clamp(1.0, 4.0) as i32;
+                    let min_spacing = (stroke.size * 0.75).round().clamp(1.0, 12.0) as i32;
                     let dx = point.screen[0] - last.screen[0];
                     let dy = point.screen[1] - last.screen[1];
                     if dx * dx + dy * dy < min_spacing * min_spacing {

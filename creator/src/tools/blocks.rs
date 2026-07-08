@@ -1,7 +1,7 @@
 use crate::blocks::{
     BLOCK_COLUMN_SEGMENTS, BLOCK_OPERATION_ERASE, BLOCK_OPERATION_PLACE, BLOCK_OPERATION_REPLACE,
     adjusted_rotated_bounds, block_asset, block_component_kind, block_sizing_from_context,
-    block_stroke_cells, component_uses_cylinder, cylinder_vertices_and_faces,
+    block_stroke_cells, block_surface_base_y, component_uses_cylinder, cylinder_vertices_and_faces,
     default_block_asset_id, localized_block_asset_name,
 };
 use crate::editor::DOCKMANAGER;
@@ -14,7 +14,14 @@ pub struct BlockTool {
     previous_dock: Option<String>,
     drag_start_cell: Option<Vec3<i32>>,
     drag_end_cell: Option<Vec3<i32>>,
+    drag_base_y: Option<f32>,
     drag_changed: bool,
+}
+
+#[derive(Clone, Copy)]
+struct BlockPlacement {
+    cell: Vec3<i32>,
+    base_y: f32,
 }
 
 impl BlockTool {
@@ -47,15 +54,20 @@ impl BlockTool {
         )
     }
 
-    fn current_grid_cell(server_ctx: &ServerContext) -> Option<Vec3<i32>> {
+    fn current_placement(server_ctx: &ServerContext) -> Option<BlockPlacement> {
         let cell_size = server_ctx.block_grid_cell_size.max(0.05);
-        Self::placement_hit(server_ctx)
-            .map(|point| Self::snapped_grid_cell(point, cell_size, server_ctx.block_grid_level))
+        let grid_y = server_ctx.block_grid_level as f32 * cell_size;
+        let point = Self::placement_hit(server_ctx)?;
+        Some(BlockPlacement {
+            cell: Self::snapped_grid_cell(point, cell_size, server_ctx.block_grid_level),
+            base_y: block_surface_base_y(server_ctx, grid_y).unwrap_or(grid_y),
+        })
     }
 
     fn make_objects(
         asset: &crate::blocks::BlockAsset,
         grid_cell: Vec3<i32>,
+        base_y: f32,
         cell_size: f32,
         quarter_turns: i32,
         sizing: crate::blocks::BlockSizing,
@@ -63,7 +75,7 @@ impl BlockTool {
     ) -> Vec<rusterix::GeometryObject> {
         let base = Vec3::new(
             grid_cell.x as f32 * cell_size,
-            grid_cell.y as f32 * cell_size,
+            base_y,
             grid_cell.z as f32 * cell_size,
         );
         let instance_id = Uuid::new_v4();
@@ -115,6 +127,7 @@ impl BlockTool {
                 object
                     .properties
                     .set("block_grid_z", Value::Int(grid_cell.z));
+                object.properties.set("block_base_y", Value::Float(base_y));
                 object
                     .properties
                     .set("block_rotation", Value::Int(rotation));
@@ -297,30 +310,38 @@ impl BlockTool {
     fn clear_drag(&mut self, server_ctx: &mut ServerContext) {
         self.drag_start_cell = None;
         self.drag_end_cell = None;
+        self.drag_base_y = None;
         self.drag_changed = false;
+        server_ctx.block_drag_base_y = None;
         server_ctx.block_drag_start_cell = None;
         server_ctx.block_drag_end_cell = None;
     }
 
     fn begin_drag(&mut self, server_ctx: &mut ServerContext) -> bool {
-        let Some(cell) = Self::current_grid_cell(server_ctx) else {
+        let Some(placement) = Self::current_placement(server_ctx) else {
             self.clear_drag(server_ctx);
             return false;
         };
+        let cell = placement.cell;
         self.drag_start_cell = Some(cell);
         self.drag_end_cell = Some(cell);
+        self.drag_base_y = Some(placement.base_y);
         self.drag_changed = false;
+        server_ctx.block_drag_base_y = Some(placement.base_y);
         server_ctx.block_drag_start_cell = Some(cell);
         server_ctx.block_drag_end_cell = Some(cell);
         true
     }
 
     fn update_drag(&mut self, server_ctx: &mut ServerContext) -> bool {
-        let Some(cell) = Self::current_grid_cell(server_ctx) else {
+        let Some(placement) = Self::current_placement(server_ctx) else {
             return false;
         };
+        let cell = placement.cell;
         if self.drag_start_cell.is_none() {
             self.drag_start_cell = Some(cell);
+            self.drag_base_y = Some(placement.base_y);
+            server_ctx.block_drag_base_y = Some(placement.base_y);
             server_ctx.block_drag_start_cell = Some(cell);
         }
         if self.drag_end_cell != Some(cell) {
@@ -350,6 +371,10 @@ impl BlockTool {
         let end = self.drag_end_cell.unwrap_or(start);
         let prev = map.clone();
         let cell_size = server_ctx.block_grid_cell_size.max(0.05);
+        let base_y = self
+            .drag_base_y
+            .or(server_ctx.block_drag_base_y)
+            .unwrap_or(start.y as f32 * cell_size);
         let operation = server_ctx
             .block_operation
             .clamp(BLOCK_OPERATION_PLACE, BLOCK_OPERATION_ERASE);
@@ -374,6 +399,7 @@ impl BlockTool {
                 created.extend(Self::make_objects(
                     asset,
                     *cell,
+                    base_y,
                     cell_size,
                     server_ctx.block_rotation_quarters,
                     block_sizing_from_context(server_ctx),
@@ -438,6 +464,7 @@ impl Tool for BlockTool {
             previous_dock: None,
             drag_start_cell: None,
             drag_end_cell: None,
+            drag_base_y: None,
             drag_changed: false,
         }
     }
