@@ -360,6 +360,14 @@ pub struct Globals {
 }
 
 #[derive(Clone, Debug)]
+struct Raster3DPaintOverlayData {
+    width: u32,
+    height: u32,
+    color_rgba: Vec<u8>,
+    material_rgba: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
 struct Raster3DSurfacePaintData {
     width: u32,
     height: u32,
@@ -1423,6 +1431,30 @@ fn semantic_material_traits1(material_id: u32) -> vec4<f32> {
     return semantic_material_row(material_id, 2u, vec4<f32>(0.08, 0.0, 0.0, 0.0));
 }
 
+fn sample_paint_overlay(frag_pos: vec4<f32>) -> vec4<f32> {
+    let dims = textureDimensions(paint_color_tex, 0);
+    if (dims.x == 0u || dims.y == 0u) {
+        return vec4<f32>(0.0);
+    }
+    let px = vec2<i32>(
+        clamp(i32(floor(frag_pos.x)), 0, i32(dims.x) - 1),
+        clamp(i32(floor(frag_pos.y)), 0, i32(dims.y) - 1)
+    );
+    return textureLoad(paint_color_tex, px, 0);
+}
+
+fn sample_paint_material(frag_pos: vec4<f32>) -> vec4<u32> {
+    let dims = textureDimensions(paint_material_tex, 0);
+    if (dims.x == 0u || dims.y == 0u) {
+        return vec4<u32>(0u);
+    }
+    let px = vec2<i32>(
+        clamp(i32(floor(frag_pos.x)), 0, i32(dims.x) - 1),
+        clamp(i32(floor(frag_pos.y)), 0, i32(dims.y) - 1)
+    );
+    return textureLoad(paint_material_tex, px, 0);
+}
+
 fn surface_paint_dummy_entries() -> bool {
     if (arrayLength(&surface_paint_entries.data) != 1u) {
         return false;
@@ -1887,8 +1919,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var n_ts = normalize(select(mix(n0_ts, n1_ts, blend), n0_ts, is_avatar));
     var color = select(mix(c0, c1, blend), c0, is_avatar);
     let color_base = select(mix(c0_base, c1_base, blend), c0_base, is_avatar);
-    let paint_overlay = sample_surface_paint_overlay(in.uv, in.paint_geo);
-    let paint_material_raw = sample_surface_paint_material(in.uv, in.paint_geo);
+    let paint_overlay = sample_paint_overlay(in.pos);
+    let paint_material_raw = sample_paint_material(in.pos);
     let paint_color_weight = clamp(paint_overlay.a, 0.0, 1.0) * select(1.0, 0.0, is_avatar);
     let paint_material_marker = paint_material_raw.r == 254u;
     let paint_material_weight = (f32(paint_material_raw.a) * (1.0 / 255.0)) * select(1.0, 0.0, is_avatar);
@@ -2828,6 +2860,7 @@ pub struct VM {
     pub sdf_data_dirty: bool,
     pub material_table: Vec<[f32; 4]>,
     pub material_table_dirty: bool,
+    raster3d_paint_overlay: Option<Raster3DPaintOverlayData>,
     raster3d_surface_paint: Option<Raster3DSurfacePaintData>,
     raster3d_paint_alpha_geo_ids: FxHashSet<GeoId>,
     raster3d_paint_overlay_dirty: bool,
@@ -4212,7 +4245,15 @@ impl VM {
         let fallback_color = DEFAULT_PAINT_COLOR_PIXEL;
         let fallback_material = DEFAULT_PAINT_MATERIAL_PIXEL;
         let (width, height, color_rgba, material_rgba, surface_entries) =
-            if let Some(surface_paint) = self.raster3d_surface_paint.as_ref() {
+            if let Some(overlay) = self.raster3d_paint_overlay.as_ref() {
+                (
+                    overlay.width.max(1),
+                    overlay.height.max(1),
+                    overlay.color_rgba.as_slice(),
+                    overlay.material_rgba.as_slice(),
+                    &[] as &[Raster3DSurfacePaintEntry],
+                )
+            } else if let Some(surface_paint) = self.raster3d_surface_paint.as_ref() {
                 (
                     surface_paint.width.max(1),
                     surface_paint.height.max(1),
@@ -4404,6 +4445,7 @@ impl VM {
             sdf_data_dirty: true,
             material_table: Self::default_material_table(),
             material_table_dirty: true,
+            raster3d_paint_overlay: None,
             raster3d_surface_paint: None,
             raster3d_paint_alpha_geo_ids: FxHashSet::default(),
             raster3d_paint_overlay_dirty: true,
@@ -4579,6 +4621,60 @@ impl VM {
                 self.material_table = Self::normalize_material_table(rows);
                 self.material_table_dirty = true;
             }
+            Atom::SetRaster3DPaintOverlay {
+                width,
+                height,
+                color_rgba,
+                material_rgba,
+                paint_alpha_geo_ids,
+            } => {
+                let expected = width as usize * height as usize * 4;
+                if width == 0
+                    || height == 0
+                    || color_rgba.len() != expected
+                    || material_rgba.len() != expected
+                {
+                    let alpha_geo_changed = !self.raster3d_paint_alpha_geo_ids.is_empty();
+                    self.raster3d_paint_overlay = None;
+                    self.raster3d_surface_paint = None;
+                    self.raster3d_paint_alpha_geo_ids.clear();
+                    self.raster3d_paint_overlay_dirty = true;
+                    if alpha_geo_changed {
+                        self.cached_static_raster_indices_valid = false;
+                    }
+                } else {
+                    let next_paint_alpha_geo_ids: FxHashSet<GeoId> =
+                        paint_alpha_geo_ids.into_iter().collect();
+                    let next = Raster3DPaintOverlayData {
+                        width,
+                        height,
+                        color_rgba,
+                        material_rgba,
+                    };
+                    let changed = self
+                        .raster3d_paint_overlay
+                        .as_ref()
+                        .map(|current| {
+                            current.width != next.width
+                                || current.height != next.height
+                                || current.color_rgba != next.color_rgba
+                                || current.material_rgba != next.material_rgba
+                        })
+                        .unwrap_or(true)
+                        || self.raster3d_surface_paint.is_some();
+                    let alpha_geo_changed =
+                        self.raster3d_paint_alpha_geo_ids != next_paint_alpha_geo_ids;
+                    if changed || alpha_geo_changed {
+                        self.raster3d_paint_overlay = Some(next);
+                        self.raster3d_surface_paint = None;
+                        self.raster3d_paint_alpha_geo_ids = next_paint_alpha_geo_ids;
+                        self.raster3d_paint_overlay_dirty = true;
+                        if alpha_geo_changed {
+                            self.cached_static_raster_indices_valid = false;
+                        }
+                    }
+                }
+            }
             Atom::SetRaster3DSurfacePaint {
                 width,
                 height,
@@ -4595,6 +4691,7 @@ impl VM {
                     || material_rgba.len() != expected
                 {
                     let alpha_geo_changed = !self.raster3d_paint_alpha_geo_ids.is_empty();
+                    self.raster3d_paint_overlay = None;
                     self.raster3d_surface_paint = None;
                     self.raster3d_paint_alpha_geo_ids.clear();
                     self.raster3d_paint_overlay_dirty = true;
@@ -4621,10 +4718,12 @@ impl VM {
                                 || current.material_rgba != next.material_rgba
                                 || current.entries != next.entries
                         })
-                        .unwrap_or(true);
+                        .unwrap_or(true)
+                        || self.raster3d_paint_overlay.is_some();
                     let alpha_geo_changed =
                         self.raster3d_paint_alpha_geo_ids != next_paint_alpha_geo_ids;
                     if changed || alpha_geo_changed {
+                        self.raster3d_paint_overlay = None;
                         self.raster3d_surface_paint = Some(next);
                         self.raster3d_paint_alpha_geo_ids = next_paint_alpha_geo_ids;
                         self.raster3d_paint_overlay_dirty = true;
@@ -4635,10 +4734,12 @@ impl VM {
                 }
             }
             Atom::ClearRaster3DPaintOverlay => {
-                if self.raster3d_surface_paint.is_some()
+                if self.raster3d_paint_overlay.is_some()
+                    || self.raster3d_surface_paint.is_some()
                     || !self.raster3d_paint_alpha_geo_ids.is_empty()
                 {
                     let alpha_geo_changed = !self.raster3d_paint_alpha_geo_ids.is_empty();
+                    self.raster3d_paint_overlay = None;
                     self.raster3d_surface_paint = None;
                     self.raster3d_paint_alpha_geo_ids.clear();
                     self.raster3d_paint_overlay_dirty = true;

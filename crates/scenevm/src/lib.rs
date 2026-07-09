@@ -56,7 +56,8 @@ pub mod prelude {
         core::{
             Atom, GeoId, LayerBlendMode, LineStrip2D, OrganicBillboardInstance,
             OrganicBillboardSprite, PaintSurfaceBuffer, PaintSurfacePixel, PaletteRemap2DMode,
-            RenderMode, VMDebugStats, pack_raster3d_paint_geo_id,
+            Raster3DPaintGpuStroke, Raster3DPaintGpuSurface, RenderMode, VMDebugStats,
+            pack_raster3d_paint_geo_id,
         },
         dynamic::{AlphaMode, DynamicKind, DynamicMeshVertex, DynamicObject, RepeatMode},
         intodata::IntoDataInput,
@@ -113,8 +114,9 @@ pub use crate::{
     chunk::Chunk,
     core::{
         Atom, GeoId, LayerBlendMode, LineStrip2D, OrganicBillboardInstance, OrganicBillboardSprite,
-        PaintSurfaceBuffer, PaintSurfacePixel, PaletteRemap2DMode, Raster3DSurfacePaintEntry,
-        RenderMode, VMDebugStats, pack_raster3d_paint_geo_id,
+        PaintSurfaceBuffer, PaintSurfacePixel, PaletteRemap2DMode, Raster3DPaintGpuStroke,
+        Raster3DPaintGpuSurface, Raster3DSurfacePaintEntry, RenderMode, VMDebugStats,
+        pack_raster3d_paint_geo_id,
     },
     dynamic::{AlphaMode, DynamicKind, DynamicMeshVertex, DynamicObject, RepeatMode},
     intodata::IntoDataInput,

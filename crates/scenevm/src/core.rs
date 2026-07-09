@@ -131,6 +131,48 @@ pub fn pack_raster3d_paint_geo_id(geo_id: GeoId) -> [u32; 4] {
 }
 
 #[derive(Debug, Clone)]
+pub struct Raster3DPaintGpuStroke {
+    pub brush_width: u32,
+    pub brush_height: u32,
+    pub brush_rgba: Vec<u8>,
+    pub draw_x: i32,
+    pub draw_y: i32,
+    pub draw_width: u32,
+    pub draw_height: u32,
+    pub scale: f32,
+    pub clip_mode: u32,
+    pub start_screen: Option<[i32; 2]>,
+    pub clip_geo_id: Option<GeoId>,
+    pub color_coverage_scale: f32,
+    pub replace_material: bool,
+    pub replace_opacity: u8,
+    pub writes_material: bool,
+    pub material_id: u8,
+    pub erase: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct Raster3DPaintGpuSurface {
+    pub width: u32,
+    pub height: u32,
+    pub geo_rgba: Vec<[u32; 4]>,
+}
+
+impl Raster3DPaintGpuSurface {
+    pub fn from_paint_surface(surface: &PaintSurfaceBuffer) -> Self {
+        Self {
+            width: surface.width,
+            height: surface.height,
+            geo_rgba: surface
+                .pixels
+                .iter()
+                .map(|pixel| pack_raster3d_paint_geo_id(pixel.geo_id))
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct OrganicBillboardSprite {
     pub width: u32,
     pub height: u32,
@@ -170,6 +212,13 @@ pub enum Atom {
         material: [u8; 4],
     },
     SetMaterialTable(Vec<[f32; 4]>),
+    SetRaster3DPaintOverlay {
+        width: u32,
+        height: u32,
+        color_rgba: Vec<u8>,
+        material_rgba: Vec<u8>,
+        paint_alpha_geo_ids: Vec<GeoId>,
+    },
     SetRaster3DSurfacePaint {
         width: u32,
         height: u32,

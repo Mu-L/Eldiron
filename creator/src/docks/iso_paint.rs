@@ -3934,10 +3934,12 @@ impl Dock for IsoPaintDock {
                 if id.name == ISO_PAINT_CLEAR_ALL =>
             {
                 if let Some(region) = project.get_region_mut(&server_ctx.curr_region)
-                    && (!region.iso_paint.chunks.is_empty()
+                    && (!region.iso_paint.screen_chunks.is_empty()
+                        || !region.iso_paint.chunks.is_empty()
                         || !region.iso_paint.baked_chunks.is_empty())
                 {
                     let old_region = region.clone();
+                    region.iso_paint.screen_chunks.clear();
                     region.iso_paint.chunks.clear();
                     region.iso_paint.baked_chunks.clear();
                     let undo_atom = ProjectUndoAtom::RegionEdit(

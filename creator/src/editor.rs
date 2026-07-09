@@ -8571,7 +8571,8 @@ impl TheTrait for Editor {
                                 let region_id = r.id;
                                 let iso_paint = r.iso_paint.clone();
                                 let has_iso_paint = iso_paint.visible
-                                    && (!iso_paint.chunks.is_empty()
+                                    && (!iso_paint.screen_chunks.is_empty()
+                                        || !iso_paint.chunks.is_empty()
                                         || !iso_paint.baked_chunks.is_empty());
                                 if !has_iso_paint {
                                     let active_vm = rusterix.scene_handler.vm.active_vm_index();
@@ -8696,7 +8697,8 @@ impl TheTrait for Editor {
                                 let editor_neutral_background = !is_running;
                                 let iso_paint = region.iso_paint.clone();
                                 let has_iso_paint = iso_paint.visible
-                                    && (!iso_paint.chunks.is_empty()
+                                    && (!iso_paint.screen_chunks.is_empty()
+                                        || !iso_paint.chunks.is_empty()
                                         || !iso_paint.baked_chunks.is_empty());
                                 if self.server_ctx.editor_view_mode == EditorViewMode::Iso
                                     && has_iso_paint
