@@ -56,7 +56,7 @@ pub mod prelude {
         core::{
             Atom, GeoId, LayerBlendMode, LineStrip2D, OrganicBillboardInstance,
             OrganicBillboardSprite, PaintSurfaceBuffer, PaintSurfacePixel, PaletteRemap2DMode,
-            Raster3DPaintGpuStroke, Raster3DPaintGpuSurface, RenderMode, VMDebugStats,
+            RenderMode, VMDebugStats, pack_raster3d_paint_geo_id,
         },
         dynamic::{AlphaMode, DynamicKind, DynamicMeshVertex, DynamicObject, RepeatMode},
         intodata::IntoDataInput,
@@ -113,8 +113,8 @@ pub use crate::{
     chunk::Chunk,
     core::{
         Atom, GeoId, LayerBlendMode, LineStrip2D, OrganicBillboardInstance, OrganicBillboardSprite,
-        PaintSurfaceBuffer, PaintSurfacePixel, PaletteRemap2DMode, Raster3DPaintGpuStroke,
-        Raster3DPaintGpuSurface, RenderMode, VMDebugStats,
+        PaintSurfaceBuffer, PaintSurfacePixel, PaletteRemap2DMode, Raster3DSurfacePaintEntry,
+        RenderMode, VMDebugStats, pack_raster3d_paint_geo_id,
     },
     dynamic::{AlphaMode, DynamicKind, DynamicMeshVertex, DynamicObject, RepeatMode},
     intodata::IntoDataInput,
@@ -1541,29 +1541,23 @@ impl SceneVM {
             .paint_surface_buffer_gpu_with(&device, &queue, fb_w, fb_h, false)
     }
 
-    #[cfg(feature = "gpu")]
-    pub fn set_raster3d_paint_overlay_gpu(
+    pub fn set_raster3d_surface_paint(
         &mut self,
         width: u32,
         height: u32,
-        strokes: &[crate::core::Raster3DPaintGpuStroke],
-        surface: Option<&crate::core::Raster3DPaintGpuSurface>,
+        color_rgba: Vec<u8>,
+        material_rgba: Vec<u8>,
+        entries: Vec<crate::core::Raster3DSurfacePaintEntry>,
         paint_alpha_geo_ids: Vec<GeoId>,
-    ) -> bool {
-        let Some(gpu) = self.gpu.as_ref() else {
-            return false;
-        };
-        let device = gpu.device.clone();
-        let queue = gpu.queue.clone();
-        self.active_vm_mut().set_raster3d_paint_overlay_gpu_with(
-            &device,
-            &queue,
+    ) {
+        self.active_vm_mut().execute(Atom::SetRaster3DSurfacePaint {
             width,
             height,
-            strokes,
-            surface,
+            color_rgba,
+            material_rgba,
+            entries,
             paint_alpha_geo_ids,
-        )
+        });
     }
 
     pub fn paint_surface_buffer_with_dynamics(&self, fb_w: u32, fb_h: u32) -> PaintSurfaceBuffer {

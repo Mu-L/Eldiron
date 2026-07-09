@@ -105,11 +105,14 @@ fn default_order() -> u64 {
     0
 }
 
+pub const ISO_PAINT_BAKED_CHUNK_SIZE: i32 = 64;
+pub const ISO_PAINT_BAKED_PIXELS_PER_UV: f32 = 128.0;
+
 /// Stable reference to the scene element under an Iso Paint point.
 ///
 /// The paint remains authored in fixed isometric screen space. This optional
 /// metadata is only for later sorting, masking, picking, and scene-aware tools.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum IsoPaintOwner {
     Unknown(u32),
     Vertex(u32),
@@ -404,6 +407,33 @@ impl IsoPaintChunk {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct IsoPaintBakedChunk {
+    pub owner: IsoPaintOwner,
+    pub origin: [i32; 2],
+    #[serde(default = "default_revision")]
+    pub revision: u64,
+    pub color_rgba: Vec<u8>,
+    pub material_rgba: Vec<u8>,
+}
+
+impl IsoPaintBakedChunk {
+    pub fn new(owner: IsoPaintOwner, origin: [i32; 2]) -> Self {
+        let len = ISO_PAINT_BAKED_CHUNK_SIZE as usize * ISO_PAINT_BAKED_CHUNK_SIZE as usize * 4;
+        let mut material_rgba = vec![0_u8; len];
+        for pixel in material_rgba.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[254, 0, 0, 0]);
+        }
+        Self {
+            owner,
+            origin,
+            revision: 0,
+            color_rgba: vec![0_u8; len],
+            material_rgba,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct IsoPaintLayer {
     #[serde(default = "default_visible")]
     pub visible: bool,
@@ -411,6 +441,8 @@ pub struct IsoPaintLayer {
     pub chunk_size: i32,
     #[serde(default)]
     pub chunks: IndexMap<String, IsoPaintChunk>,
+    #[serde(default)]
+    pub baked_chunks: IndexMap<String, IsoPaintBakedChunk>,
     #[serde(default = "default_operation")]
     pub active_operation: String,
     #[serde(default = "default_brush")]
@@ -463,6 +495,7 @@ impl Default for IsoPaintLayer {
             visible: true,
             chunk_size: default_chunk_size(),
             chunks: IndexMap::default(),
+            baked_chunks: IndexMap::default(),
             active_operation: default_operation(),
             active_brush: default_brush(),
             active_brush_shape: default_brush_shape(),
@@ -490,6 +523,145 @@ impl Default for IsoPaintLayer {
 }
 
 impl IsoPaintLayer {
+    fn baked_owner_key(owner: &IsoPaintOwner, origin: [i32; 2]) -> String {
+        format!("{owner:?}:{}:{}", origin[0], origin[1])
+    }
+
+    fn baked_chunk_origin_for_uv_pixel(pixel: [i32; 2]) -> [i32; 2] {
+        [
+            pixel[0].div_euclid(ISO_PAINT_BAKED_CHUNK_SIZE) * ISO_PAINT_BAKED_CHUNK_SIZE,
+            pixel[1].div_euclid(ISO_PAINT_BAKED_CHUNK_SIZE) * ISO_PAINT_BAKED_CHUNK_SIZE,
+        ]
+    }
+
+    fn baked_material_pixel(&self, coverage: u8) -> [u8; 4] {
+        let mode = if self.active_material_mode == "replace" {
+            ((self.active_opacity.clamp(0.0, 1.0) * 254.0).round() as u8)
+                .min(254)
+                .saturating_add(1)
+                .max(1)
+        } else {
+            0
+        };
+        [254, self.active_material_id, mode, coverage]
+    }
+
+    fn blend_baked_color_pixel(dst: &mut [u8], src: [u8; 4]) {
+        let src_a = src[3] as u16;
+        if src_a == 0 {
+            return;
+        }
+        let dst_a = dst[3] as u16;
+        let out_a = (src_a + (dst_a * (255 - src_a)) / 255).min(255);
+        for channel in 0..3 {
+            let src_c = src[channel] as u16;
+            let dst_c = dst[channel] as u16;
+            dst[channel] =
+                ((src_c * src_a + dst_c * dst_a * (255 - src_a) / 255) / out_a.max(1)) as u8;
+        }
+        dst[3] = out_a as u8;
+    }
+
+    fn write_baked_pixel(&mut self, owner: &IsoPaintOwner, uv_pixel: [i32; 2], coverage: u8) {
+        let origin = Self::baked_chunk_origin_for_uv_pixel(uv_pixel);
+        let key = Self::baked_owner_key(owner, origin);
+        let local_x = uv_pixel[0] - origin[0];
+        let local_y = uv_pixel[1] - origin[1];
+        if local_x < 0
+            || local_y < 0
+            || local_x >= ISO_PAINT_BAKED_CHUNK_SIZE
+            || local_y >= ISO_PAINT_BAKED_CHUNK_SIZE
+        {
+            return;
+        }
+        let index = (local_y as usize * ISO_PAINT_BAKED_CHUNK_SIZE as usize + local_x as usize) * 4;
+        let opacity = self.active_opacity.clamp(0.0, 1.0);
+        let alpha = ((coverage as f32 / 255.0) * opacity * 255.0).round() as u8;
+        let material_pixel = self.baked_material_pixel(alpha);
+        let mut color = self.active_color;
+        color[3] = alpha;
+        let erase = self.active_operation == "erase";
+        let chunk = self
+            .baked_chunks
+            .entry(key)
+            .or_insert_with(|| IsoPaintBakedChunk::new(owner.clone(), origin));
+        if index + 3 >= chunk.color_rgba.len() || index + 3 >= chunk.material_rgba.len() {
+            return;
+        }
+        if erase {
+            let clear = alpha;
+            chunk.color_rgba[index + 3] = chunk.color_rgba[index + 3].saturating_sub(clear);
+            chunk.material_rgba[index + 3] = chunk.material_rgba[index + 3].saturating_sub(clear);
+        } else {
+            Self::blend_baked_color_pixel(&mut chunk.color_rgba[index..index + 4], color);
+            let existing = chunk.material_rgba[index + 3] as u16;
+            let src = material_pixel[3] as u16;
+            let out_alpha = (src + (existing * (255 - src)) / 255).min(255) as u8;
+            chunk.material_rgba[index..index + 4].copy_from_slice(&[
+                material_pixel[0],
+                material_pixel[1],
+                material_pixel[2],
+                out_alpha,
+            ]);
+        }
+        chunk.revision = chunk.revision.wrapping_add(1);
+    }
+
+    fn paint_baked_at_uv(&mut self, owner: &IsoPaintOwner, uv: [f32; 2]) {
+        let center = [
+            (uv[0] * ISO_PAINT_BAKED_PIXELS_PER_UV).round() as i32,
+            (uv[1] * ISO_PAINT_BAKED_PIXELS_PER_UV).round() as i32,
+        ];
+        let radius = (self.active_size * 0.75).round().clamp(1.0, 48.0) as i32;
+        let radius_sq = (radius * radius).max(1);
+        for y in center[1] - radius..=center[1] + radius {
+            for x in center[0] - radius..=center[0] + radius {
+                let dx = x - center[0];
+                let dy = y - center[1];
+                let dist_sq = dx * dx + dy * dy;
+                if dist_sq > radius_sq {
+                    continue;
+                }
+                let falloff = 1.0 - (dist_sq as f32 / radius_sq as f32).sqrt();
+                let coverage = (falloff.clamp(0.0, 1.0) * 255.0).round() as u8;
+                self.write_baked_pixel(owner, [x, y], coverage);
+            }
+        }
+    }
+
+    fn paint_baked_segment(&mut self, a: &IsoPaintPoint, b: &IsoPaintPoint) {
+        let (Some(owner), Some(uv_a), Some(uv_b)) = (&b.owner, a.surface_uv, b.surface_uv) else {
+            return;
+        };
+        if a.owner
+            .as_ref()
+            .is_some_and(|a_owner| !a_owner.same_paint_object(owner))
+        {
+            self.paint_baked_at_uv(owner, uv_b);
+            return;
+        }
+        let ax = uv_a[0] * ISO_PAINT_BAKED_PIXELS_PER_UV;
+        let ay = uv_a[1] * ISO_PAINT_BAKED_PIXELS_PER_UV;
+        let bx = uv_b[0] * ISO_PAINT_BAKED_PIXELS_PER_UV;
+        let by = uv_b[1] * ISO_PAINT_BAKED_PIXELS_PER_UV;
+        let dx = bx - ax;
+        let dy = by - ay;
+        let distance = (dx * dx + dy * dy).sqrt();
+        let steps = (distance / (self.active_size * 0.5).max(1.0))
+            .ceil()
+            .max(1.0) as usize;
+        for step in 0..=steps {
+            let t = step as f32 / steps.max(1) as f32;
+            self.paint_baked_at_uv(
+                owner,
+                [
+                    uv_a[0] + (uv_b[0] - uv_a[0]) * t,
+                    uv_a[1] + (uv_b[1] - uv_a[1]) * t,
+                ],
+            );
+        }
+    }
+
     pub fn stroke_first_owner(&self, stroke_id: Uuid) -> Option<IsoPaintOwner> {
         self.chunks
             .values()
@@ -586,6 +758,9 @@ impl IsoPaintLayer {
     }
 
     pub fn begin_stroke(&mut self, first_point: IsoPaintPoint) -> Uuid {
+        if let (Some(owner), Some(uv)) = (&first_point.owner, first_point.surface_uv) {
+            self.paint_baked_at_uv(owner, uv);
+        }
         let origin = self.chunk_origin_for_screen(first_point.screen);
         let key = Self::chunk_key(origin);
         let mut stroke = IsoPaintStroke::new(
@@ -621,6 +796,9 @@ impl IsoPaintLayer {
     }
 
     pub fn add_stamp(&mut self, point: IsoPaintPoint) -> Uuid {
+        if let (Some(owner), Some(uv)) = (&point.owner, point.surface_uv) {
+            self.paint_baked_at_uv(owner, uv);
+        }
         let origin = self.chunk_origin_for_screen(point.screen);
         let key = Self::chunk_key(origin);
         let mut stamp = IsoPaintStamp::new(
@@ -697,6 +875,14 @@ impl IsoPaintLayer {
     }
 
     pub fn append_point(&mut self, stroke_id: Uuid, point: IsoPaintPoint) -> bool {
+        let previous_point = self
+            .chunks
+            .values()
+            .flat_map(|chunk| &chunk.strokes)
+            .find(|stroke| stroke.id == stroke_id)
+            .and_then(|stroke| stroke.points.last())
+            .cloned();
+        let mut baked_segment = None;
         for chunk in self.chunks.values_mut() {
             if let Some(stroke) = chunk
                 .strokes
@@ -713,8 +899,19 @@ impl IsoPaintLayer {
                 }
                 stroke.append_point(point);
                 chunk.revision = chunk.revision.wrapping_add(1);
-                return true;
+                baked_segment = previous_point.and_then(|previous_point| {
+                    stroke
+                        .points
+                        .last()
+                        .cloned()
+                        .map(|current_point| (previous_point, current_point))
+                });
+                break;
             }
+        }
+        if let Some((previous_point, current_point)) = baked_segment {
+            self.paint_baked_segment(&previous_point, &current_point);
+            return true;
         }
         false
     }

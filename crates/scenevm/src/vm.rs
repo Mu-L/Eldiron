@@ -17,8 +17,8 @@ use crate::{
     },
     core::{
         Atom, GeoId, LayerBlendMode, OrganicBillboardInstance, OrganicBillboardSprite,
-        PaintSurfaceBuffer, PaletteRemap2DMode, Raster3DPaintGpuStroke, Raster3DPaintGpuSurface,
-        RenderMode, VMDebugStats,
+        PaintSurfaceBuffer, PaletteRemap2DMode, Raster3DSurfacePaintEntry, RenderMode,
+        VMDebugStats,
     },
     dynamic::{DynamicKind, DynamicObject},
 };
@@ -243,7 +243,6 @@ pub struct VMGpu {
     pub raster3d_bloom_extract_pipeline: Option<wgpu::RenderPipeline>,
     pub raster3d_bloom_composite_pipeline: Option<wgpu::RenderPipeline>,
     pub raster3d_paint_surface_pipeline: Option<wgpu::RenderPipeline>,
-    pub raster3d_paint_compose_pipeline: Option<wgpu::ComputePipeline>,
     pub u2d_buf: Option<wgpu::Buffer>,
     pub u3d_buf: Option<wgpu::Buffer>,
     pub u_sdf_buf: Option<wgpu::Buffer>,
@@ -258,7 +257,6 @@ pub struct VMGpu {
     pub u_raster3d_shadow_bgl: Option<wgpu::BindGroupLayout>,
     pub u_raster3d_post_bgl: Option<wgpu::BindGroupLayout>,
     pub u_paint_surface_bgl: Option<wgpu::BindGroupLayout>,
-    pub u_paint_compose_bgl: Option<wgpu::BindGroupLayout>,
     pub u2d_bg: Option<wgpu::BindGroup>,
     pub u3d_bg: Option<wgpu::BindGroup>,
     pub u_sdf_bg: Option<wgpu::BindGroup>,
@@ -293,18 +291,6 @@ pub struct VMGpu {
     pub paint_surface_vbuf: Option<wgpu::Buffer>,
     pub paint_surface_vbuf_capacity: u64,
     pub paint_surface_vertex_count: u32,
-    pub paint_compose_color_buf: Option<wgpu::Buffer>,
-    pub paint_compose_material_buf: Option<wgpu::Buffer>,
-    pub paint_compose_color_ping_buf: Option<wgpu::Buffer>,
-    pub paint_compose_material_ping_buf: Option<wgpu::Buffer>,
-    pub paint_compose_target_capacity: u64,
-    pub paint_compose_brush_buf: Option<wgpu::Buffer>,
-    pub paint_compose_brush_capacity: u64,
-    pub paint_compose_face_geo_buf: Option<wgpu::Buffer>,
-    pub paint_compose_face_geo_capacity: u64,
-    pub paint_compose_surface_geo_buf: Option<wgpu::Buffer>,
-    pub paint_compose_surface_geo_capacity: u64,
-    pub paint_compose_uniform_buf: Option<wgpu::Buffer>,
     pub shadow_sampler_compare: Option<wgpu::Sampler>,
     pub raster3d_shadow_tex: Option<wgpu::Texture>,
     pub raster3d_shadow_view: Option<wgpu::TextureView>,
@@ -340,6 +326,8 @@ pub struct VMGpu {
     pub raster3d_paint_material_tex: Option<wgpu::Texture>,
     pub raster3d_paint_material_view: Option<wgpu::TextureView>,
     pub raster3d_paint_tex_size: (u32, u32),
+    pub raster3d_surface_paint_entries_ssbo: Option<wgpu::Buffer>,
+    pub raster3d_surface_paint_entries_size: usize,
     pub paint_surface_world_tex: Option<wgpu::Texture>,
     pub paint_surface_world_view: Option<wgpu::TextureView>,
     pub paint_surface_normal_tex: Option<wgpu::Texture>,
@@ -372,11 +360,12 @@ pub struct Globals {
 }
 
 #[derive(Clone, Debug)]
-struct Raster3DPaintOverlayData {
+struct Raster3DSurfacePaintData {
     width: u32,
     height: u32,
     color_rgba: Vec<u8>,
     material_rgba: Vec<u8>,
+    entries: Vec<Raster3DSurfacePaintEntry>,
 }
 
 #[repr(C)]
@@ -1118,163 +1107,6 @@ fn fs_main(in: VsOut) -> FsOut {
 }
 "#;
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct PaintComposeUniforms {
-    p0: [u32; 4],
-    p1: [i32; 4],
-    p2: [u32; 4],
-    p3: [u32; 4],
-    p4: [u32; 4],
-    p5: [f32; 4],
-}
-
-const SCENEVM_3D_PAINT_COMPOSE_WGSL: &str = r#"
-struct U {
-    p0: vec4<u32>, // target_w, target_h, draw_w, draw_h
-    p1: vec4<i32>, // draw_x, draw_y, start_x, start_y
-    p2: vec4<u32>, // src_w, src_h, clip_mode, start_valid
-    p3: vec4<u32>, // fallback clip geo
-    p4: vec4<u32>, // material_id, replace_opacity, flags, target_stride_pixels
-    p5: vec4<f32>, // scale, color_scale, unused, unused
-};
-@group(0) @binding(0) var<uniform> UBO: U;
-
-struct U32Buf { data: array<u32> };
-struct GeoBuf { data: array<vec4<u32>> };
-@group(0) @binding(1) var<storage, read> color_in: U32Buf;
-@group(0) @binding(2) var<storage, read> material_in: U32Buf;
-@group(0) @binding(3) var<storage, read_write> color_out: U32Buf;
-@group(0) @binding(4) var<storage, read_write> material_out: U32Buf;
-@group(0) @binding(5) var<storage, read> brush: U32Buf;
-@group(0) @binding(6) var<storage, read> surface_geo: GeoBuf;
-@group(0) @binding(7) var<storage, read> face_geo: GeoBuf;
-
-fn unpack_rgba(p: u32) -> vec4<u32> {
-    return vec4<u32>(
-        (p >> 0u) & 0xffu,
-        (p >> 8u) & 0xffu,
-        (p >> 16u) & 0xffu,
-        (p >> 24u) & 0xffu
-    );
-}
-
-fn pack_rgba(c: vec4<u32>) -> u32 {
-    return (c.r & 0xffu) | ((c.g & 0xffu) << 8u) | ((c.b & 0xffu) << 16u) | ((c.a & 0xffu) << 24u);
-}
-
-fn surface_geo_at(x: i32, y: i32) -> vec4<u32> {
-    if (x < 0 || y < 0 || x >= i32(UBO.p0.x) || y >= i32(UBO.p0.y)) {
-        return vec4<u32>(0u);
-    }
-    let index = u32(y) * UBO.p4.w + u32(x);
-    if (index >= arrayLength(&surface_geo.data)) {
-        return vec4<u32>(0u);
-    }
-    return surface_geo.data[index];
-}
-
-fn geo_matches(a: vec4<u32>, b: vec4<u32>) -> bool {
-    if (a.x == 0u || b.x == 0u) {
-        return false;
-    }
-    // Terrain paint is authored per terrain surface family.
-    if (a.x == 10u && b.x == 10u) {
-        return true;
-    }
-    return all(a == b);
-}
-
-fn clip_allows(dst_x: i32, dst_y: i32) -> bool {
-    if (UBO.p2.z == 0u) {
-        return true;
-    }
-    let target_geo = surface_geo_at(dst_x, dst_y);
-    if (target_geo.x == 0u) {
-        return false;
-    }
-    let clip_geo = UBO.p3;
-    if (clip_geo.x != 0u) {
-        return geo_matches(clip_geo, target_geo);
-    }
-    if (UBO.p2.w != 0u) {
-        let sampled_start = surface_geo_at(UBO.p1.z, UBO.p1.w);
-        return sampled_start.x != 0u && geo_matches(sampled_start, target_geo);
-    }
-    return false;
-}
-
-fn apply_material(dst_index: u32, coverage: u32) {
-    if (coverage == 0u || (UBO.p4.z & 4u) == 0u) {
-        return;
-    }
-    let current = unpack_rgba(material_in.data[dst_index]);
-    let existing = current.a;
-    let out_a = min(coverage + (existing * (255u - coverage)) / 255u, 255u);
-    let mode = select(0u, min(UBO.p4.y + 1u, 255u), (UBO.p4.z & 2u) != 0u);
-    material_out.data[dst_index] = pack_rgba(vec4<u32>(254u, UBO.p4.x, mode, out_a));
-}
-
-@compute @workgroup_size(8, 8, 1)
-fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if (gid.x >= UBO.p0.z || gid.y >= UBO.p0.w) {
-        return;
-    }
-    let dst_x = UBO.p1.x + i32(gid.x);
-    let dst_y = UBO.p1.y + i32(gid.y);
-    if (dst_x < 0 || dst_y < 0 || dst_x >= i32(UBO.p0.x) || dst_y >= i32(UBO.p0.y)) {
-        return;
-    }
-    let sx = u32(floor(f32(gid.x) / max(UBO.p5.x, 0.0001)));
-    let sy = u32(floor(f32(gid.y) / max(UBO.p5.x, 0.0001)));
-    if (sx >= UBO.p2.x || sy >= UBO.p2.y) {
-        return;
-    }
-    if (!clip_allows(dst_x, dst_y)) {
-        return;
-    }
-    let src = unpack_rgba(brush.data[sy * UBO.p2.x + sx]);
-    if (src.a == 0u) {
-        return;
-    }
-    let dst_index = u32(dst_y) * UBO.p4.w + u32(dst_x);
-    let erase = (UBO.p4.z & 1u) != 0u;
-    if (erase) {
-        let keep = 255u - src.a;
-        let dst = unpack_rgba(color_in.data[dst_index]);
-        color_out.data[dst_index] = pack_rgba(vec4<u32>(dst.r, dst.g, dst.b, (dst.a * keep) / 255u));
-        if ((UBO.p4.z & 4u) != 0u) {
-            let mat = unpack_rgba(material_in.data[dst_index]);
-            let mat_a = (mat.a * keep) / 255u;
-            material_out.data[dst_index] = select(pack_rgba(vec4<u32>(0u)), pack_rgba(vec4<u32>(mat.r, mat.g, mat.b, mat_a)), mat_a > 0u);
-        }
-        return;
-    }
-
-    let color_a = u32(round(clamp(f32(src.a) * clamp(UBO.p5.y, 0.0, 1.0), 0.0, 255.0)));
-    if (color_a > 0u) {
-        let dst = unpack_rgba(color_in.data[dst_index]);
-        let replace_material = (UBO.p4.z & 2u) != 0u;
-        if (replace_material) {
-            if (color_a > dst.a) {
-                color_out.data[dst_index] = pack_rgba(vec4<u32>(src.r, src.g, src.b, color_a));
-            }
-        } else if (dst.a == 0u || color_a >= dst.a) {
-            color_out.data[dst_index] = pack_rgba(vec4<u32>(src.r, src.g, src.b, color_a));
-        } else {
-            let keep_a = dst.a - color_a;
-            color_out.data[dst_index] = pack_rgba(vec4<u32>(
-                min((src.r * color_a + dst.r * keep_a) / dst.a, 255u),
-                min((src.g * color_a + dst.g * keep_a) / dst.a, 255u),
-                min((src.b * color_a + dst.b * keep_a) / dst.a, 255u),
-                dst.a
-            ));
-        }
-    }
-    apply_material(dst_index, src.a);
-}
-"#;
-
 pub const SCENEVM_3D_RASTER_WGSL: &str = r#"
 struct U {
     cam_pos: vec4<f32>,
@@ -1330,6 +1162,14 @@ struct MaterialTableBuf { data: array<vec4<f32>> };
 @group(0) @binding(12) var<storage, read> material_table: MaterialTableBuf;
 @group(0) @binding(13) var paint_color_tex: texture_2d<f32>;
 @group(0) @binding(14) var paint_material_tex: texture_2d<u32>;
+struct SurfacePaintEntry {
+    geo: vec4<u32>,
+    uv_origin: vec2<i32>,
+    uv_size: vec2<u32>,
+    atlas_rect: vec4<u32>,
+};
+struct SurfacePaintEntries { data: array<SurfacePaintEntry> };
+@group(0) @binding(15) var<storage, read> surface_paint_entries: SurfacePaintEntries;
 
 struct TileAnimMeta { first_frame: u32, frame_count: u32, _pad0: u32, _pad1: u32 };
 struct TileFrame { ofs: vec2<f32>, scale: vec2<f32> };
@@ -1350,6 +1190,7 @@ struct VsIn {
     @location(8) normal: vec3<f32>,
     @location(9) _pad2: f32,
     @location(13) surface_noise: vec4<f32>,
+    @location(14) paint_geo: vec4<u32>,
 };
 
 struct VsOut {
@@ -1362,6 +1203,7 @@ struct VsOut {
     @location(7) normal: vec3<f32>,
     @location(12) world_pos: vec3<f32>,
     @location(13) surface_noise: vec4<f32>,
+    @location(14) @interpolate(flat) paint_geo: vec4<u32>,
 };
 
 struct VsShadowOut {
@@ -1581,27 +1423,58 @@ fn semantic_material_traits1(material_id: u32) -> vec4<f32> {
     return semantic_material_row(material_id, 2u, vec4<f32>(0.08, 0.0, 0.0, 0.0));
 }
 
-fn sample_paint_overlay(frag_pos: vec4<f32>) -> vec4<f32> {
-    let dims = textureDimensions(paint_color_tex, 0);
-    if (dims.x == 0u || dims.y == 0u) {
+fn surface_paint_dummy_entries() -> bool {
+    if (arrayLength(&surface_paint_entries.data) != 1u) {
+        return false;
+    }
+    let entry = surface_paint_entries.data[0u];
+    return all(entry.geo == vec4<u32>(0u)) && entry.uv_size.x == 0u && entry.uv_size.y == 0u;
+}
+
+fn surface_paint_geo_matches(a: vec4<u32>, b: vec4<u32>) -> bool {
+    return all(a == b);
+}
+
+fn surface_paint_atlas_pixel(uv: vec2<f32>, paint_geo: vec4<u32>) -> vec2<i32> {
+    let uv_px = vec2<i32>(floor(uv * 128.0));
+    for (var i = 0u; i < arrayLength(&surface_paint_entries.data); i = i + 1u) {
+        let entry = surface_paint_entries.data[i];
+        if (entry.uv_size.x == 0u || entry.uv_size.y == 0u) {
+            continue;
+        }
+        if (!surface_paint_geo_matches(entry.geo, paint_geo)) {
+            continue;
+        }
+        let max_px = entry.uv_origin + vec2<i32>(entry.uv_size);
+        if (uv_px.x < entry.uv_origin.x || uv_px.y < entry.uv_origin.y ||
+            uv_px.x >= max_px.x || uv_px.y >= max_px.y) {
+            continue;
+        }
+        let local = vec2<u32>(uv_px - entry.uv_origin);
+        return vec2<i32>(entry.atlas_rect.xy + local);
+    }
+    return vec2<i32>(-1, -1);
+}
+
+fn sample_surface_paint_overlay(uv: vec2<f32>, paint_geo: vec4<u32>) -> vec4<f32> {
+    if (surface_paint_dummy_entries()) {
         return vec4<f32>(0.0);
     }
-    let px = vec2<i32>(
-        clamp(i32(floor(frag_pos.x)), 0, i32(dims.x) - 1),
-        clamp(i32(floor(frag_pos.y)), 0, i32(dims.y) - 1)
-    );
+    let px = surface_paint_atlas_pixel(uv, paint_geo);
+    if (px.x < 0 || px.y < 0) {
+        return vec4<f32>(0.0);
+    }
     return textureLoad(paint_color_tex, px, 0);
 }
 
-fn sample_paint_material(frag_pos: vec4<f32>) -> vec4<u32> {
-    let dims = textureDimensions(paint_material_tex, 0);
-    if (dims.x == 0u || dims.y == 0u) {
+fn sample_surface_paint_material(uv: vec2<f32>, paint_geo: vec4<u32>) -> vec4<u32> {
+    if (surface_paint_dummy_entries()) {
         return vec4<u32>(0u);
     }
-    let px = vec2<i32>(
-        clamp(i32(floor(frag_pos.x)), 0, i32(dims.x) - 1),
-        clamp(i32(floor(frag_pos.y)), 0, i32(dims.y) - 1)
-    );
+    let px = surface_paint_atlas_pixel(uv, paint_geo);
+    if (px.x < 0 || px.y < 0) {
+        return vec4<u32>(0u);
+    }
     return textureLoad(paint_material_tex, px, 0);
 }
 
@@ -1889,6 +1762,7 @@ fn vs_main(in: VsIn) -> VsOut {
     out.normal = select(normalize(in.normal), max(in.normal, vec3<f32>(0.0)), is_particle);
     out.world_pos = in.pos;
     out.surface_noise = in.surface_noise;
+    out.paint_geo = in.paint_geo;
     return out;
 }
 
@@ -2013,8 +1887,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var n_ts = normalize(select(mix(n0_ts, n1_ts, blend), n0_ts, is_avatar));
     var color = select(mix(c0, c1, blend), c0, is_avatar);
     let color_base = select(mix(c0_base, c1_base, blend), c0_base, is_avatar);
-    let paint_overlay = sample_paint_overlay(in.pos);
-    let paint_material_raw = sample_paint_material(in.pos);
+    let paint_overlay = sample_surface_paint_overlay(in.uv, in.paint_geo);
+    let paint_material_raw = sample_surface_paint_material(in.uv, in.paint_geo);
     let paint_color_weight = clamp(paint_overlay.a, 0.0, 1.0) * select(1.0, 0.0, is_avatar);
     let paint_material_marker = paint_material_raw.r == 254u;
     let paint_material_weight = (f32(paint_material_raw.a) * (1.0 / 255.0)) * select(1.0, 0.0, is_avatar);
@@ -2959,8 +2833,7 @@ pub struct VM {
     pub sdf_data_dirty: bool,
     pub material_table: Vec<[f32; 4]>,
     pub material_table_dirty: bool,
-    raster3d_paint_overlay: Option<Raster3DPaintOverlayData>,
-    raster3d_paint_overlay_gpu_owned: bool,
+    raster3d_surface_paint: Option<Raster3DSurfacePaintData>,
     raster3d_paint_alpha_geo_ids: FxHashSet<GeoId>,
     raster3d_paint_overlay_dirty: bool,
     pub palette: [[f32; 4]; 256],
@@ -4341,27 +4214,16 @@ impl VM {
             return;
         }
 
-        if self.raster3d_paint_overlay_gpu_owned
-            && !self.raster3d_paint_overlay_dirty
-            && self.gpu.as_ref().is_some_and(|g| {
-                g.raster3d_paint_color_tex.is_some()
-                    && g.raster3d_paint_material_tex.is_some()
-                    && g.raster3d_paint_tex_size.0 > 0
-                    && g.raster3d_paint_tex_size.1 > 0
-            })
-        {
-            return;
-        }
-
         let fallback_color = DEFAULT_PAINT_COLOR_PIXEL;
         let fallback_material = DEFAULT_PAINT_MATERIAL_PIXEL;
-        let (width, height, color_rgba, material_rgba) =
-            if let Some(overlay) = self.raster3d_paint_overlay.as_ref() {
+        let (width, height, color_rgba, material_rgba, surface_entries) =
+            if let Some(surface_paint) = self.raster3d_surface_paint.as_ref() {
                 (
-                    overlay.width.max(1),
-                    overlay.height.max(1),
-                    overlay.color_rgba.as_slice(),
-                    overlay.material_rgba.as_slice(),
+                    surface_paint.width.max(1),
+                    surface_paint.height.max(1),
+                    surface_paint.color_rgba.as_slice(),
+                    surface_paint.material_rgba.as_slice(),
+                    surface_paint.entries.as_slice(),
                 )
             } else {
                 (
@@ -4369,6 +4231,7 @@ impl VM {
                     1,
                     fallback_color.as_slice(),
                     fallback_material.as_slice(),
+                    &[] as &[Raster3DSurfacePaintEntry],
                 )
             };
 
@@ -4455,6 +4318,27 @@ impl VM {
                 extent,
             );
         }
+        let dummy_surface_entry = [Raster3DSurfacePaintEntry::zeroed()];
+        let entries = if surface_entries.is_empty() {
+            dummy_surface_entry.as_slice()
+        } else {
+            surface_entries
+        };
+        let entries_size = std::mem::size_of_val(entries);
+        if g.raster3d_surface_paint_entries_ssbo.is_none()
+            || g.raster3d_surface_paint_entries_size != entries_size
+        {
+            g.raster3d_surface_paint_entries_ssbo = Some(device.create_buffer_init(
+                &wgpu::util::BufferInitDescriptor {
+                    label: Some("vm-raster3d-surface-paint-entries"),
+                    contents: bytemuck::cast_slice(entries),
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                },
+            ));
+            g.raster3d_surface_paint_entries_size = entries_size;
+        } else if let Some(buffer) = g.raster3d_surface_paint_entries_ssbo.as_ref() {
+            queue.write_buffer(buffer, 0, bytemuck::cast_slice(entries));
+        }
         self.raster3d_paint_overlay_dirty = false;
     }
 
@@ -4525,8 +4409,7 @@ impl VM {
             sdf_data_dirty: true,
             material_table: Self::default_material_table(),
             material_table_dirty: true,
-            raster3d_paint_overlay: None,
-            raster3d_paint_overlay_gpu_owned: false,
+            raster3d_surface_paint: None,
             raster3d_paint_alpha_geo_ids: FxHashSet::default(),
             raster3d_paint_overlay_dirty: true,
             transform2d: Mat3::identity(),
@@ -4701,55 +4584,53 @@ impl VM {
                 self.material_table = Self::normalize_material_table(rows);
                 self.material_table_dirty = true;
             }
-            Atom::SetRaster3DPaintOverlay {
+            Atom::SetRaster3DSurfacePaint {
                 width,
                 height,
                 color_rgba,
                 material_rgba,
+                entries,
                 paint_alpha_geo_ids,
             } => {
                 let expected = width as usize * height as usize * 4;
                 if width == 0
                     || height == 0
+                    || entries.is_empty()
                     || color_rgba.len() != expected
                     || material_rgba.len() != expected
                 {
-                    if self.raster3d_paint_overlay.is_some()
-                        || !self.raster3d_paint_alpha_geo_ids.is_empty()
-                    {
-                        let alpha_geo_changed = !self.raster3d_paint_alpha_geo_ids.is_empty();
-                        self.raster3d_paint_overlay = None;
-                        self.raster3d_paint_overlay_gpu_owned = false;
-                        self.raster3d_paint_alpha_geo_ids.clear();
-                        self.raster3d_paint_overlay_dirty = true;
-                        if alpha_geo_changed {
-                            self.cached_static_raster_indices_valid = false;
-                        }
+                    let alpha_geo_changed = !self.raster3d_paint_alpha_geo_ids.is_empty();
+                    self.raster3d_surface_paint = None;
+                    self.raster3d_paint_alpha_geo_ids.clear();
+                    self.raster3d_paint_overlay_dirty = true;
+                    if alpha_geo_changed {
+                        self.cached_static_raster_indices_valid = false;
                     }
                 } else {
                     let next_paint_alpha_geo_ids: FxHashSet<GeoId> =
                         paint_alpha_geo_ids.into_iter().collect();
-                    let next = Raster3DPaintOverlayData {
+                    let next = Raster3DSurfacePaintData {
                         width,
                         height,
                         color_rgba,
                         material_rgba,
+                        entries,
                     };
                     let changed = self
-                        .raster3d_paint_overlay
+                        .raster3d_surface_paint
                         .as_ref()
                         .map(|current| {
                             current.width != next.width
                                 || current.height != next.height
                                 || current.color_rgba != next.color_rgba
                                 || current.material_rgba != next.material_rgba
+                                || current.entries != next.entries
                         })
                         .unwrap_or(true);
                     let alpha_geo_changed =
                         self.raster3d_paint_alpha_geo_ids != next_paint_alpha_geo_ids;
                     if changed || alpha_geo_changed {
-                        self.raster3d_paint_overlay = Some(next);
-                        self.raster3d_paint_overlay_gpu_owned = false;
+                        self.raster3d_surface_paint = Some(next);
                         self.raster3d_paint_alpha_geo_ids = next_paint_alpha_geo_ids;
                         self.raster3d_paint_overlay_dirty = true;
                         if alpha_geo_changed {
@@ -4759,12 +4640,11 @@ impl VM {
                 }
             }
             Atom::ClearRaster3DPaintOverlay => {
-                if self.raster3d_paint_overlay.is_some()
+                if self.raster3d_surface_paint.is_some()
                     || !self.raster3d_paint_alpha_geo_ids.is_empty()
                 {
                     let alpha_geo_changed = !self.raster3d_paint_alpha_geo_ids.is_empty();
-                    self.raster3d_paint_overlay = None;
-                    self.raster3d_paint_overlay_gpu_owned = false;
+                    self.raster3d_surface_paint = None;
                     self.raster3d_paint_alpha_geo_ids.clear();
                     self.raster3d_paint_overlay_dirty = true;
                     if alpha_geo_changed {
@@ -5343,7 +5223,6 @@ impl VM {
             raster3d_bloom_extract_pipeline: None,
             raster3d_bloom_composite_pipeline: None,
             raster3d_paint_surface_pipeline: None,
-            raster3d_paint_compose_pipeline: None,
             u2d_buf: None,
             u3d_buf: None,
             u_sdf_buf: None,
@@ -5358,7 +5237,6 @@ impl VM {
             u_raster3d_shadow_bgl: None,
             u_raster3d_post_bgl: None,
             u_paint_surface_bgl: None,
-            u_paint_compose_bgl: None,
             u2d_bg: None,
             u3d_bg: None,
             u_sdf_bg: None,
@@ -5393,18 +5271,6 @@ impl VM {
             paint_surface_vbuf: None,
             paint_surface_vbuf_capacity: 0,
             paint_surface_vertex_count: 0,
-            paint_compose_color_buf: None,
-            paint_compose_material_buf: None,
-            paint_compose_color_ping_buf: None,
-            paint_compose_material_ping_buf: None,
-            paint_compose_target_capacity: 0,
-            paint_compose_brush_buf: None,
-            paint_compose_brush_capacity: 0,
-            paint_compose_face_geo_buf: None,
-            paint_compose_face_geo_capacity: 0,
-            paint_compose_surface_geo_buf: None,
-            paint_compose_surface_geo_capacity: 0,
-            paint_compose_uniform_buf: None,
             shadow_sampler_compare: None,
             raster3d_shadow_tex: None,
             raster3d_shadow_view: None,
@@ -5438,6 +5304,8 @@ impl VM {
             raster3d_paint_material_tex: None,
             raster3d_paint_material_view: None,
             raster3d_paint_tex_size: (0, 0),
+            raster3d_surface_paint_entries_ssbo: None,
+            raster3d_surface_paint_entries_size: 0,
             paint_surface_world_tex: None,
             paint_surface_world_view: None,
             paint_surface_normal_tex: None,
@@ -6379,6 +6247,16 @@ impl VM {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 15,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -6625,6 +6503,11 @@ impl VM {
                             shader_location: 13,
                             format: wgpu::VertexFormat::Float32x4,
                         },
+                        wgpu::VertexAttribute {
+                            offset: 80,
+                            shader_location: 14,
+                            format: wgpu::VertexFormat::Uint32x4,
+                        },
                     ],
                 }],
             },
@@ -6728,6 +6611,11 @@ impl VM {
                                 offset: 64,
                                 shader_location: 13,
                                 format: wgpu::VertexFormat::Float32x4,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 80,
+                                shader_location: 14,
+                                format: wgpu::VertexFormat::Uint32x4,
                             },
                         ],
                     }],
@@ -6836,6 +6724,11 @@ impl VM {
                                 shader_location: 13,
                                 format: wgpu::VertexFormat::Float32x4,
                             },
+                            wgpu::VertexAttribute {
+                                offset: 80,
+                                shader_location: 14,
+                                format: wgpu::VertexFormat::Uint32x4,
+                            },
                         ],
                     }],
                 },
@@ -6939,6 +6832,11 @@ impl VM {
                                 offset: 64,
                                 shader_location: 13,
                                 format: wgpu::VertexFormat::Float32x4,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 80,
+                                shader_location: 14,
+                                format: wgpu::VertexFormat::Uint32x4,
                             },
                         ],
                     }],
@@ -7214,6 +7112,11 @@ impl VM {
                                 offset: 64,
                                 shader_location: 13,
                                 format: wgpu::VertexFormat::Float32x4,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 80,
+                                shader_location: 14,
+                                format: wgpu::VertexFormat::Uint32x4,
                             },
                         ],
                     }],
@@ -9058,6 +8961,7 @@ impl VM {
                             .surface_noise
                             .map(|noise| [noise.scale, noise.amount, noise.seed, 1.0])
                             .unwrap_or([0.0, 0.0, 0.0, 0.0]);
+                        let paint_geo = Self::paint_geo_id_packed(poly.id);
 
                         for (i, p) in poly_pos.iter().enumerate() {
                             let uv0 = poly.uvs[i];
@@ -9079,6 +8983,7 @@ impl VM {
                                 normal: [n[0], n[1], n[2]],
                                 _pad2: 0.0,
                                 surface_noise,
+                                paint_geo,
                             });
                         }
 
@@ -9108,6 +9013,7 @@ impl VM {
                     normal: [0.0, 0.0, 1.0],
                     _pad2: 0.0,
                     surface_noise: [0.0, 0.0, 0.0, 0.0],
+                    paint_geo: [0, 0, 0, 0],
                 });
             }
             if i3.is_empty() {
@@ -9503,6 +9409,7 @@ impl VM {
                                 .surface_noise
                                 .map(|noise| [noise.scale, noise.amount, noise.seed, 1.0])
                                 .unwrap_or([0.0, 0.0, 0.0, 0.0]);
+                            let paint_geo = Self::paint_geo_id_packed(poly.id);
 
                             for (i, p) in poly_pos.iter().enumerate() {
                                 let uv0 = poly.uvs[i];
@@ -9524,6 +9431,7 @@ impl VM {
                                     normal: [n[0], n[1], n[2]],
                                     _pad2: 0.0,
                                     surface_noise,
+                                    paint_geo,
                                 });
                             }
 
@@ -9646,6 +9554,7 @@ impl VM {
                         normal: [normal_or_tint.x, normal_or_tint.y, normal_or_tint.z],
                         _pad2: 0.0,
                         surface_noise: [0.0, 0.0, 0.0, 0.0],
+                        paint_geo: [0, 0, 0, 0],
                     });
                 }
                 i3.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
@@ -9689,6 +9598,7 @@ impl VM {
                         normal: [nn.x, nn.y, nn.z],
                         _pad2: 0.0,
                         surface_noise: [0.0, 0.0, 0.0, 0.0],
+                        paint_geo: [0, 0, 0, 0],
                     });
                 }
                 for tri in obj.mesh_indices.chunks_exact(3) {
@@ -9711,6 +9621,7 @@ impl VM {
                     normal: [0.0, 0.0, 1.0],
                     _pad2: 0.0,
                     surface_noise: [0.0, 0.0, 0.0, 0.0],
+                    paint_geo: [0, 0, 0, 0],
                 });
             }
             if i3.is_empty() {
@@ -10329,6 +10240,14 @@ impl VM {
                             resource: wgpu::BindingResource::TextureView(
                                 g.raster3d_paint_material_view.as_ref().unwrap(),
                             ),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 15,
+                            resource: g
+                                .raster3d_surface_paint_entries_ssbo
+                                .as_ref()
+                                .unwrap()
+                                .as_entire_binding(),
                         },
                     ],
                 }),
@@ -11075,133 +10994,6 @@ impl VM {
         }
     }
 
-    fn ensure_paint_compose_pipeline(&mut self, device: &wgpu::Device) -> crate::SceneVMResult<()> {
-        if self.gpu.is_none() {
-            self.init_gpu(device)?;
-        }
-        let g = self.gpu.as_mut().unwrap();
-        if g.raster3d_paint_compose_pipeline.is_some()
-            && g.u_paint_compose_bgl.is_some()
-            && g.paint_compose_uniform_buf.is_some()
-        {
-            return Ok(());
-        }
-        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("vm-paint-compose-bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<
-                            PaintComposeUniforms,
-                        >() as _),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 6,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 7,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("vm-paint-compose-shader"),
-            source: wgpu::ShaderSource::Wgsl(SCENEVM_3D_PAINT_COMPOSE_WGSL.into()),
-        });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("vm-paint-compose-pipeline-layout"),
-            bind_group_layouts: &[Some(&bgl)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("vm-paint-compose-pipeline"),
-            layout: Some(&layout),
-            module: &shader,
-            entry_point: Some("cs_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
-        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("vm-paint-compose-uniforms"),
-            size: std::mem::size_of::<PaintComposeUniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        g.u_paint_compose_bgl = Some(bgl);
-        g.raster3d_paint_compose_pipeline = Some(pipeline);
-        g.paint_compose_uniform_buf = Some(uniform);
-        Ok(())
-    }
-
     pub fn paint_surface_buffer_gpu_with(
         &mut self,
         device: &wgpu::Device,
@@ -11407,396 +11199,6 @@ impl VM {
         drop(mapped);
         readback.unmap();
         Some(buffer)
-    }
-
-    pub fn set_raster3d_paint_overlay_gpu_with(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        width: u32,
-        height: u32,
-        strokes: &[Raster3DPaintGpuStroke],
-        surface: Option<&Raster3DPaintGpuSurface>,
-        paint_alpha_geo_ids: Vec<GeoId>,
-    ) -> bool {
-        if width == 0 || height == 0 {
-            return false;
-        }
-        if self.ensure_paint_compose_pipeline(device).is_err() {
-            return false;
-        }
-
-        let bytes_per_row = width.saturating_mul(4);
-        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded_bytes_per_row = ((bytes_per_row + align - 1) / align) * align;
-        let stride_pixels = (padded_bytes_per_row / 4).max(width);
-        let target_bytes = padded_bytes_per_row as u64 * height as u64;
-        let target_usage = wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_SRC
-            | wgpu::BufferUsages::COPY_DST;
-
-        let geo_ids = self.cached_static_tri_geo_ids.clone();
-        let face_geo: Vec<[u32; 4]> = if geo_ids.is_empty() {
-            vec![[0, 0, 0, 0]]
-        } else {
-            geo_ids.into_iter().map(Self::paint_geo_id_packed).collect()
-        };
-        let Some(surface) = surface else {
-            return false;
-        };
-        if surface.width != width || surface.height != height {
-            return false;
-        }
-        let surface_geo_len = stride_pixels as usize * height as usize;
-        let mut surface_geo = vec![[0u32; 4]; surface_geo_len];
-        for y in 0..height as usize {
-            let src_row = y * width as usize;
-            let dst_row = y * stride_pixels as usize;
-            for x in 0..width as usize {
-                let Some(geo) = surface.geo_rgba.get(src_row + x).copied() else {
-                    continue;
-                };
-                surface_geo[dst_row + x] = geo;
-            }
-        }
-
-        {
-            let g = self.gpu.as_mut().unwrap();
-            if g.paint_compose_color_buf.is_none()
-                || g.paint_compose_material_buf.is_none()
-                || g.paint_compose_color_ping_buf.is_none()
-                || g.paint_compose_material_ping_buf.is_none()
-                || g.paint_compose_target_capacity < target_bytes
-            {
-                g.paint_compose_color_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("vm-paint-compose-color-buffer"),
-                    size: target_bytes,
-                    usage: target_usage,
-                    mapped_at_creation: false,
-                }));
-                g.paint_compose_material_buf =
-                    Some(device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("vm-paint-compose-material-buffer"),
-                        size: target_bytes,
-                        usage: target_usage,
-                        mapped_at_creation: false,
-                    }));
-                g.paint_compose_color_ping_buf =
-                    Some(device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("vm-paint-compose-color-ping-buffer"),
-                        size: target_bytes,
-                        usage: target_usage,
-                        mapped_at_creation: false,
-                    }));
-                g.paint_compose_material_ping_buf =
-                    Some(device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("vm-paint-compose-material-ping-buffer"),
-                        size: target_bytes,
-                        usage: target_usage,
-                        mapped_at_creation: false,
-                    }));
-                g.paint_compose_target_capacity = target_bytes;
-            }
-            let face_geo_bytes = std::mem::size_of_val(face_geo.as_slice()) as u64;
-            if g.paint_compose_face_geo_buf.is_none()
-                || g.paint_compose_face_geo_capacity < face_geo_bytes
-            {
-                g.paint_compose_face_geo_buf = Some(device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: Some("vm-paint-compose-face-geo"),
-                        contents: bytemuck::cast_slice(&face_geo),
-                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    },
-                ));
-                g.paint_compose_face_geo_capacity = face_geo_bytes;
-            } else if let Some(buffer) = g.paint_compose_face_geo_buf.as_ref() {
-                queue.write_buffer(buffer, 0, bytemuck::cast_slice(&face_geo));
-            }
-            let surface_geo_bytes = std::mem::size_of_val(surface_geo.as_slice()) as u64;
-            if g.paint_compose_surface_geo_buf.is_none()
-                || g.paint_compose_surface_geo_capacity < surface_geo_bytes
-            {
-                g.paint_compose_surface_geo_buf = Some(device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: Some("vm-paint-compose-surface-geo"),
-                        contents: bytemuck::cast_slice(&surface_geo),
-                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    },
-                ));
-                g.paint_compose_surface_geo_capacity = surface_geo_bytes;
-            } else if let Some(buffer) = g.paint_compose_surface_geo_buf.as_ref() {
-                queue.write_buffer(buffer, 0, bytemuck::cast_slice(&surface_geo));
-            }
-
-            let recreate_tex = g.raster3d_paint_color_tex.is_none()
-                || g.raster3d_paint_material_tex.is_none()
-                || g.raster3d_paint_tex_size != (width, height);
-            if recreate_tex {
-                let desc =
-                    |label: &'static str, format: wgpu::TextureFormat| wgpu::TextureDescriptor {
-                        label: Some(label),
-                        size: wgpu::Extent3d {
-                            width,
-                            height,
-                            depth_or_array_layers: 1,
-                        },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format,
-                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                        view_formats: &[],
-                    };
-                let color_tex = device.create_texture(&desc(
-                    "vm-raster3d-paint-color",
-                    wgpu::TextureFormat::Rgba8Unorm,
-                ));
-                let material_tex = device.create_texture(&desc(
-                    "vm-raster3d-paint-material",
-                    wgpu::TextureFormat::Rgba8Uint,
-                ));
-                g.raster3d_paint_color_view =
-                    Some(color_tex.create_view(&wgpu::TextureViewDescriptor::default()));
-                g.raster3d_paint_material_view =
-                    Some(material_tex.create_view(&wgpu::TextureViewDescriptor::default()));
-                g.raster3d_paint_color_tex = Some(color_tex);
-                g.raster3d_paint_material_tex = Some(material_tex);
-                g.raster3d_paint_tex_size = (width, height);
-            }
-        }
-
-        struct PaintComposeTemp {
-            uniform: wgpu::Buffer,
-            brush: wgpu::Buffer,
-            draw_width: u32,
-            draw_height: u32,
-        }
-
-        let mut temp_strokes = Vec::new();
-        for stroke in strokes {
-            if stroke.brush_width == 0
-                || stroke.brush_height == 0
-                || stroke.draw_width == 0
-                || stroke.draw_height == 0
-            {
-                continue;
-            }
-            let expected = stroke.brush_width as usize * stroke.brush_height as usize * 4;
-            if stroke.brush_rgba.len() != expected {
-                continue;
-            }
-            let brush_words: Vec<u32> = stroke
-                .brush_rgba
-                .chunks_exact(4)
-                .map(|p| {
-                    (p[0] as u32)
-                        | ((p[1] as u32) << 8)
-                        | ((p[2] as u32) << 16)
-                        | ((p[3] as u32) << 24)
-                })
-                .collect();
-            let brush_bytes = std::mem::size_of_val(brush_words.as_slice()) as u64;
-            if brush_bytes == 0 {
-                continue;
-            }
-
-            let clip_geo = stroke
-                .clip_geo_id
-                .map(Self::paint_geo_id_packed)
-                .unwrap_or([0, 0, 0, 0]);
-            let start = stroke.start_screen.unwrap_or([0, 0]);
-            let flags = (stroke.erase as u32)
-                | ((stroke.replace_material as u32) << 1)
-                | ((stroke.writes_material as u32) << 2);
-            let uniforms = PaintComposeUniforms {
-                p0: [width, height, stroke.draw_width, stroke.draw_height],
-                p1: [stroke.draw_x, stroke.draw_y, start[0], start[1]],
-                p2: [
-                    stroke.brush_width,
-                    stroke.brush_height,
-                    stroke.clip_mode,
-                    stroke.start_screen.is_some() as u32,
-                ],
-                p3: clip_geo,
-                p4: [
-                    stroke.material_id as u32,
-                    stroke.replace_opacity as u32,
-                    flags,
-                    stride_pixels,
-                ],
-                p5: [
-                    stroke.scale.clamp(0.05, 20.0),
-                    stroke.color_coverage_scale.clamp(0.0, 1.0),
-                    0.0,
-                    0.0,
-                ],
-            };
-
-            temp_strokes.push(PaintComposeTemp {
-                uniform: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("vm-paint-compose-stroke-uniform"),
-                    contents: bytemuck::bytes_of(&uniforms),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                }),
-                brush: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("vm-paint-compose-stroke-brush"),
-                    contents: bytemuck::cast_slice(&brush_words),
-                    usage: wgpu::BufferUsages::STORAGE,
-                }),
-                draw_width: stroke.draw_width,
-                draw_height: stroke.draw_height,
-            });
-        }
-
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("vm-paint-compose-encoder"),
-        });
-        {
-            let g = self.gpu.as_ref().unwrap();
-            encoder.clear_buffer(g.paint_compose_color_buf.as_ref().unwrap(), 0, None);
-            encoder.clear_buffer(g.paint_compose_material_buf.as_ref().unwrap(), 0, None);
-            encoder.clear_buffer(g.paint_compose_color_ping_buf.as_ref().unwrap(), 0, None);
-            encoder.clear_buffer(g.paint_compose_material_ping_buf.as_ref().unwrap(), 0, None);
-        }
-        let mut front_buffer = 0u8;
-        {
-            let g = self.gpu.as_ref().unwrap();
-            for temp in &temp_strokes {
-                let (src_color, src_material, dst_color, dst_material) = if front_buffer == 0 {
-                    (
-                        g.paint_compose_color_buf.as_ref().unwrap(),
-                        g.paint_compose_material_buf.as_ref().unwrap(),
-                        g.paint_compose_color_ping_buf.as_ref().unwrap(),
-                        g.paint_compose_material_ping_buf.as_ref().unwrap(),
-                    )
-                } else {
-                    (
-                        g.paint_compose_color_ping_buf.as_ref().unwrap(),
-                        g.paint_compose_material_ping_buf.as_ref().unwrap(),
-                        g.paint_compose_color_buf.as_ref().unwrap(),
-                        g.paint_compose_material_buf.as_ref().unwrap(),
-                    )
-                };
-                encoder.copy_buffer_to_buffer(src_color, 0, dst_color, 0, target_bytes);
-                encoder.copy_buffer_to_buffer(src_material, 0, dst_material, 0, target_bytes);
-                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("vm-paint-compose-bg"),
-                    layout: g.u_paint_compose_bgl.as_ref().unwrap(),
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: temp.uniform.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: src_color.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: src_material.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: dst_color.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 4,
-                            resource: dst_material.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 5,
-                            resource: temp.brush.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 6,
-                            resource: g
-                                .paint_compose_surface_geo_buf
-                                .as_ref()
-                                .unwrap()
-                                .as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 7,
-                            resource: g
-                                .paint_compose_face_geo_buf
-                                .as_ref()
-                                .unwrap()
-                                .as_entire_binding(),
-                        },
-                    ],
-                });
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("vm-paint-compose-stroke-pass"),
-                    timestamp_writes: None,
-                });
-                pass.set_pipeline(g.raster3d_paint_compose_pipeline.as_ref().unwrap());
-                pass.set_bind_group(0, &bind_group, &[]);
-                pass.dispatch_workgroups((temp.draw_width + 7) / 8, (temp.draw_height + 7) / 8, 1);
-                front_buffer ^= 1;
-            }
-        }
-        {
-            let g = self.gpu.as_ref().unwrap();
-            let (final_color, final_material) = if front_buffer == 0 {
-                (
-                    g.paint_compose_color_buf.as_ref().unwrap(),
-                    g.paint_compose_material_buf.as_ref().unwrap(),
-                )
-            } else {
-                (
-                    g.paint_compose_color_ping_buf.as_ref().unwrap(),
-                    g.paint_compose_material_ping_buf.as_ref().unwrap(),
-                )
-            };
-            let extent = wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            };
-            let layout = wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_bytes_per_row),
-                rows_per_image: Some(height),
-            };
-            encoder.copy_buffer_to_texture(
-                wgpu::TexelCopyBufferInfo {
-                    buffer: final_color,
-                    layout,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: g.raster3d_paint_color_tex.as_ref().unwrap(),
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                extent,
-            );
-            encoder.copy_buffer_to_texture(
-                wgpu::TexelCopyBufferInfo {
-                    buffer: final_material,
-                    layout,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: g.raster3d_paint_material_tex.as_ref().unwrap(),
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                extent,
-            );
-        }
-        queue.submit(Some(encoder.finish()));
-
-        self.raster3d_paint_overlay = None;
-        self.raster3d_paint_overlay_gpu_owned = true;
-        self.raster3d_paint_overlay_dirty = false;
-        let next_paint_alpha_geo_ids: FxHashSet<GeoId> = paint_alpha_geo_ids.into_iter().collect();
-        let alpha_geo_changed = self.raster3d_paint_alpha_geo_ids != next_paint_alpha_geo_ids;
-        self.raster3d_paint_alpha_geo_ids = next_paint_alpha_geo_ids;
-        if alpha_geo_changed {
-            self.cached_static_raster_indices_valid = false;
-        }
-        true
     }
 
     fn paint_surface_buffer_impl(

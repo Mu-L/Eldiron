@@ -349,23 +349,7 @@ impl TheTrait for Client {
                             render_dim.height as u32,
                             camera_scale,
                         );
-                        let stamp_proj = widget
-                            .camera_d3
-                            .projection_matrix(display_dim.width as f32, display_dim.height as f32);
-                        let stamp_surface = scene_handler.vm.paint_surface_buffer_with_dynamics(
-                            display_dim.width as u32,
-                            display_dim.height as u32,
-                        );
                         scene_handler.vm.set_active_vm(active_vm);
-                        IsoPaintRenderer::draw_stamps(
-                            &mut widget.buffer,
-                            &iso_paint,
-                            view,
-                            stamp_proj,
-                            Some(&stamp_surface),
-                            camera,
-                            camera_scale,
-                        );
                         uploaded
                     },
                 );

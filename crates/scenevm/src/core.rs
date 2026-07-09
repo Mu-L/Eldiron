@@ -1,4 +1,5 @@
 use crate::{Camera3D, Chunk, Light, Line3D, Poly2D, Poly3D, dynamic::DynamicObject};
+use bytemuck::{Pod, Zeroable};
 use std::hash::{Hash, Hasher};
 use uuid::Uuid;
 use vek::{Mat3, Vec2, Vec4};
@@ -94,77 +95,38 @@ impl PaintSurfaceBuffer {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Raster3DPaintGpuStroke {
-    pub brush_width: u32,
-    pub brush_height: u32,
-    pub brush_rgba: Vec<u8>,
-    pub draw_x: i32,
-    pub draw_y: i32,
-    pub draw_width: u32,
-    pub draw_height: u32,
-    pub scale: f32,
-    pub clip_mode: u32,
-    pub start_screen: Option<[i32; 2]>,
-    pub clip_geo_id: Option<GeoId>,
-    pub color_coverage_scale: f32,
-    pub replace_material: bool,
-    pub replace_opacity: u8,
-    pub writes_material: bool,
-    pub material_id: u8,
-    pub erase: bool,
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Pod, Zeroable)]
+pub struct Raster3DSurfacePaintEntry {
+    pub geo: [u32; 4],
+    pub uv_origin: [i32; 2],
+    pub uv_size: [u32; 2],
+    pub atlas_rect: [u32; 4],
 }
 
-#[derive(Debug, Clone)]
-pub struct Raster3DPaintGpuSurface {
-    pub width: u32,
-    pub height: u32,
-    pub geo_rgba: Vec<[u32; 4]>,
-}
-
-impl Raster3DPaintGpuSurface {
-    pub fn from_paint_surface(surface: &PaintSurfaceBuffer) -> Self {
-        Self {
-            width: surface.width,
-            height: surface.height,
-            geo_rgba: surface
-                .pixels
-                .iter()
-                .map(|pixel| {
-                    if pixel.valid {
-                        Self::pack_geo_id(pixel.geo_id)
-                    } else {
-                        [0, 0, 0, 0]
-                    }
-                })
-                .collect(),
+pub fn pack_raster3d_paint_geo_id(geo_id: GeoId) -> [u32; 4] {
+    match geo_id {
+        GeoId::Unknown(id) => [1, id, 0, 0],
+        GeoId::Vertex(id) => [2, id, 0, 0],
+        GeoId::Linedef(id) => [3, id, 0, 0],
+        GeoId::Sector(id) => [4, id, 0, 0],
+        GeoId::Character(id) => [5, id, 0, 0],
+        GeoId::Item(id) => [6, id, 0, 0],
+        GeoId::Light(id) => [7, id, 0, 0],
+        GeoId::ItemLight(id) => [8, id, 0, 0],
+        GeoId::Triangle(id) => [9, id, 0, 0],
+        GeoId::Terrain(x, z) => [10, x as u32, z as u32, 0],
+        GeoId::GeometryObject(id) => {
+            let value = id.as_u128();
+            [
+                11,
+                (value & 0xffff_ffff) as u32,
+                ((value >> 32) & 0xffff_ffff) as u32,
+                ((value >> 64) & 0xffff_ffff) as u32,
+            ]
         }
-    }
-
-    fn pack_geo_id(geo_id: GeoId) -> [u32; 4] {
-        match geo_id {
-            GeoId::Unknown(id) => [1, id, 0, 0],
-            GeoId::Vertex(id) => [2, id, 0, 0],
-            GeoId::Linedef(id) => [3, id, 0, 0],
-            GeoId::Sector(id) => [4, id, 0, 0],
-            GeoId::Character(id) => [5, id, 0, 0],
-            GeoId::Item(id) => [6, id, 0, 0],
-            GeoId::Light(id) => [7, id, 0, 0],
-            GeoId::ItemLight(id) => [8, id, 0, 0],
-            GeoId::Triangle(id) => [9, id, 0, 0],
-            GeoId::Terrain(x, z) => [10, x as u32, z as u32, 0],
-            GeoId::GeometryObject(id) => {
-                let value = id.as_u128();
-                [
-                    11,
-                    (value & 0xffff_ffff) as u32,
-                    ((value >> 32) & 0xffff_ffff) as u32,
-                    ((value >> 64) & 0xffff_ffff) as u32,
-                ]
-            }
-            GeoId::Hole(sector_id, hole_id) => [12, sector_id, hole_id, 0],
-            GeoId::Gizmo(id) => [13, id, 0, 0],
-        }
+        GeoId::Hole(sector_id, hole_id) => [12, sector_id, hole_id, 0],
+        GeoId::Gizmo(id) => [13, id, 0, 0],
     }
 }
 
@@ -208,11 +170,12 @@ pub enum Atom {
         material: [u8; 4],
     },
     SetMaterialTable(Vec<[f32; 4]>),
-    SetRaster3DPaintOverlay {
+    SetRaster3DSurfacePaint {
         width: u32,
         height: u32,
         color_rgba: Vec<u8>,
         material_rgba: Vec<u8>,
+        entries: Vec<Raster3DSurfacePaintEntry>,
         paint_alpha_geo_ids: Vec<GeoId>,
     },
     ClearRaster3DPaintOverlay,

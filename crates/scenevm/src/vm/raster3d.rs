@@ -15,6 +15,7 @@ pub struct Vert3DPod {
     pub normal: [f32; 3],
     pub _pad2: f32,
     pub surface_noise: [f32; 4],
+    pub paint_geo: [u32; 4],
 }
 
 #[repr(C)]
