@@ -2272,16 +2272,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
 
     if (!is_avatar) {
-        let levels = select(10.0, 18.0, first_person_view);
         let min_luma = select(0.026, 0.018, first_person_view);
-        let quant_mix = select(0.46, 0.18, first_person_view);
         let luma = max(dot(lit_color, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.001);
-        let quantized = max(floor(luma * levels + 0.5) / levels, min_luma);
-        let quantized_color = lit_color * (quantized / luma);
         let floor_color = albedo * min_luma;
         let floor_weight = 1.0 - smoothstep(min_luma, min_luma * 3.0, luma);
-        let stylized_color = mix(quantized_color, max(quantized_color, floor_color), floor_weight);
-        lit_color = mix(lit_color, stylized_color, quant_mix);
+        lit_color = mix(lit_color, max(lit_color, floor_color), floor_weight * 0.35);
     }
 
     if (is_avatar && UBO.avatar_highlight_params.w > 0.5) {
