@@ -239,7 +239,7 @@ impl Dock for TilesDock {
         }
 
         bottom_toolbar_canvas.set_layout(bottom_toolbar_hlayout);
-        canvas.set_bottom(bottom_toolbar_canvas);
+        //canvas.set_bottom(bottom_toolbar_canvas);
 
         canvas
     }
