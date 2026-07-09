@@ -404,7 +404,7 @@ impl SceneVMApp for EldironPlayerApp {
                     self.rusterix.client.viewport.y.max(1) as u32,
                 );
                 {
-                    let iso_paint = self.project.regions[region_index].iso_paint.clone();
+                    let mut iso_paint = self.project.regions[region_index].iso_paint.clone();
                     let active_vm = self.rusterix.scene_handler.vm.active_vm_index();
                     self.rusterix.scene_handler.vm.set_active_vm(0);
                     let camera = self.rusterix.client.camera_d3.as_scenevm_camera();
@@ -419,7 +419,7 @@ impl SceneVMApp for EldironPlayerApp {
                         &mut self.iso_paint_overlay_cache,
                         self.project.regions[region_index].id,
                         0,
-                        &iso_paint,
+                        &mut iso_paint,
                         &mut self.rusterix.scene_handler.vm,
                         camera,
                         view,

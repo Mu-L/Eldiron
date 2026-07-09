@@ -436,6 +436,16 @@ impl IsoPaintBakedChunk {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct IsoPaintScreenChunk {
     pub origin: [i32; 2],
+    #[serde(default)]
+    pub screen_anchor: Option<[i32; 2]>,
+    #[serde(default)]
+    pub world_anchor: Option<[f32; 3]>,
+    #[serde(default)]
+    pub camera_scale: Option<f32>,
+    #[serde(default)]
+    pub clip_owner: Option<IsoPaintOwner>,
+    #[serde(default)]
+    pub replace_color: bool,
     #[serde(default = "default_revision")]
     pub revision: u64,
     pub color_rgba: Vec<u8>,
@@ -452,6 +462,11 @@ impl IsoPaintScreenChunk {
         }
         Self {
             origin,
+            screen_anchor: None,
+            world_anchor: None,
+            camera_scale: None,
+            clip_owner: None,
+            replace_color: false,
             revision: 0,
             color_rgba: vec![0_u8; len],
             material_rgba,
@@ -471,6 +486,8 @@ pub struct IsoPaintLayer {
     pub screen_chunks: IndexMap<String, IsoPaintScreenChunk>,
     #[serde(default)]
     pub baked_chunks: IndexMap<String, IsoPaintBakedChunk>,
+    #[serde(skip)]
+    pub screen_commit_strokes: Vec<Uuid>,
     #[serde(default = "default_operation")]
     pub active_operation: String,
     #[serde(default = "default_brush")]
@@ -525,6 +542,7 @@ impl Default for IsoPaintLayer {
             chunks: IndexMap::default(),
             screen_chunks: IndexMap::default(),
             baked_chunks: IndexMap::default(),
+            screen_commit_strokes: Vec::new(),
             active_operation: default_operation(),
             active_brush: default_brush(),
             active_brush_shape: default_brush_shape(),
@@ -800,6 +818,12 @@ impl IsoPaintLayer {
             }
         }
         None
+    }
+
+    pub fn mark_stroke_for_screen_commit(&mut self, stroke_id: Uuid) {
+        if !self.screen_commit_strokes.contains(&stroke_id) {
+            self.screen_commit_strokes.push(stroke_id);
+        }
     }
 }
 

@@ -312,7 +312,7 @@ impl TheTrait for Client {
                         }
                     }
                 }
-                let iso_paint = r.iso_paint.clone();
+                let mut iso_paint = r.iso_paint.clone();
                 self.rusterix.draw_game_with_widget_overlay(
                     &r.map,
                     messages,
@@ -340,7 +340,7 @@ impl TheTrait for Client {
                             &mut self.iso_paint_overlay_cache,
                             r.id,
                             0,
-                            &iso_paint,
+                            &mut iso_paint,
                             &mut scene_handler.vm,
                             camera,
                             view,

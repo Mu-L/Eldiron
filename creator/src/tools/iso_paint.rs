@@ -624,6 +624,7 @@ impl Tool for IsoPaintTool {
                     if region.iso_paint.append_point(stroke_id, point) {
                         self.stroke_changed = true;
                     }
+                    region.iso_paint.mark_stroke_for_screen_commit(stroke_id);
                 }
 
                 let undo_atom = if self.stroke_changed {
