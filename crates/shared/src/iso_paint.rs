@@ -107,6 +107,22 @@ fn default_order() -> u64 {
 
 pub const ISO_PAINT_BAKED_CHUNK_SIZE: i32 = 64;
 pub const ISO_PAINT_BAKED_PIXELS_PER_UV: f32 = 128.0;
+pub const ISO_PAINT_NO_SURFACE_DEPTH: f32 = -1.0;
+
+fn deserialize_surface_depth<'de, D>(deserializer: D) -> Result<Vec<f32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let values = <Option<Vec<Option<f32>>> as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(values
+        .unwrap_or_default()
+        .into_iter()
+        .map(|depth| match depth {
+            Some(depth) if depth.is_finite() && depth >= 0.0 => depth,
+            _ => ISO_PAINT_NO_SURFACE_DEPTH,
+        })
+        .collect())
+}
 
 /// Stable reference to the scene element under an Iso Paint point.
 ///
@@ -153,6 +169,8 @@ pub struct IsoPaintPoint {
     pub surface_normal: Option<[f32; 3]>,
     #[serde(default)]
     pub camera_scale: Option<f32>,
+    #[serde(default)]
+    pub viewport_size: Option<[i32; 2]>,
     pub owner: Option<IsoPaintOwner>,
 }
 
@@ -164,6 +182,7 @@ impl IsoPaintPoint {
             surface_uv: None,
             surface_normal: None,
             camera_scale: None,
+            viewport_size: None,
             owner,
         }
     }
@@ -180,6 +199,11 @@ impl IsoPaintPoint {
 
     pub fn with_camera_scale(mut self, camera_scale: Option<f32>) -> Self {
         self.camera_scale = camera_scale;
+        self
+    }
+
+    pub fn with_viewport_size(mut self, viewport_size: Option<[i32; 2]>) -> Self {
+        self.viewport_size = viewport_size;
         self
     }
 }
@@ -443,6 +467,8 @@ pub struct IsoPaintScreenChunk {
     #[serde(default)]
     pub camera_scale: Option<f32>,
     #[serde(default)]
+    pub viewport_size: Option<[i32; 2]>,
+    #[serde(default)]
     pub clip_owner: Option<IsoPaintOwner>,
     #[serde(default)]
     pub replace_color: bool,
@@ -450,6 +476,10 @@ pub struct IsoPaintScreenChunk {
     pub revision: u64,
     pub color_rgba: Vec<u8>,
     pub material_rgba: Vec<u8>,
+    #[serde(default, deserialize_with = "deserialize_surface_depth")]
+    pub surface_depth: Vec<f32>,
+    #[serde(default)]
+    pub surface_anchor_depth: Option<f32>,
 }
 
 impl IsoPaintScreenChunk {
@@ -465,11 +495,14 @@ impl IsoPaintScreenChunk {
             screen_anchor: None,
             world_anchor: None,
             camera_scale: None,
+            viewport_size: None,
             clip_owner: None,
             replace_color: false,
             revision: 0,
             color_rgba: vec![0_u8; len],
             material_rgba,
+            surface_depth: vec![ISO_PAINT_NO_SURFACE_DEPTH; size * size],
+            surface_anchor_depth: None,
         }
     }
 }
@@ -844,6 +877,7 @@ mod tests {
         let chunk = layer.ensure_screen_chunk([0, 0]);
         assert_eq!(chunk.color_rgba.len(), 512 * 512 * 4);
         assert_eq!(chunk.material_rgba.len(), 512 * 512 * 4);
+        assert_eq!(chunk.surface_depth.len(), 512 * 512);
         assert_eq!(&chunk.color_rgba[0..4], &[0, 0, 0, 0]);
         assert_eq!(&chunk.material_rgba[0..4], &[254, 0, 0, 0]);
     }

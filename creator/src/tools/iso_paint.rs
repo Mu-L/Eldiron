@@ -301,7 +301,11 @@ impl IsoPaintTool {
         }
     }
 
-    fn paint_point(coord: Vec2<i32>, server_ctx: &ServerContext) -> IsoPaintPoint {
+    fn paint_point(
+        coord: Vec2<i32>,
+        server_ctx: &ServerContext,
+        viewport_size: Option<[i32; 2]>,
+    ) -> IsoPaintPoint {
         let owner = server_ctx.geo_hit.map(Self::owner_from_geo_id);
         let world = if server_ctx.geo_hit.is_some() {
             Some(server_ctx.geo_hit_pos)
@@ -327,6 +331,14 @@ impl IsoPaintTool {
             .with_surface_uv(surface_uv)
             .with_surface_normal(surface_normal)
             .with_camera_scale(camera_scale)
+            .with_viewport_size(viewport_size)
+    }
+
+    fn paint_viewport_size(ui: &mut TheUI) -> Option<[i32; 2]> {
+        ui.get_render_view("PolyView").map(|render_view| {
+            let dim = *render_view.dim();
+            [dim.width, dim.height]
+        })
     }
 
     fn request_paint_redraw(ctx: &mut TheContext) {
@@ -511,19 +523,20 @@ impl Tool for IsoPaintTool {
     fn region_map_event(
         &mut self,
         map_event: MapEvent,
-        _ui: &mut TheUI,
+        ui: &mut TheUI,
         ctx: &mut TheContext,
         region: &mut Region,
         server_ctx: &mut ServerContext,
     ) -> Option<ProjectUndoAtom> {
         match map_event {
             MapClicked(coord) => {
+                let viewport_size = Self::paint_viewport_size(ui);
                 server_ctx.iso_paint_hover_screen = Some(coord);
-                Self::sync_live_paint_settings(_ui, region);
+                Self::sync_live_paint_settings(ui, region);
                 self.painting = true;
                 self.stroke_before = Some(region.clone());
                 if Self::is_stamp_mode(&region.iso_paint) {
-                    let point = Self::paint_point(coord, server_ctx);
+                    let point = Self::paint_point(coord, server_ctx, viewport_size);
                     self.stamp_clip_owner = Self::stamp_clip_owner(&region.iso_paint, &point);
                     let clip_owner = self.stamp_clip_owner.clone();
                     let changed = Self::apply_stamp_at(region, point, clip_owner.as_ref());
@@ -541,7 +554,7 @@ impl Tool for IsoPaintTool {
                     ));
                     return None;
                 }
-                let point = Self::paint_point(coord, server_ctx);
+                let point = Self::paint_point(coord, server_ctx, viewport_size);
                 let stroke_id = region.iso_paint.begin_stroke(point);
                 let (stroke_opacity, stroke_material_mode) = region
                     .iso_paint
@@ -568,6 +581,7 @@ impl Tool for IsoPaintTool {
                 ));
             }
             MapDragged(coord) => {
+                let viewport_size = Self::paint_viewport_size(ui);
                 server_ctx.iso_paint_hover_screen = Some(coord);
                 if self.painting
                     && Self::is_stamp_mode(&region.iso_paint)
@@ -578,7 +592,7 @@ impl Tool for IsoPaintTool {
                         region.iso_paint.active_stamp_density,
                     )
                 {
-                    let point = Self::paint_point(coord, server_ctx);
+                    let point = Self::paint_point(coord, server_ctx, viewport_size);
                     let changed =
                         Self::apply_stamp_at(region, point, self.stamp_clip_owner.as_ref());
                     if changed {
@@ -591,7 +605,7 @@ impl Tool for IsoPaintTool {
                 if self.painting
                     && let Some(stroke_id) = self.active_stroke
                 {
-                    let point = Self::paint_point(coord, server_ctx);
+                    let point = Self::paint_point(coord, server_ctx, viewport_size);
                     if region.iso_paint.append_point(stroke_id, point) {
                         self.stroke_changed = true;
                         Self::request_paint_redraw(ctx);
@@ -603,6 +617,7 @@ impl Tool for IsoPaintTool {
                 Self::request_paint_redraw(ctx);
             }
             MapUp(coord) => {
+                let viewport_size = Self::paint_viewport_size(ui);
                 server_ctx.iso_paint_hover_screen = Some(coord);
                 if self.painting
                     && Self::is_stamp_mode(&region.iso_paint)
@@ -613,14 +628,14 @@ impl Tool for IsoPaintTool {
                         region.iso_paint.active_stamp_density,
                     )
                 {
-                    let point = Self::paint_point(coord, server_ctx);
+                    let point = Self::paint_point(coord, server_ctx, viewport_size);
                     let changed =
                         Self::apply_stamp_at(region, point, self.stamp_clip_owner.as_ref());
                     self.stroke_changed |= changed;
                 } else if self.painting
                     && let Some(stroke_id) = self.active_stroke
                 {
-                    let point = Self::paint_point(coord, server_ctx);
+                    let point = Self::paint_point(coord, server_ctx, viewport_size);
                     if region.iso_paint.append_point(stroke_id, point) {
                         self.stroke_changed = true;
                     }

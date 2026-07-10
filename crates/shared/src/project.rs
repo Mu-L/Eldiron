@@ -1671,6 +1671,23 @@ mod tests {
     }
 
     #[test]
+    fn project_can_load_gate_fixture() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test_projects/Gate.eldiron");
+        if !path.exists() {
+            return;
+        }
+
+        let contents = std::fs::read_to_string(path).expect("read Gate fixture");
+        let project: Project = serde_json::from_str(&contents).expect("Gate fixture deserializes");
+
+        assert!(
+            project.regions.iter().any(|region| region.name == "StartScene"),
+            "Gate fixture should contain the StartScene region"
+        );
+    }
+
+    #[test]
     fn old_project_gets_default_ruleset_and_empty_rules_override() {
         let mut project = Project::new();
         project.config = "[game]\nname = \"Old Project\"\n".to_string();
