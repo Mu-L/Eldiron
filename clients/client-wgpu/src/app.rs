@@ -407,8 +407,19 @@ impl SceneVMApp for EldironPlayerApp {
                     let mut iso_paint = self.project.regions[region_index].iso_paint.clone();
                     let active_vm = self.rusterix.scene_handler.vm.active_vm_index();
                     self.rusterix.scene_handler.vm.set_active_vm(0);
-                    let camera = self.rusterix.client.camera_d3.as_scenevm_camera();
-                    let view = self.rusterix.client.camera_d3.view_matrix();
+                    let camera = self
+                        .rusterix
+                        .client
+                        .camera_d3
+                        .as_scenevm_camera_for_surface(
+                            viewport_size.0 as f32,
+                            viewport_size.1 as f32,
+                        );
+                    let view = self
+                        .rusterix
+                        .client
+                        .camera_d3
+                        .view_matrix_for_surface(viewport_size.0 as f32, viewport_size.1 as f32);
                     let proj = self
                         .rusterix
                         .client

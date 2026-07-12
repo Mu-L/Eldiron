@@ -1,5 +1,5 @@
-use crate::iso_paint_brush::{self, IsoPaintBrushSample};
 use crate::iso_paint::ISO_PAINT_NO_SURFACE_DEPTH;
+use crate::iso_paint_brush::{self, IsoPaintBrushSample};
 use crate::prelude::*;
 use rayon::prelude::*;
 use scenevm::{Atom, Camera3D, CameraKind, PaintSurfaceBuffer, Raster3DPaintGpuStroke, SceneVM};
@@ -12,7 +12,6 @@ use vek::{Mat4, Vec3, Vec4};
 const ISO_PAINT_PAR_COMPOSITE_PIXELS: usize = 32_768;
 const ISO_PAINT_MAX_SYNC_SCREEN_CHUNK_COMMIT_COST: u64 = 900_000;
 const ISO_PAINT_SCREEN_CHUNK_DEPTH_TOLERANCE: f32 = 0.75;
-const ISO_PAINT_CAMERA_KEY_PIXEL_STEP: f32 = 1.0;
 
 #[derive(Clone)]
 struct IsoPaintStrokeRenderCache {
@@ -124,9 +123,13 @@ impl IsoPaintRenderer {
         if coverage == 0 || index + 3 >= material_pixels.len() {
             return;
         }
-        let existing = material_pixels[index + 3] as u16;
-        let src = coverage as u16;
-        let out_alpha = (src + (existing * (255 - src)) / 255).min(255) as u8;
+        let out_alpha = if replace_material {
+            coverage
+        } else {
+            let existing = material_pixels[index + 3] as u16;
+            let src = coverage as u16;
+            (src + (existing * (255 - src)) / 255).min(255) as u8
+        };
         let material = Self::iso_paint_material_pixel(
             material_id,
             replace_material.then_some(replace_opacity),
@@ -202,7 +205,7 @@ impl IsoPaintRenderer {
     }
 
     fn iso_paint_write_overlay_pixel_at(pixels: &mut [u8], index: usize, color: [u8; 4]) {
-        if color[3] == 0 || index + 3 >= pixels.len() || color[3] <= pixels[index + 3] {
+        if color[3] == 0 || index + 3 >= pixels.len() {
             return;
         }
 
@@ -409,7 +412,7 @@ impl IsoPaintRenderer {
             return;
         }
         let index = (y as usize * width + x as usize) * 4;
-        if index + 3 >= pixels.len() || color[3] <= pixels[index + 3] {
+        if index + 3 >= pixels.len() {
             return;
         }
 
@@ -842,12 +845,13 @@ impl IsoPaintRenderer {
                 let Some(start_geo_id) = start_geo_id else {
                     return false;
                 };
-                surface_buffer
-                    .and_then(|surface| surface.pixel(x, y))
-                    .is_some_and(|pixel| {
-                        pixel.valid
-                            && Self::iso_paint_geo_object_matches(start_geo_id, pixel.geo_id)
-                    })
+                let Some(pixel) = surface_buffer.and_then(|surface| surface.pixel(x, y)) else {
+                    return true;
+                };
+                if !pixel.valid {
+                    return true;
+                }
+                Self::iso_paint_geo_object_matches(start_geo_id, pixel.geo_id)
             }
         }
     }
@@ -961,13 +965,20 @@ impl IsoPaintRenderer {
                             Self::iso_paint_coat_pixel_at(target_row, row_index, color_src);
                         }
                         if writes_material {
+                            let material_coverage = if replace_material && replace_opacity > 0 {
+                                (((src[3] as u16 * 254) + replace_opacity as u16 / 2)
+                                    / replace_opacity as u16)
+                                    .min(255) as u8
+                            } else {
+                                src[3]
+                            };
                             Self::iso_paint_set_material_pixel_at(
                                 material_row,
                                 row_index,
                                 material_id,
                                 replace_material,
                                 replace_opacity,
-                                src[3],
+                                material_coverage,
                             );
                         }
                     }
@@ -1034,6 +1045,13 @@ impl IsoPaintRenderer {
                     );
                 }
                 if writes_material {
+                    let material_coverage = if replace_material && replace_opacity > 0 {
+                        (((src[3] as u16 * 254) + replace_opacity as u16 / 2)
+                            / replace_opacity as u16)
+                            .min(255) as u8
+                    } else {
+                        src[3]
+                    };
                     Self::iso_paint_set_material_pixel(
                         material_pixels,
                         target_w,
@@ -1043,7 +1061,7 @@ impl IsoPaintRenderer {
                         material_id,
                         replace_material,
                         replace_opacity,
-                        src[3],
+                        material_coverage,
                     );
                 }
             }
@@ -3612,7 +3630,23 @@ impl IsoPaintRenderer {
         } else {
             1.0
         };
-        (camera_scale * Self::iso_paint_viewport_scale(source_viewport, target_dim)).clamp(0.05, 20.0)
+        (camera_scale * Self::iso_paint_viewport_scale(source_viewport, target_dim))
+            .clamp(0.05, 20.0)
+    }
+
+    fn iso_paint_stroke_uses_current_screen(
+        stroke: &IsoPaintStrokeRenderCache,
+        current_camera_scale: Option<f32>,
+        target_dim: TheDim,
+    ) -> bool {
+        if stroke.viewport_size != Some([target_dim.width, target_dim.height]) {
+            return false;
+        }
+
+        match (stroke.camera_scale, current_camera_scale) {
+            (Some(source), Some(current)) => (source - current).abs() <= 0.0001,
+            _ => true,
+        }
     }
 
     fn iso_paint_stroke_bounds(stroke: &IsoPaintStroke) -> ([i32; 2], [i32; 2]) {
@@ -4089,6 +4123,7 @@ impl IsoPaintRenderer {
                 camera_scale.to_bits().hash(&mut hasher);
             }
             chunk.viewport_size.hash(&mut hasher);
+            chunk.source_camera_key.hash(&mut hasher);
             if let Some(surface_anchor_depth) = chunk.surface_anchor_depth {
                 surface_anchor_depth.to_bits().hash(&mut hasher);
             }
@@ -4124,20 +4159,7 @@ impl IsoPaintRenderer {
         value.to_bits().hash(hasher);
     }
 
-    fn iso_paint_hash_quantized_screen_axis(
-        hasher: &mut DefaultHasher,
-        value: f32,
-        pixels_per_world: f32,
-    ) {
-        if value.is_finite() && pixels_per_world.is_finite() && pixels_per_world > 0.0 {
-            ((value * pixels_per_world / ISO_PAINT_CAMERA_KEY_PIXEL_STEP).round() as i64)
-                .hash(hasher);
-        } else {
-            value.to_bits().hash(hasher);
-        }
-    }
-
-    fn iso_paint_camera_key(camera: scenevm::Camera3D, target_dim: TheDim) -> u64 {
+    fn iso_paint_camera_key(camera: scenevm::Camera3D, _target_dim: TheDim) -> u64 {
         let mut hasher = DefaultHasher::new();
         let kind = match camera.kind {
             scenevm::CameraKind::OrthoIso => 0_u8,
@@ -4145,61 +4167,25 @@ impl IsoPaintRenderer {
             scenevm::CameraKind::FirstPersonPersp => 2_u8,
         };
         kind.hash(&mut hasher);
-        if matches!(camera.kind, scenevm::CameraKind::OrthoIso) && target_dim.height > 0 {
-            let pixels_per_world =
-                target_dim.height as f32 / (camera.ortho_half_h.max(0.001) * 2.0);
-            Self::iso_paint_hash_quantized_screen_axis(
-                &mut hasher,
-                camera.pos.dot(camera.right),
-                pixels_per_world,
-            );
-            Self::iso_paint_hash_quantized_screen_axis(
-                &mut hasher,
-                camera.pos.dot(camera.up),
-                pixels_per_world,
-            );
-            Self::iso_paint_hash_quantized_screen_axis(
-                &mut hasher,
-                camera.pos.dot(camera.forward),
-                pixels_per_world,
-            );
-            for value in [
-                camera.forward.x,
-                camera.forward.y,
-                camera.forward.z,
-                camera.right.x,
-                camera.right.y,
-                camera.right.z,
-                camera.up.x,
-                camera.up.y,
-                camera.up.z,
-                camera.ortho_half_h,
-                camera.near,
-                camera.far,
-            ] {
-                Self::iso_paint_hash_f32_bits(&mut hasher, value);
-            }
-        } else {
-            for value in [
-                camera.pos.x,
-                camera.pos.y,
-                camera.pos.z,
-                camera.forward.x,
-                camera.forward.y,
-                camera.forward.z,
-                camera.right.x,
-                camera.right.y,
-                camera.right.z,
-                camera.up.x,
-                camera.up.y,
-                camera.up.z,
-                camera.vfov_deg,
-                camera.ortho_half_h,
-                camera.near,
-                camera.far,
-            ] {
-                Self::iso_paint_hash_f32_bits(&mut hasher, value);
-            }
+        for value in [
+            camera.pos.x,
+            camera.pos.y,
+            camera.pos.z,
+            camera.forward.x,
+            camera.forward.y,
+            camera.forward.z,
+            camera.right.x,
+            camera.right.y,
+            camera.right.z,
+            camera.up.x,
+            camera.up.y,
+            camera.up.z,
+            camera.vfov_deg,
+            camera.ortho_half_h,
+            camera.near,
+            camera.far,
+        ] {
+            Self::iso_paint_hash_f32_bits(&mut hasher, value);
         }
         hasher.finish()
     }
@@ -4306,24 +4292,29 @@ impl IsoPaintRenderer {
             let mut draw_origin = stroke.origin;
             let mut draw_scale = 1.0;
             let mut start_screen = stroke.screen_anchor;
-            if let (Some(screen_anchor), Some(world_anchor)) =
-                (stroke.screen_anchor, stroke.world_anchor)
-                && let Some(current_screen) =
-                    project_world_anchor(world_anchor, target_dim.width, target_dim.height)
+            if !Self::iso_paint_stroke_uses_current_screen(stroke, current_camera_scale, target_dim)
             {
-                draw_scale = Self::iso_paint_draw_scale(
-                    stroke.camera_scale,
-                    current_camera_scale,
-                    stroke.viewport_size,
-                    target_dim,
-                );
-                let anchor_local_x = screen_anchor[0] - stroke.origin[0];
-                let anchor_local_y = screen_anchor[1] - stroke.origin[1];
-                draw_origin[0] =
-                    (current_screen[0] as f32 - anchor_local_x as f32 * draw_scale).floor() as i32;
-                draw_origin[1] =
-                    (current_screen[1] as f32 - anchor_local_y as f32 * draw_scale).floor() as i32;
-                start_screen = Some(current_screen);
+                if let (Some(screen_anchor), Some(world_anchor)) =
+                    (stroke.screen_anchor, stroke.world_anchor)
+                    && let Some(current_screen) =
+                        project_world_anchor(world_anchor, target_dim.width, target_dim.height)
+                {
+                    draw_scale = Self::iso_paint_draw_scale(
+                        stroke.camera_scale,
+                        current_camera_scale,
+                        stroke.viewport_size,
+                        target_dim,
+                    );
+                    let anchor_local_x = screen_anchor[0] - stroke.origin[0];
+                    let anchor_local_y = screen_anchor[1] - stroke.origin[1];
+                    draw_origin[0] = (current_screen[0] as f32
+                        - anchor_local_x as f32 * draw_scale)
+                        .floor() as i32;
+                    draw_origin[1] = (current_screen[1] as f32
+                        - anchor_local_y as f32 * draw_scale)
+                        .floor() as i32;
+                    start_screen = Some(current_screen);
+                }
             }
 
             let brush_dim = *stroke.buffer.dim();
@@ -4436,6 +4427,7 @@ impl IsoPaintRenderer {
             &mut material_overlay,
             target_dim,
             camera,
+            camera_key,
             paint_surface,
             current_camera_scale,
             &project_world_anchor,
@@ -4446,28 +4438,33 @@ impl IsoPaintRenderer {
             let mut draw_origin = stroke.origin;
             let mut draw_scale = 1.0;
             let mut start_screen = stroke.screen_anchor;
-            if let (Some(screen_anchor), Some(world_anchor)) =
-                (stroke.screen_anchor, stroke.world_anchor)
+            if !Self::iso_paint_stroke_uses_current_screen(stroke, current_camera_scale, target_dim)
             {
-                if let Some(current_screen) =
-                    project_world_anchor(world_anchor, target_dim.width, target_dim.height)
+                if let (Some(screen_anchor), Some(world_anchor)) =
+                    (stroke.screen_anchor, stroke.world_anchor)
                 {
-                    draw_scale = Self::iso_paint_draw_scale(
-                        stroke.camera_scale,
-                        current_camera_scale,
-                        stroke.viewport_size,
-                        target_dim,
-                    );
-                    let anchor_local_x = screen_anchor[0] - stroke.origin[0];
-                    let anchor_local_y = screen_anchor[1] - stroke.origin[1];
-                    draw_origin[0] =
-                        (current_screen[0] - anchor_local_x as f32 * draw_scale).floor() as i32;
-                    draw_origin[1] =
-                        (current_screen[1] - anchor_local_y as f32 * draw_scale).floor() as i32;
-                    start_screen = Some([
-                        current_screen[0].floor() as i32,
-                        current_screen[1].floor() as i32,
-                    ]);
+                    if let Some(current_screen) =
+                        project_world_anchor(world_anchor, target_dim.width, target_dim.height)
+                    {
+                        draw_scale = Self::iso_paint_draw_scale(
+                            stroke.camera_scale,
+                            current_camera_scale,
+                            stroke.viewport_size,
+                            target_dim,
+                        );
+                        let anchor_local_x = screen_anchor[0] - stroke.origin[0];
+                        let anchor_local_y = screen_anchor[1] - stroke.origin[1];
+                        draw_origin[0] =
+                            (current_screen[0] - anchor_local_x as f32 * draw_scale).floor()
+                                as i32;
+                        draw_origin[1] =
+                            (current_screen[1] - anchor_local_y as f32 * draw_scale).floor()
+                                as i32;
+                        start_screen = Some([
+                            current_screen[0].floor() as i32,
+                            current_screen[1].floor() as i32,
+                        ]);
+                    }
                 }
             }
 
@@ -4622,6 +4619,7 @@ impl IsoPaintRenderer {
         material_overlay: &mut [u8],
         target_dim: TheDim,
         camera: scenevm::Camera3D,
+        camera_key: u64,
         paint_surface: Option<&scenevm::PaintSurfaceBuffer>,
         current_camera_scale: Option<f32>,
         project_world_anchor: &impl Fn([f32; 3], i32, i32) -> Option<[f32; 2]>,
@@ -4644,38 +4642,48 @@ impl IsoPaintRenderer {
                 .and_then(|world| Self::iso_paint_world_depth(world, camera));
             let mut draw_origin = [chunk.origin[0] as f32, chunk.origin[1] as f32];
             let mut draw_scale = 1.0;
-            if let (Some(screen_anchor), Some(world_anchor)) =
-                (chunk.screen_anchor, chunk.world_anchor)
-                && let Some(current_screen) =
-                    project_world_anchor(world_anchor, target_dim.width, target_dim.height)
-            {
-                draw_scale = Self::iso_paint_draw_scale(
-                    chunk.camera_scale,
-                    current_camera_scale,
-                    chunk.viewport_size,
-                    target_dim,
-                );
-                let anchor_local_x = screen_anchor[0] - chunk.origin[0];
-                let anchor_local_y = screen_anchor[1] - chunk.origin[1];
-                draw_origin[0] = current_screen[0] - anchor_local_x as f32 * draw_scale;
-                draw_origin[1] = current_screen[1] - anchor_local_y as f32 * draw_scale;
+            let same_source_camera = chunk.source_camera_key == Some(camera_key)
+                && chunk.viewport_size == Some([target_dim.width, target_dim.height]);
+            if !same_source_camera {
+                if let (Some(screen_anchor), Some(world_anchor)) =
+                    (chunk.screen_anchor, chunk.world_anchor)
+                    && let Some(current_screen) =
+                        project_world_anchor(world_anchor, target_dim.width, target_dim.height)
+                {
+                    draw_scale = Self::iso_paint_draw_scale(
+                        chunk.camera_scale,
+                        current_camera_scale,
+                        chunk.viewport_size,
+                        target_dim,
+                    );
+                    let anchor_local_x = screen_anchor[0] - chunk.origin[0];
+                    let anchor_local_y = screen_anchor[1] - chunk.origin[1];
+                    draw_origin[0] = current_screen[0] - anchor_local_x as f32 * draw_scale;
+                    draw_origin[1] = current_screen[1] - anchor_local_y as f32 * draw_scale;
+                }
             }
 
             let draw_size = (chunk_size as f32) * draw_scale;
             let min_x = draw_origin[0].floor().max(0.0) as i32;
             let min_y = draw_origin[1].floor().max(0.0) as i32;
-            let max_x = (draw_origin[0] + draw_size).ceil().min(target_dim.width as f32) as i32;
-            let max_y = (draw_origin[1] + draw_size).ceil().min(target_dim.height as f32) as i32;
+            let max_x = (draw_origin[0] + draw_size)
+                .ceil()
+                .min(target_dim.width as f32) as i32;
+            let max_y = (draw_origin[1] + draw_size)
+                .ceil()
+                .min(target_dim.height as f32) as i32;
             if min_x >= max_x || min_y >= max_y || draw_scale <= 0.0 {
                 continue;
             }
             for y in min_y..max_y {
-                let local_y = ((y as f32 - draw_origin[1]) / draw_scale).floor() as i32;
+                let local_y_f = (y as f32 - draw_origin[1]) / draw_scale;
+                let local_y = local_y_f.floor() as i32;
                 if local_y < 0 || local_y >= chunk_size {
                     continue;
                 }
                 for x in min_x..max_x {
-                    let local_x = ((x as f32 - draw_origin[0]) / draw_scale).floor() as i32;
+                    let local_x_f = (x as f32 - draw_origin[0]) / draw_scale;
+                    let local_x = local_x_f.floor() as i32;
                     if local_x < 0 || local_x >= chunk_size {
                         continue;
                     }
@@ -4701,16 +4709,19 @@ impl IsoPaintRenderer {
                         continue;
                     }
                     if chunk.color_rgba[src_index + 3] > 0 {
-                        let color = [
-                            chunk.color_rgba[src_index],
-                            chunk.color_rgba[src_index + 1],
-                            chunk.color_rgba[src_index + 2],
-                            chunk.color_rgba[src_index + 3],
-                        ];
-                        if chunk.replace_color {
-                            Self::iso_paint_write_overlay_pixel_at(target_pixels, dst_index, color);
+                        if same_source_camera {
+                            target_pixels[dst_index..dst_index + 4]
+                                .copy_from_slice(&chunk.color_rgba[src_index..src_index + 4]);
                         } else {
-                            Self::iso_paint_coat_pixel_at(target_pixels, dst_index, color);
+                            let color = Self::iso_paint_sample_chunk_color_bilinear(
+                                &chunk.color_rgba,
+                                chunk_size,
+                                local_x_f,
+                                local_y_f,
+                            );
+                            if color[3] > 0 {
+                                target_pixels[dst_index..dst_index + 4].copy_from_slice(&color);
+                            }
                         }
                     }
                     if chunk.material_rgba[src_index] == 254
@@ -4749,8 +4760,18 @@ impl IsoPaintRenderer {
             .and_then(|surface| surface.pixel(x, y))
             .filter(|pixel| pixel.valid)
         else {
-            return false;
+            // The paint-surface buffer is a CPU/raster helper used to keep chunks clipped,
+            // while the final paint is sampled by actual GPU geometry fragments. At silhouette
+            // and floor edges the helper can miss a pixel that the real render still shades.
+            return stored_depth.is_some_and(Self::iso_paint_surface_depth_valid)
+                || source_anchor_depth.is_some_and(Self::iso_paint_surface_depth_valid)
+                || clip_geo_id.is_some();
         };
+        if let Some(clip_geo_id) = clip_geo_id
+            && Self::iso_paint_geo_object_matches(clip_geo_id, surface_pixel.geo_id)
+        {
+            return true;
+        }
         if let Some(stored_depth) = stored_depth
             && Self::iso_paint_surface_depth_valid(stored_depth)
         {
@@ -4764,11 +4785,6 @@ impl IsoPaintRenderer {
                 return (current_delta - stored_delta).abs()
                     <= ISO_PAINT_SCREEN_CHUNK_DEPTH_TOLERANCE;
             }
-        }
-        if let Some(clip_geo_id) = clip_geo_id
-            && Self::iso_paint_geo_object_matches(clip_geo_id, surface_pixel.geo_id)
-        {
-            return true;
         }
         false
     }
@@ -4834,6 +4850,41 @@ impl IsoPaintRenderer {
         }
     }
 
+    fn iso_paint_sample_chunk_color_bilinear(
+        pixels: &[u8],
+        chunk_size: i32,
+        x: f32,
+        y: f32,
+    ) -> [u8; 4] {
+        if chunk_size <= 0
+            || x < 0.0
+            || y < 0.0
+            || x > (chunk_size - 1) as f32
+            || y > (chunk_size - 1) as f32
+        {
+            return [0, 0, 0, 0];
+        }
+
+        let x0 = x.floor() as i32;
+        let y0 = y.floor() as i32;
+        let x1 = (x0 + 1).min(chunk_size - 1);
+        let y1 = (y0 + 1).min(chunk_size - 1);
+        let tx = x - x0 as f32;
+        let ty = y - y0 as f32;
+        let sample = |sx: i32, sy: i32, channel: usize| -> f32 {
+            let index = (sy as usize * chunk_size as usize + sx as usize) * 4 + channel;
+            pixels.get(index).copied().unwrap_or(0) as f32
+        };
+
+        let mut out = [0_u8; 4];
+        for (channel, value) in out.iter_mut().enumerate() {
+            let top = sample(x0, y0, channel) * (1.0 - tx) + sample(x1, y0, channel) * tx;
+            let bottom = sample(x0, y1, channel) * (1.0 - tx) + sample(x1, y1, channel) * tx;
+            *value = (top * (1.0 - ty) + bottom * ty).round().clamp(0.0, 255.0) as u8;
+        }
+        out
+    }
+
     fn iso_paint_update_screen_chunk_surface_depth(
         surface_depth: &mut [f32],
         color_rgba: &[u8],
@@ -4872,6 +4923,7 @@ impl IsoPaintRenderer {
         layer: &mut IsoPaintLayer,
         stroke: &IsoPaintStrokeRenderCache,
         surface_buffer: &scenevm::PaintSurfaceBuffer,
+        camera_key: u64,
     ) -> bool {
         let brush_dim = *stroke.buffer.dim();
         if brush_dim.width <= 0 || brush_dim.height <= 0 {
@@ -4902,6 +4954,7 @@ impl IsoPaintRenderer {
                         layer,
                         stroke,
                         surface_buffer,
+                        camera_key,
                         chunk_origin,
                     );
                 }
@@ -4916,10 +4969,12 @@ impl IsoPaintRenderer {
         layer: &mut IsoPaintLayer,
         stroke: &IsoPaintStrokeRenderCache,
         surface_buffer: &scenevm::PaintSurfaceBuffer,
+        camera_key: u64,
         chunk_origin: [i32; 2],
     ) -> bool {
         let chunk_size = layer.chunk_size.max(1);
-        let key = Self::iso_paint_screen_chunk_key(chunk_origin, stroke);
+        let key = Self::iso_paint_screen_chunk_key(layer, chunk_origin, stroke, camera_key);
+        let existing_chunk = layer.screen_chunks.contains_key(&key);
         let mut chunk = layer
             .screen_chunks
             .get(&key)
@@ -4934,29 +4989,41 @@ impl IsoPaintRenderer {
         let original_world_anchor = chunk.world_anchor;
         let original_camera_scale = chunk.camera_scale;
         let original_viewport_size = chunk.viewport_size;
+        let original_source_camera_key = chunk.source_camera_key;
         let original_surface_anchor_depth = chunk.surface_anchor_depth;
         let original_clip_owner = chunk.clip_owner.clone();
         let original_replace_color = chunk.replace_color;
-        if chunk.screen_anchor.is_none() {
+        if !existing_chunk || chunk.screen_anchor.is_none() {
             chunk.screen_anchor = stroke.screen_anchor;
-        }
-        if chunk.world_anchor.is_none() {
-            chunk.world_anchor = stroke.world_anchor;
-        }
-        if chunk.camera_scale.is_none() {
-            chunk.camera_scale = stroke.camera_scale;
-        }
-        if chunk.viewport_size.is_none() {
-            chunk.viewport_size = stroke.viewport_size;
-        }
-        if chunk.surface_anchor_depth.is_none() {
-            chunk.surface_anchor_depth = stroke
+            if let Some(pixel) = stroke
                 .screen_anchor
                 .and_then(|screen| surface_buffer.pixel(screen[0], screen[1]))
-                .filter(|pixel| pixel.valid)
-                .map(|pixel| pixel.depth);
+                .filter(|pixel| {
+                    pixel.valid
+                        && stroke.clip_geo_id.map_or(true, |clip_geo_id| {
+                            Self::iso_paint_geo_object_matches(clip_geo_id, pixel.geo_id)
+                        })
+                })
+            {
+                chunk.world_anchor = Some(pixel.world);
+                chunk.surface_anchor_depth = Some(pixel.depth);
+            } else {
+                chunk.world_anchor = stroke.world_anchor;
+                chunk.surface_anchor_depth = stroke
+                    .screen_anchor
+                    .and_then(|screen| surface_buffer.pixel(screen[0], screen[1]))
+                    .filter(|pixel| pixel.valid)
+                    .map(|pixel| pixel.depth);
+            }
         }
-        if chunk.clip_owner.is_none() && stroke.clip != "none" {
+        if stroke.camera_scale.is_some() {
+            chunk.camera_scale = stroke.camera_scale;
+        }
+        chunk.viewport_size = Some([surface_buffer.width as i32, surface_buffer.height as i32]);
+        if !existing_chunk || chunk.source_camera_key.is_none() {
+            chunk.source_camera_key = Some(camera_key);
+        }
+        if chunk.clip_owner.is_none() {
             chunk.clip_owner = stroke.clip_geo_id.map(Self::iso_paint_geo_id_owner);
         }
         chunk.replace_color = stroke.replace_material;
@@ -5047,6 +5114,7 @@ impl IsoPaintRenderer {
             || chunk.world_anchor != original_world_anchor
             || chunk.camera_scale != original_camera_scale
             || chunk.viewport_size != original_viewport_size
+            || chunk.source_camera_key != original_source_camera_key
             || chunk.surface_anchor_depth != original_surface_anchor_depth
             || chunk.clip_owner != original_clip_owner
             || chunk.replace_color != original_replace_color
@@ -5062,25 +5130,20 @@ impl IsoPaintRenderer {
         }
     }
 
-    fn iso_paint_screen_chunk_key(
+    fn iso_paint_screen_chunk_key_base(
         chunk_origin: [i32; 2],
         stroke: &IsoPaintStrokeRenderCache,
+        camera_key: Option<u64>,
     ) -> String {
         let mut hasher = DefaultHasher::new();
-        stroke.order.hash(&mut hasher);
-        stroke.origin.hash(&mut hasher);
-        stroke.screen_anchor.hash(&mut hasher);
-        if let Some(world_anchor) = stroke.world_anchor {
-            for value in world_anchor {
-                value.to_bits().hash(&mut hasher);
+        stroke.clip_geo_id.hash(&mut hasher);
+        camera_key.hash(&mut hasher);
+        if stroke.clip_geo_id.is_none() {
+            if let Some(world_anchor) = stroke.world_anchor {
+                for value in world_anchor {
+                    ((value * 16.0).round() as i32).hash(&mut hasher);
+                }
             }
-        }
-        if let Some(camera_scale) = stroke.camera_scale {
-            camera_scale.to_bits().hash(&mut hasher);
-        }
-        stroke.viewport_size.hash(&mut hasher);
-        if stroke.clip != "none" {
-            stroke.clip_geo_id.hash(&mut hasher);
         }
         format!(
             "{},{}:{}",
@@ -5090,15 +5153,45 @@ impl IsoPaintRenderer {
         )
     }
 
+    fn iso_paint_screen_chunk_key(
+        layer: &IsoPaintLayer,
+        chunk_origin: [i32; 2],
+        stroke: &IsoPaintStrokeRenderCache,
+        camera_key: u64,
+    ) -> String {
+        let camera_keyed = Self::iso_paint_screen_chunk_key_base(
+            chunk_origin,
+            stroke,
+            Some(camera_key),
+        );
+        if layer.screen_chunks.contains_key(&camera_keyed) {
+            return camera_keyed;
+        }
+
+        let legacy = Self::iso_paint_screen_chunk_key_base(chunk_origin, stroke, None);
+        if let Some(chunk) = layer.screen_chunks.get(&legacy) {
+            if chunk.source_camera_key.is_none() || chunk.source_camera_key == Some(camera_key) {
+                return legacy;
+            }
+        }
+
+        camera_keyed
+    }
+
     fn iso_paint_write_stroke_to_screen_chunks(
         layer: &mut IsoPaintLayer,
         stroke: &IsoPaintStroke,
         surface_buffer: &scenevm::PaintSurfaceBuffer,
+        camera_key: u64,
     ) -> bool {
         let mut changed = false;
         for cache in Self::build_iso_paint_stroke_caches(stroke) {
-            changed |=
-                Self::iso_paint_write_stroke_cache_to_screen_chunks(layer, &cache, surface_buffer);
+            changed |= Self::iso_paint_write_stroke_cache_to_screen_chunks(
+                layer,
+                &cache,
+                surface_buffer,
+                camera_key,
+            );
         }
         changed
     }
@@ -5106,6 +5199,7 @@ impl IsoPaintRenderer {
     fn commit_finished_strokes_to_screen_chunks(
         layer: &mut IsoPaintLayer,
         paint_surface: &scenevm::PaintSurfaceBuffer,
+        camera_key: u64,
     ) -> bool {
         if layer.screen_commit_strokes.is_empty() {
             return false;
@@ -5120,7 +5214,12 @@ impl IsoPaintRenderer {
             if !Self::iso_paint_can_sync_commit_stroke(layer, &stroke) {
                 continue;
             }
-            let _ = Self::iso_paint_write_stroke_to_screen_chunks(layer, &stroke, paint_surface);
+            let _ = Self::iso_paint_write_stroke_to_screen_chunks(
+                layer,
+                &stroke,
+                paint_surface,
+                camera_key,
+            );
             let _ = layer.take_stroke(stroke_id);
             changed = true;
         }
@@ -5159,7 +5258,7 @@ impl IsoPaintRenderer {
         let paint_surface = vm.paint_surface_buffer(width, height);
         let base_paint_surface_key = 0;
         let camera_key = Self::iso_paint_camera_key(camera, target_dim);
-        if Self::commit_finished_strokes_to_screen_chunks(layer, &paint_surface) {
+        if Self::commit_finished_strokes_to_screen_chunks(layer, &paint_surface, camera_key) {
             render_cache.prepared_key = None;
             render_cache.prepared_overlay = None;
         }
@@ -5175,7 +5274,9 @@ impl IsoPaintRenderer {
             camera_key,
             current_camera_scale,
             target_dim,
-            |point, width, height| Self::iso_paint_project_world_f32(point, view, proj, width, height),
+            |point, width, height| {
+                Self::iso_paint_project_world_f32(point, view, proj, width, height)
+            },
         );
 
         if let Some((key, overlay, changed)) = overlay {

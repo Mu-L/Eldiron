@@ -1291,8 +1291,7 @@ fn sample_tile(tile_idx: u32, uv: vec2<f32>, clamp_uv: bool, phase_start_counter
     }
     var atlas_uv = frame.ofs + uv_wrapped * frame.scale;
     // Use gradients from the non-wrapped UVs to avoid mip shimmer on repeating tiles.
-    // Slightly bias iso camera toward coarser mips to reduce shimmering on dense tile patterns.
-    let lod_bias = select(1.0, 1.8, UBO.cam_kind == 0u);
+    let lod_bias = 1.0;
     let atlas_ddx = dpdx(uv) * frame.scale * lod_bias;
     let atlas_ddy = dpdy(uv) * frame.scale * lod_bias;
     let atlas_dims = vec2<f32>(textureDimensions(atlas_tex, 0));
@@ -1937,8 +1936,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         material_id = paint_material_id;
         material_traits0 = semantic_material_traits0(material_id);
         material_traits1 = semantic_material_traits1(material_id);
-        let replace_opacity = clamp(paint_mat.z * paint_replace_opacity * paint_material_weight, 0.0, 1.0);
-        let replace_mat = vec4<f32>(paint_mat.x, paint_mat.y, replace_opacity, paint_mat.w);
+        let replace_weight = clamp(paint_replace_opacity * paint_material_weight, 0.0, 1.0);
+        let replace_mat = mix(mat, paint_mat, replace_weight);
         let coat_mat = vec4<f32>(coated_mat.x, coated_mat.y, base_opacity, coated_mat.w);
         mat = select(coat_mat, replace_mat, paint_replace_material);
         n_ts = select(n_ts, vec3<f32>(0.0, 0.0, 1.0), paint_replace_material);

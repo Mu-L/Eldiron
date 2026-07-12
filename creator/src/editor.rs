@@ -8591,7 +8591,6 @@ impl TheTrait for Editor {
                                     game_says,
                                     game_choices,
                                     |widget, scene_handler| {
-                                        let scene_camera = widget.camera_d3.as_scenevm_camera();
                                         let render_dim = widget.render_surface_dim();
                                         let display_dim = *widget.buffer.dim();
                                         if render_dim.width <= 0
@@ -8605,12 +8604,20 @@ impl TheTrait for Editor {
                                             self.iso_paint_render_cache = Default::default();
                                             return true;
                                         }
+                                        let scene_camera =
+                                            widget.camera_d3.as_scenevm_camera_for_surface(
+                                                render_dim.width as f32,
+                                                render_dim.height as f32,
+                                            );
                                         let active_vm = scene_handler.vm.active_vm_index();
                                         scene_handler.vm.set_active_vm(0);
                                         scene_handler.vm.execute(scenevm::Atom::SetCamera3D {
                                             camera: scene_camera,
                                         });
-                                        let view = widget.camera_d3.view_matrix();
+                                        let view = widget.camera_d3.view_matrix_for_surface(
+                                            render_dim.width as f32,
+                                            render_dim.height as f32,
+                                        );
                                         let render_proj = widget.camera_d3.projection_matrix(
                                             render_dim.width as f32,
                                             render_dim.height as f32,
@@ -8704,14 +8711,20 @@ impl TheTrait for Editor {
                                 if self.server_ctx.editor_view_mode == EditorViewMode::Iso
                                     && has_iso_paint
                                 {
-                                    let view = rusterix.client.camera_d3.view_matrix();
+                                    let view = rusterix.client.camera_d3.view_matrix_for_surface(
+                                        dim.width as f32,
+                                        dim.height as f32,
+                                    );
                                     let proj = rusterix
                                         .client
                                         .camera_d3
                                         .projection_matrix(dim.width as f32, dim.height as f32);
                                     let camera_scale = Some(rusterix.client.camera_d3.scale());
                                     let scene_camera =
-                                        rusterix.client.camera_d3.as_scenevm_camera();
+                                        rusterix.client.camera_d3.as_scenevm_camera_for_surface(
+                                            dim.width as f32,
+                                            dim.height as f32,
+                                        );
                                     let active_vm = rusterix.scene_handler.vm.active_vm_index();
                                     rusterix.scene_handler.vm.set_active_vm(0);
                                     rusterix

@@ -63,10 +63,15 @@ impl D3IsoCamera {
 
     #[inline]
     fn position(&self) -> Vec3<f32> {
+        self.position_for_center(self.center)
+    }
+
+    #[inline]
+    fn position_for_center(&self, center: Vec3<f32>) -> Vec3<f32> {
         let (forward, _right, _up) = self.basis();
         // Keep the ortho slab from cutting through the focus region when zooming out.
         // This avoids losing geometry at the lower edge in steep isometric views.
-        self.center + forward * self.effective_distance()
+        center + forward * self.effective_distance()
     }
 
     #[inline]
@@ -206,11 +211,17 @@ impl D3Camera for D3IsoCamera {
 
     /// Generate a SceneVM camera
     fn as_scenevm_camera(&self) -> scenevm::Camera3D {
+        self.scenevm_camera_for_center(self.center)
+    }
+}
+
+impl D3IsoCamera {
+    fn scenevm_camera_for_center(&self, center: Vec3<f32>) -> scenevm::Camera3D {
         let (forward_to_camera, right_to_camera, up_orig) = self.basis();
         let forward_to_camera = forward_to_camera.normalized();
         let right_to_camera = right_to_camera.normalized();
         let up = up_orig.normalized();
-        let pos = self.position();
+        let pos = self.position_for_center(center);
         let forward = -forward_to_camera;
         let right = -right_to_camera;
 
@@ -226,9 +237,7 @@ impl D3Camera for D3IsoCamera {
             ..Default::default()
         }
     }
-}
 
-impl D3IsoCamera {
     #[inline]
     fn effective_far(&self) -> f32 {
         // Keep enough depth budget around the center plane as zoom/distance grow.

@@ -469,6 +469,8 @@ pub struct IsoPaintScreenChunk {
     #[serde(default)]
     pub viewport_size: Option<[i32; 2]>,
     #[serde(default)]
+    pub source_camera_key: Option<u64>,
+    #[serde(default)]
     pub clip_owner: Option<IsoPaintOwner>,
     #[serde(default)]
     pub replace_color: bool,
@@ -496,6 +498,7 @@ impl IsoPaintScreenChunk {
             world_anchor: None,
             camera_scale: None,
             viewport_size: None,
+            source_camera_key: None,
             clip_owner: None,
             replace_color: false,
             revision: 0,

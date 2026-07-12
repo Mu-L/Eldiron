@@ -319,7 +319,6 @@ impl TheTrait for Client {
                     says,
                     choices,
                     |widget, scene_handler| {
-                        let camera = widget.camera_d3.as_scenevm_camera();
                         let render_dim = widget.render_surface_dim();
                         let display_dim = *widget.buffer.dim();
                         if render_dim.width <= 0
@@ -329,9 +328,16 @@ impl TheTrait for Client {
                         {
                             return false;
                         }
+                        let camera = widget.camera_d3.as_scenevm_camera_for_surface(
+                            render_dim.width as f32,
+                            render_dim.height as f32,
+                        );
                         let active_vm = scene_handler.vm.active_vm_index();
                         scene_handler.vm.set_active_vm(0);
-                        let view = widget.camera_d3.view_matrix();
+                        let view = widget.camera_d3.view_matrix_for_surface(
+                            render_dim.width as f32,
+                            render_dim.height as f32,
+                        );
                         let render_proj = widget
                             .camera_d3
                             .projection_matrix(render_dim.width as f32, render_dim.height as f32);

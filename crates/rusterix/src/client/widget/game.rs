@@ -1237,7 +1237,7 @@ impl GameWidget {
         let full_height = self.buffer.dim().height as usize;
 
         // Determine render dimensions based on upscale factor
-        let (_width, _height, _render_buffer) = if self.upscale > 1.0 {
+        let (width, height, _render_buffer) = if self.upscale > 1.0 {
             let scaled_width = (full_width as f32 / self.upscale).round() as usize;
             let scaled_height = (full_height as f32 / self.upscale).round() as usize;
 
@@ -1277,7 +1277,9 @@ impl GameWidget {
         ));
 
         scene_handler.vm.execute(scenevm::Atom::SetCamera3D {
-            camera: self.camera_d3.as_scenevm_camera(),
+            camera: self
+                .camera_d3
+                .as_scenevm_camera_for_surface(width as f32, height as f32),
         });
 
         // scene_handler.vm.print_geometry_stats();

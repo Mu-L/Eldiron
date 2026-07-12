@@ -1363,7 +1363,9 @@ impl Client {
         ));
 
         scene_handler.vm.execute(scenevm::Atom::SetCamera3D {
-            camera: self.camera_d3.as_scenevm_camera(),
+            camera: self
+                .camera_d3
+                .as_scenevm_camera_for_surface(width as f32, height as f32),
         });
 
         // In 3D mode, enable overlay layers.
@@ -1408,7 +1410,9 @@ impl Client {
                 scene_handler.settings.apply_3d(&mut scene_handler.vm);
                 scene_handler.apply_runtime_render_state_3d();
                 scene_handler.vm.execute(scenevm::Atom::SetCamera3D {
-                    camera: self.camera_d3.as_scenevm_camera(),
+                    camera: self
+                        .camera_d3
+                        .as_scenevm_camera_for_surface(width as f32, height as f32),
                 });
                 scene_handler.vm.execute(scenevm::Atom::SetRenderMode(
                     scene_handler.settings.scenevm_mode_3d(),
@@ -1434,7 +1438,9 @@ impl Client {
             .render_frame(pixels, width as u32, height as u32);
 
         if let Some(font) = &self.messages_font {
-            let view = self.camera_d3.view_matrix();
+            let view = self
+                .camera_d3
+                .view_matrix_for_surface(width as f32, height as f32);
             let proj = self
                 .camera_d3
                 .projection_matrix(width as f32, height as f32);
@@ -2203,7 +2209,9 @@ impl Client {
                     let height = widget.buffer.dim().height as usize;
                     let pixels = widget.buffer.pixels_mut();
 
-                    let view = widget.camera_d3.view_matrix();
+                    let view = widget
+                        .camera_d3
+                        .view_matrix_for_surface(width as f32, height as f32);
                     let proj = widget
                         .camera_d3
                         .projection_matrix(width as f32, height as f32);
@@ -2865,7 +2873,7 @@ impl Client {
                     continue;
                 }
 
-                let view = game.camera_d3.view_matrix();
+                let view = game.camera_d3.view_matrix_for_surface(gw as f32, gh as f32);
                 let proj = game.camera_d3.projection_matrix(gw as f32, gh as f32);
                 let vp = proj * view;
                 let widget_say = Self::say_table_from_widget(game);

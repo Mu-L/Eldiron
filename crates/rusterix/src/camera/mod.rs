@@ -19,6 +19,10 @@ pub trait D3Camera: Send + Sync {
         Mat4::identity()
     }
 
+    fn view_matrix_for_surface(&self, _width: f32, _height: f32) -> Mat4<f32> {
+        self.view_matrix()
+    }
+
     fn position(&self) -> Vec3<f32> {
         Vec3::zero()
     }
@@ -69,4 +73,9 @@ pub trait D3Camera: Send + Sync {
 
     /// Generate a SceneVM Camera
     fn as_scenevm_camera(&self) -> scenevm::Camera3D;
+
+    /// Generate a SceneVM camera aligned to a concrete render surface.
+    fn as_scenevm_camera_for_surface(&self, _width: f32, _height: f32) -> scenevm::Camera3D {
+        self.as_scenevm_camera()
+    }
 }
