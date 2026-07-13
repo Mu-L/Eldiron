@@ -4238,7 +4238,7 @@ impl IsoPaintRenderer {
         region_id: Uuid,
         render_context: u8,
         layer: &IsoPaintLayer,
-        paint_surface_key: u64,
+        _paint_surface_key: u64,
         camera_key: u64,
         current_camera_scale: Option<f32>,
         target_dim: TheDim,
@@ -4269,15 +4269,14 @@ impl IsoPaintRenderer {
         }) {
             return None;
         }
-        let paint_surface_key = paint_surface
-            .map(|surface| paint_surface_key ^ Self::iso_paint_surface_mask_key(surface))
-            .unwrap_or(paint_surface_key);
         let overlay_key = Self::iso_paint_overlay_key(
             region_id,
             render_context,
             layer,
             target_dim,
-            paint_surface_key,
+            // Surface visibility is applied while compositing below. Hashing every pixel of the
+            // moving paint-surface buffer here made ISO movement rebuild-bound.
+            0,
             camera_key,
             current_camera_scale,
         );
@@ -4373,7 +4372,7 @@ impl IsoPaintRenderer {
         render_context: u8,
         layer: &IsoPaintLayer,
         paint_surface: Option<&scenevm::PaintSurfaceBuffer>,
-        paint_surface_key: u64,
+        _paint_surface_key: u64,
         camera: scenevm::Camera3D,
         camera_key: u64,
         current_camera_scale: Option<f32>,
@@ -4396,15 +4395,14 @@ impl IsoPaintRenderer {
             return None;
         }
 
-        let paint_surface_key = paint_surface
-            .map(|surface| paint_surface_key ^ Self::iso_paint_surface_mask_key(surface))
-            .unwrap_or(paint_surface_key);
         let overlay_key = Self::iso_paint_overlay_key(
             region_id,
             render_context,
             layer,
             target_dim,
-            paint_surface_key,
+            // See the prepared-overlay path below: the surface is used during composition, not
+            // as a full-frame invalidation key.
+            0,
             camera_key,
             current_camera_scale,
         );
@@ -5255,6 +5253,14 @@ impl IsoPaintRenderer {
         }
 
         let target_dim = TheDim::sized(width as i32, height as i32);
+        // The CPU fallback rasterizes every visible 3D triangle into a full-screen mask on each
+        // moving ISO frame. Use SceneVM's GPU mask pass when graphics are available; it produces
+        // the same clip/depth data without stalling camera presentation.
+        #[cfg(feature = "graphics")]
+        let paint_surface = vm
+            .paint_surface_buffer_gpu(width, height)
+            .unwrap_or_else(|| vm.paint_surface_buffer(width, height));
+        #[cfg(not(feature = "graphics"))]
         let paint_surface = vm.paint_surface_buffer(width, height);
         let base_paint_surface_key = 0;
         let camera_key = Self::iso_paint_camera_key(camera, target_dim);
@@ -5287,7 +5293,12 @@ impl IsoPaintRenderer {
                     height: overlay.height,
                     color_rgba: overlay.color_rgba,
                     material_rgba: overlay.material_rgba,
-                    paint_alpha_geo_ids: overlay.paint_alpha_geo_ids,
+                    // The overlay already carries its per-pixel visibility mask. Routing entire
+                    // geometry owners through the paint-alpha depth-only pass makes unpainted
+                    // triangles depend on the overlay and, in the current raster path, uses the
+                    // wrong transform for that depth pass. Keep every owner in the normal camera
+                    // render pass and apply paint only at the masked screen pixels.
+                    paint_alpha_geo_ids: Vec::new(),
                 });
                 render_cache.uploaded_key = Some(key);
             }

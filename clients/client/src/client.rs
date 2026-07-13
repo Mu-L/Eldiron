@@ -342,7 +342,7 @@ impl TheTrait for Client {
                             .camera_d3
                             .projection_matrix(render_dim.width as f32, render_dim.height as f32);
                         let camera_scale = Some(widget.camera_d3.scale());
-                        let uploaded = IsoPaintRenderer::upload_overlay_cached(
+                        IsoPaintRenderer::upload_overlay_cached(
                             &mut self.iso_paint_overlay_cache,
                             r.id,
                             0,
@@ -356,7 +356,8 @@ impl TheTrait for Client {
                             camera_scale,
                         );
                         scene_handler.vm.set_active_vm(active_vm);
-                        uploaded
+                        // The widget renders once after this preparation callback.
+                        false
                     },
                 );
                 self.rusterix

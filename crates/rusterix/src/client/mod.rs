@@ -2086,8 +2086,8 @@ impl Client {
         );
     }
 
-    /// Draw the game into the internal buffer, allowing callers to update 3D widget
-    /// render state after the widget has produced its scene buffers.
+    /// Draw the game into the internal buffer, allowing callers to update 3D widget render
+    /// state after it has been prepared for the current camera and before it is rendered.
     pub fn draw_game_with_widget_overlay<F>(
         &mut self,
         map: &Map,
@@ -2125,25 +2125,21 @@ impl Client {
         for widget in self.game_widgets.values_mut() {
             widget.firstp_eye_level = self.firstp_eye_level;
             widget.apply_entities(map, assets, self.animation_frame, scene_handler);
-            widget.draw(
+            widget.prepare_frame(
                 map,
                 &self.server_time,
                 self.animation_frame,
                 assets,
                 scene_handler,
             );
-            if widget_overlay(widget, scene_handler) {
-                widget.draw(
-                    map,
-                    &self.server_time,
-                    self.animation_frame,
-                    assets,
-                    scene_handler,
-                );
-                // Give callers a post-redraw hook as well. Some overlays are drawn
-                // directly into the widget buffer and must run after the final 3D frame.
-                let _ = widget_overlay(widget, scene_handler);
-            }
+            let _ = widget_overlay(widget, scene_handler);
+            widget.render_prepared_frame(
+                map,
+                &self.server_time,
+                self.animation_frame,
+                assets,
+                scene_handler,
+            );
 
             if let Some(font) = &self.messages_font {
                 let widget_say = Self::say_table_from_widget(widget);

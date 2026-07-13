@@ -867,6 +867,26 @@ impl GameWidget {
         self.backend = Some(backend);
     }
 
+    /// Render a frame whose scene state has already been prepared. This is used by screen-space
+    /// overlays that must upload against the current camera before the one and only scene render.
+    pub(crate) fn render_prepared_frame(
+        &mut self,
+        map: &Map,
+        time: &TheTime,
+        animation_frame: usize,
+        assets: &Assets,
+        scene_handler: &mut SceneHandler,
+    ) {
+        if self.backend_name == "text" {
+            let _ = (animation_frame, scene_handler);
+            self.text_draw(map, time, assets);
+        } else if Self::is_2d_camera(&self.camera) {
+            self.render_prepared_d2(time, animation_frame, scene_handler);
+        } else {
+            self.render_prepared_d3(time, animation_frame, scene_handler);
+        }
+    }
+
     pub fn graphical_prepare_frame(
         &mut self,
         map: &Map,

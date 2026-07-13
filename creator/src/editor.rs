@@ -8623,7 +8623,7 @@ impl TheTrait for Editor {
                                             render_dim.height as f32,
                                         );
                                         let camera_scale = Some(widget.camera_d3.scale());
-                                        let should_redraw = IsoPaintRenderer::upload_overlay_cached(
+                                        IsoPaintRenderer::upload_overlay_cached(
                                             &mut self.iso_paint_render_cache,
                                             region_id,
                                             1,
@@ -8637,7 +8637,8 @@ impl TheTrait for Editor {
                                             camera_scale,
                                         );
                                         scene_handler.vm.set_active_vm(active_vm);
-                                        should_redraw
+                                        // The widget renders once after this preparation callback.
+                                        false
                                     },
                                 );
                                 break;
