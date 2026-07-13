@@ -460,6 +460,11 @@ impl IsoPaintBakedChunk {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct IsoPaintScreenChunk {
     pub origin: [i32; 2],
+    /// The last paint operation incorporated into this baked chunk. Screen chunks created from
+    /// different camera states can overlap after reprojection, so this keeps their composition
+    /// deterministic once live strokes have been discarded.
+    #[serde(default)]
+    pub paint_order: u64,
     #[serde(default)]
     pub screen_anchor: Option<[i32; 2]>,
     #[serde(default)]
@@ -494,6 +499,7 @@ impl IsoPaintScreenChunk {
         }
         Self {
             origin,
+            paint_order: 0,
             screen_anchor: None,
             world_anchor: None,
             camera_scale: None,
@@ -703,6 +709,7 @@ impl IsoPaintLayer {
                     .map(|stroke| stroke.order)
                     .chain(chunk.stamps.iter().map(|stamp| stamp.order))
             })
+            .chain(self.screen_chunks.values().map(|chunk| chunk.paint_order))
             .max()
             .unwrap_or(0)
             .saturating_add(1)
