@@ -12,6 +12,9 @@ use vek::{Mat4, Vec3, Vec4};
 const ISO_PAINT_PAR_COMPOSITE_PIXELS: usize = 32_768;
 const ISO_PAINT_MAX_SYNC_SCREEN_CHUNK_COMMIT_COST: u64 = 900_000;
 const ISO_PAINT_SCREEN_CHUNK_DEPTH_TOLERANCE: f32 = 0.75;
+const ISO_PAINT_TEMPORAL_ENABLED: bool = true;
+const ISO_PAINT_TEMPORAL_HISTORY_WEIGHT: f32 = 0.35;
+const ISO_PAINT_TEMPORAL_MAX_REPROJECT_PIXELS: f32 = 8.0;
 
 #[derive(Clone)]
 struct IsoPaintStrokeRenderCache {
@@ -68,6 +71,7 @@ pub struct IsoPaintRenderCache {
     prepared_key: Option<IsoPaintPreparedOverlayKey>,
     prepared_overlay: Option<IsoPaintPreparedOverlay>,
     uploaded_key: Option<IsoPaintPreparedOverlayKey>,
+    temporal_history: Option<IsoPaintTemporalHistory>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,6 +94,15 @@ struct IsoPaintPreparedOverlay {
     color_rgba: Vec<u8>,
     material_rgba: Vec<u8>,
     paint_alpha_geo_ids: Vec<scenevm::GeoId>,
+}
+
+#[derive(Clone)]
+struct IsoPaintTemporalHistory {
+    width: u32,
+    height: u32,
+    layer_key: u64,
+    camera: Camera3D,
+    color_rgba: Vec<u8>,
 }
 
 pub struct IsoPaintRenderer;
@@ -4190,6 +4203,122 @@ impl IsoPaintRenderer {
         hasher.finish()
     }
 
+    fn iso_paint_sample_temporal_color(
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        x: f32,
+        y: f32,
+    ) -> [f32; 4] {
+        if x < 0.0 || y < 0.0 || x >= width as f32 || y >= height as f32 {
+            return [0.0; 4];
+        }
+
+        let x0 = x.floor() as u32;
+        let y0 = y.floor() as u32;
+        let x1 = (x0 + 1).min(width - 1);
+        let y1 = (y0 + 1).min(height - 1);
+        let tx = x - x0 as f32;
+        let ty = y - y0 as f32;
+        let mut premultiplied = [0.0; 3];
+        let mut alpha = 0.0;
+
+        for (sample_x, sample_y, weight) in [
+            (x0, y0, (1.0 - tx) * (1.0 - ty)),
+            (x1, y0, tx * (1.0 - ty)),
+            (x0, y1, (1.0 - tx) * ty),
+            (x1, y1, tx * ty),
+        ] {
+            let index = ((sample_y * width + sample_x) * 4) as usize;
+            if index + 3 >= pixels.len() {
+                continue;
+            }
+            let sample_alpha = pixels[index + 3] as f32 / 255.0;
+            alpha += sample_alpha * weight;
+            for channel in 0..3 {
+                premultiplied[channel] += pixels[index + channel] as f32 / 255.0
+                    * sample_alpha
+                    * weight;
+            }
+        }
+
+        if alpha <= f32::EPSILON {
+            return [0.0; 4];
+        }
+        [
+            premultiplied[0] / alpha,
+            premultiplied[1] / alpha,
+            premultiplied[2] / alpha,
+            alpha,
+        ]
+    }
+
+    /// Reproject the previous ISO paint frame by its orthographic camera delta. This resolves
+    /// paint color and coverage only where current paint exists; material data stays current,
+    /// preventing geometry-edge trails or changed material classifications.
+    fn iso_paint_temporal_resolve(
+        overlay: &mut IsoPaintPreparedOverlay,
+        history: Option<&IsoPaintTemporalHistory>,
+        camera: Camera3D,
+        layer_key: u64,
+    ) {
+        let Some(history) = history else {
+            return;
+        };
+        if history.width != overlay.width
+            || history.height != overlay.height
+            || history.layer_key != layer_key
+            || !matches!(history.camera.kind, CameraKind::OrthoIso)
+            || camera.ortho_half_h <= f32::EPSILON
+            || (camera.ortho_half_h - history.camera.ortho_half_h).abs() > f32::EPSILON
+        {
+            return;
+        }
+
+        let pixels_per_world_unit = overlay.height as f32 / (2.0 * camera.ortho_half_h);
+        let camera_delta = camera.pos - history.camera.pos;
+        let shift_x = -camera_delta.dot(camera.right) * pixels_per_world_unit;
+        let shift_y = camera_delta.dot(camera.up) * pixels_per_world_unit;
+        if shift_x.abs() > ISO_PAINT_TEMPORAL_MAX_REPROJECT_PIXELS
+            || shift_y.abs() > ISO_PAINT_TEMPORAL_MAX_REPROJECT_PIXELS
+        {
+            return;
+        }
+
+        for y in 0..overlay.height {
+            for x in 0..overlay.width {
+                let index = ((y * overlay.width + x) * 4) as usize;
+                if index + 3 >= overlay.color_rgba.len() || overlay.color_rgba[index + 3] == 0 {
+                    continue;
+                }
+                let previous = Self::iso_paint_sample_temporal_color(
+                    &history.color_rgba,
+                    history.width,
+                    history.height,
+                    x as f32 - shift_x,
+                    y as f32 - shift_y,
+                );
+                if previous[3] <= f32::EPSILON {
+                    continue;
+                }
+                for channel in 0..3 {
+                    let current = overlay.color_rgba[index + channel] as f32 / 255.0;
+                    overlay.color_rgba[index + channel] = ((current
+                        + (previous[channel] - current) * ISO_PAINT_TEMPORAL_HISTORY_WEIGHT)
+                        * 255.0)
+                        .round()
+                        .clamp(0.0, 255.0) as u8;
+                }
+                let current_alpha = overlay.color_rgba[index + 3] as f32 / 255.0;
+                overlay.color_rgba[index + 3] = ((current_alpha
+                    + (previous[3] - current_alpha) * ISO_PAINT_TEMPORAL_HISTORY_WEIGHT)
+                    * 255.0)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+
     fn iso_paint_surface_mask_key(surface: &scenevm::PaintSurfaceBuffer) -> u64 {
         let mut hasher = DefaultHasher::new();
         surface.width.hash(&mut hasher);
@@ -4255,6 +4384,7 @@ impl IsoPaintRenderer {
             render_cache.prepared_key = None;
             render_cache.prepared_overlay = None;
             render_cache.uploaded_key = None;
+            render_cache.temporal_history = None;
         }
 
         if !layer.visible
@@ -5247,6 +5377,7 @@ impl IsoPaintRenderer {
                 vm.execute(Atom::ClearRaster3DPaintOverlay);
                 render_cache.prepared_key = None;
                 render_cache.prepared_overlay = None;
+                render_cache.temporal_history = None;
                 return true;
             }
             return false;
@@ -5267,6 +5398,7 @@ impl IsoPaintRenderer {
         if Self::commit_finished_strokes_to_screen_chunks(layer, &paint_surface, camera_key) {
             render_cache.prepared_key = None;
             render_cache.prepared_overlay = None;
+            render_cache.temporal_history = None;
         }
         let paint_surface_key = base_paint_surface_key;
         let overlay = Self::build_iso_paint_overlay_prepared(
@@ -5285,7 +5417,26 @@ impl IsoPaintRenderer {
             },
         );
 
-        if let Some((key, overlay, changed)) = overlay {
+        if let Some((key, mut overlay, changed)) = overlay {
+            if changed {
+                if ISO_PAINT_TEMPORAL_ENABLED {
+                    Self::iso_paint_temporal_resolve(
+                        &mut overlay,
+                        render_cache.temporal_history.as_ref(),
+                        camera,
+                        key.layer_key,
+                    );
+                    render_cache.temporal_history = Some(IsoPaintTemporalHistory {
+                        width: overlay.width,
+                        height: overlay.height,
+                        layer_key: key.layer_key,
+                        camera,
+                        color_rgba: overlay.color_rgba.clone(),
+                    });
+                } else {
+                    render_cache.temporal_history = None;
+                }
+            }
             let needs_upload = changed || render_cache.uploaded_key != Some(key);
             if needs_upload {
                 vm.execute(Atom::SetRaster3DPaintOverlay {
@@ -5306,6 +5457,7 @@ impl IsoPaintRenderer {
         } else {
             if render_cache.uploaded_key.take().is_some() {
                 vm.execute(Atom::ClearRaster3DPaintOverlay);
+                render_cache.temporal_history = None;
                 return true;
             }
             false
