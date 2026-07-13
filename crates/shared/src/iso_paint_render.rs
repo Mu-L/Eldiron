@@ -1653,89 +1653,6 @@ impl IsoPaintRenderer {
         (depth.is_finite() && depth > camera.near && depth < camera.far).then_some(depth)
     }
 
-    fn iso_paint_stamp_lit_color(
-        pixels: &[u8],
-        width: usize,
-        height: usize,
-        x: i32,
-        y: i32,
-        color: [u8; 4],
-    ) -> [u8; 4] {
-        if x < 0 || y < 0 || x as usize >= width || y as usize >= height || color[3] == 0 {
-            return color;
-        }
-        let sample_luma = |sx: i32, sy: i32| -> f32 {
-            if sx < 0 || sy < 0 || sx as usize >= width || sy as usize >= height {
-                return 0.0;
-            }
-            let index = (sy as usize * width + sx as usize) * 4;
-            if index + 2 >= pixels.len() {
-                return 0.0;
-            }
-            (pixels[index] as f32 * 0.2126
-                + pixels[index + 1] as f32 * 0.7152
-                + pixels[index + 2] as f32 * 0.0722)
-                / 255.0
-        };
-
-        let local_offsets = [
-            (0, 0),
-            (-24, 0),
-            (24, 0),
-            (0, -18),
-            (0, 18),
-            (-36, -24),
-            (36, -24),
-            (-36, 24),
-            (36, 24),
-        ];
-        let local_luma = local_offsets
-            .iter()
-            .map(|(ox, oy)| sample_luma(x + ox, y + oy))
-            .fold(0.0_f32, f32::max);
-
-        let width_i = width as i32;
-        let height_i = height as i32;
-        let broad_points = [
-            (width_i / 2, height_i / 2),
-            (width_i / 4, height_i / 4),
-            (width_i * 3 / 4, height_i / 4),
-            (width_i / 4, height_i * 3 / 4),
-            (width_i * 3 / 4, height_i * 3 / 4),
-            (width_i / 2, height_i / 4),
-            (width_i / 2, height_i * 3 / 4),
-            (width_i / 4, height_i / 2),
-            (width_i * 3 / 4, height_i / 2),
-        ];
-        let broad_luma = broad_points
-            .iter()
-            .map(|(sx, sy)| sample_luma(*sx, *sy))
-            .sum::<f32>()
-            / broad_points.len() as f32;
-
-        let global_light = (0.30 + broad_luma * 1.35).clamp(0.34, 1.08);
-        let local_light = (0.30 + local_luma * 1.35).clamp(0.34, 1.08);
-        let mut light = if local_light < global_light {
-            let ratio = (local_light / global_light.max(0.001)).clamp(0.0, 1.0);
-            global_light * (0.86 + ratio * 0.14)
-        } else {
-            (global_light * 0.75 + local_light * 0.25).min(1.08)
-        };
-
-        if color[0] > 220 && color[1] > 120 && color[2] < 130 {
-            light = light.max(0.72);
-        } else if color[0] > 220 && color[1] > 210 && color[2] > 90 {
-            light = light.max(0.82);
-        }
-
-        [
-            (color[0] as f32 * light).round().clamp(0.0, 255.0) as u8,
-            (color[1] as f32 * light).round().clamp(0.0, 255.0) as u8,
-            (color[2] as f32 * light).round().clamp(0.0, 255.0) as u8,
-            color[3],
-        ]
-    }
-
     fn iso_paint_blend_lit_stamp_pixel(
         pixels: &mut [u8],
         width: usize,
@@ -1744,7 +1661,6 @@ impl IsoPaintRenderer {
         y: i32,
         color: [u8; 4],
     ) {
-        let color = Self::iso_paint_stamp_lit_color(pixels, width, height, x, y, color);
         Self::iso_paint_blend_pixel(pixels, width, height, x, y, color);
     }
 
@@ -4663,22 +4579,17 @@ impl IsoPaintRenderer {
                 current_camera_scale,
                 &project_world_anchor,
             );
-            let stamp_depth = stamp
-                .world
-                .and_then(|world| Self::iso_paint_world_depth(world, camera))
-                .or_else(|| {
-                    paint_surface
-                        .and_then(|surface| surface.pixel(screen[0], screen[1]))
-                        .filter(|pixel| pixel.valid)
-                        .map(|pixel| pixel.depth)
-                });
             let owner_geo_id = stamp.owner.as_ref().map(Self::iso_paint_owner_geo_id);
+            // The final overlay is sampled by the real scene fragment, so the CPU paint-surface
+            // depth is only a clip helper. Using its approximate depth here rejected stamp color
+            // while the material mask below used owner clipping, producing gray material-only
+            // stamps. Keep both passes on the same owner/mask rule.
             Self::draw_iso_paint_stamp_shape(
                 &mut paint_overlay,
                 stamp,
                 paint_surface,
                 screen,
-                stamp_depth,
+                None,
                 owner_geo_id,
                 size,
             );
