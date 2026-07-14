@@ -7,11 +7,11 @@ use rusterix::material_library::MaterialDefinition;
 const ISO_PAINT_MIN_BRUSH_SIZE: f32 = 0.05;
 const ISO_PAINT_MAX_PAINT_BRUSH_SIZE: f32 = 16.0;
 const ISO_PAINT_MAX_STAMP_BRUSH_SIZE: f32 = 8.0;
-const ISO_PAINT_PATTERN_KIND: &str = "Iso Paint Pattern Kind";
-const ISO_PAINT_PATTERN_SCALE: &str = "Iso Paint Pattern Scale";
-const ISO_PAINT_MORTAR: &str = "Iso Paint Mortar";
-const ISO_PAINT_PATTERN_DETAIL: &str = "Iso Paint Pattern Detail";
-const ISO_PAINT_PATTERN_VARIATION: &str = "Iso Paint Pattern Variation";
+const ISO_PAINT_PATTERN_KIND: &str = "3D Paint Pattern Kind";
+const ISO_PAINT_PATTERN_SCALE: &str = "3D Paint Pattern Scale";
+const ISO_PAINT_MORTAR: &str = "3D Paint Mortar";
+const ISO_PAINT_PATTERN_DETAIL: &str = "3D Paint Pattern Detail";
+const ISO_PAINT_PATTERN_VARIATION: &str = "3D Paint Pattern Variation";
 
 pub struct IsoPaintTool {
     id: TheId,
@@ -19,7 +19,7 @@ pub struct IsoPaintTool {
     previous_dock: Option<String>,
     active_stroke: Option<Uuid>,
     last_stamp_screen: Option<[i32; 2]>,
-    stamp_clip_owner: Option<IsoPaintOwner>,
+    stamp_clip_geo: Option<[u32; 4]>,
     stroke_before: Option<Region>,
     stroke_changed: bool,
 }
@@ -98,7 +98,7 @@ impl IsoPaintTool {
             "natural",
             material_id,
             "coat",
-            "object",
+            "surface",
             color,
             vec![palette_index],
             vec![color],
@@ -166,27 +166,22 @@ impl IsoPaintTool {
         dx * dx + dy * dy >= spacing * spacing
     }
 
-    fn stamp_clip_owner(layer: &IsoPaintLayer, point: &IsoPaintPoint) -> Option<IsoPaintOwner> {
-        (layer.active_clip == "object")
-            .then(|| point.owner.clone())
+    fn stamp_clip_geo(layer: &IsoPaintLayer, point: &IsoPaintPoint) -> Option<[u32; 4]> {
+        (layer.active_clip == "surface")
+            .then_some(point.paint_geo)
             .flatten()
     }
 
-    fn stamp_point_matches_clip(point: &IsoPaintPoint, clip_owner: Option<&IsoPaintOwner>) -> bool {
-        clip_owner.is_none_or(|clip_owner| {
-            point
-                .owner
-                .as_ref()
-                .is_some_and(|owner| clip_owner.same_paint_object(owner))
-        })
+    fn stamp_point_matches_clip(point: &IsoPaintPoint, clip_geo: Option<[u32; 4]>) -> bool {
+        clip_geo.is_none_or(|clip_geo| point.paint_geo == Some(clip_geo))
     }
 
     fn apply_stamp_at(
         region: &mut Region,
         point: IsoPaintPoint,
-        clip_owner: Option<&IsoPaintOwner>,
+        clip_geo: Option<[u32; 4]>,
     ) -> bool {
-        if !Self::stamp_point_matches_clip(&point, clip_owner) {
+        if !Self::stamp_point_matches_clip(&point, clip_geo) {
             return false;
         }
         if region.iso_paint.active_operation == "erase" {
@@ -194,7 +189,7 @@ impl IsoPaintTool {
             region.iso_paint.erase_stamps_near_owner_kind(
                 point.screen,
                 region.iso_paint.active_size,
-                clip_owner,
+                point.owner.as_ref(),
                 Some(active_brush.as_str()),
             )
         } else if region.iso_paint.active_operation == "draw" {
@@ -207,12 +202,12 @@ impl IsoPaintTool {
 
     fn sync_live_paint_settings(ui: &mut TheUI, region: &mut Region) {
         if let Some(opacity) = ui
-            .get_widget_value("Iso Paint Tool Opacity")
+            .get_widget_value("3D Paint Tool Opacity")
             .and_then(|value| value.to_f32())
         {
             region.iso_paint.active_opacity = opacity.clamp(0.0, 1.0);
         }
-        if let Some(TheValue::Int(index)) = ui.get_widget_value("Iso Paint Material Mode") {
+        if let Some(TheValue::Int(index)) = ui.get_widget_value("3D Paint Material Mode") {
             region.iso_paint.active_material_mode = match index {
                 1 => "replace".to_string(),
                 2 => "stamp".to_string(),
@@ -251,7 +246,7 @@ impl IsoPaintTool {
             region.iso_paint.active_pattern_variation = variation.clamp(0.0, 1.0);
         }
         if let Some(size) = ui
-            .get_widget_value("Iso Paint Tool Size")
+            .get_widget_value("3D Paint Tool Size")
             .and_then(|value| value.to_f32())
         {
             region.iso_paint.active_size = size.clamp(
@@ -260,13 +255,13 @@ impl IsoPaintTool {
             );
         }
         if let Some(size_jitter) = ui
-            .get_widget_value("Iso Paint Stamp Size Jitter")
+            .get_widget_value("3D Paint Stamp Size Jitter")
             .and_then(|value| value.to_f32())
         {
             region.iso_paint.active_stamp_size_jitter = size_jitter.clamp(0.0, 1.0);
         }
         if let Some(rotation_jitter) = ui
-            .get_widget_value("Iso Paint Stamp Rotation Jitter")
+            .get_widget_value("3D Paint Stamp Rotation Jitter")
             .and_then(|value| value.to_f32())
         {
             region.iso_paint.active_stamp_rotation_jitter = rotation_jitter.clamp(0.0, 1.0);
@@ -306,29 +301,57 @@ impl IsoPaintTool {
         server_ctx: &ServerContext,
         viewport_size: Option<[i32; 2]>,
     ) -> IsoPaintPoint {
-        let owner = server_ctx.geo_hit.map(Self::owner_from_geo_id);
+        // Read the dedicated paint coordinate emitted by the actual rasterized triangle. It is
+        // intentionally separate from the material texture UV, which may repeat across tiles.
+        let raster_surface = viewport_size.and_then(|[width, height]| {
+            if width <= 0 || height <= 0 {
+                return None;
+            }
+            RUSTERIX.read().ok().and_then(|rusterix| {
+                rusterix.scene_handler.vm.pick_paint_surface_at_uv(
+                    width as u32,
+                    height as u32,
+                    [
+                        coord.x as f32 / width as f32,
+                        coord.y as f32 / height as f32,
+                    ],
+                )
+            })
+        });
+        let owner = raster_surface
+            .as_ref()
+            .map(|surface| Self::owner_from_geo_id(surface.geo_id))
+            .or_else(|| server_ctx.geo_hit.map(Self::owner_from_geo_id));
         let world = if server_ctx.geo_hit.is_some() {
             Some(server_ctx.geo_hit_pos)
         } else {
             server_ctx.hover_cursor_3d
         };
-        let surface_uv = server_ctx.hover_surface.as_ref().and_then(|surface| {
-            server_ctx
-                .hover_surface_hit_pos
-                .map(|pos| surface.world_to_uv(pos))
-        });
-        let surface_normal = server_ctx.hover_surface_normal.or_else(|| {
-            server_ctx
-                .hover_surface
-                .as_ref()
-                .map(|surface| surface.plane.normal)
-        });
+        let surface_uv = raster_surface
+            .map(|surface| Vec2::new(surface.uv[0], surface.uv[1]))
+            .or_else(|| {
+                server_ctx.hover_surface.as_ref().and_then(|surface| {
+                    server_ctx
+                        .hover_surface_hit_pos
+                        .map(|pos| surface.world_to_uv(pos))
+                })
+            });
+        let surface_normal = raster_surface
+            .map(|surface| Vec3::new(surface.normal[0], surface.normal[1], surface.normal[2]))
+            .or(server_ctx.hover_surface_normal)
+            .or_else(|| {
+                server_ctx
+                    .hover_surface
+                    .as_ref()
+                    .map(|surface| surface.plane.normal)
+            });
         let camera_scale = RUSTERIX
             .read()
             .ok()
             .map(|rusterix| rusterix.client.camera_d3.scale());
         IsoPaintPoint::new([coord.x, coord.y], world, owner)
             .with_surface_uv(surface_uv)
+            .with_paint_geo(raster_surface.map(|surface| surface.paint_geo))
             .with_surface_normal(surface_normal)
             .with_camera_scale(camera_scale)
             .with_viewport_size(viewport_size)
@@ -349,7 +372,7 @@ impl IsoPaintTool {
         self.painting = false;
         self.active_stroke = None;
         self.last_stamp_screen = None;
-        self.stamp_clip_owner = None;
+        self.stamp_clip_geo = None;
         self.stroke_before = None;
         self.stroke_changed = false;
     }
@@ -361,12 +384,12 @@ impl Tool for IsoPaintTool {
         Self: Sized,
     {
         Self {
-            id: TheId::named("Iso Paint Tool"),
+            id: TheId::named("3D Paint Tool"),
             painting: false,
             previous_dock: None,
             active_stroke: None,
             last_stamp_screen: None,
-            stamp_clip_owner: None,
+            stamp_clip_geo: None,
             stroke_before: None,
             stroke_changed: false,
         }
@@ -404,14 +427,20 @@ impl Tool for IsoPaintTool {
             Activate => {
                 self.reset_stroke();
                 server_ctx.curr_map_tool_type = MapToolType::IsoPaint;
-                server_ctx.editor_view_mode = EditorViewMode::Iso;
+                // 3D Paint operates in every 3D camera.  Preserve the artist's current orbit
+                // or first-person view; entering from 2D defaults to the familiar iso view.
+                if server_ctx.editor_view_mode == EditorViewMode::D2 {
+                    server_ctx.editor_view_mode = EditorViewMode::Iso;
+                }
                 server_ctx.geometry_edit_mode = GeometryEditMode::Geometry;
                 server_ctx.hover_cursor = None;
                 server_ctx.iso_paint_hover_screen = None;
 
                 let neutral_material = Self::neutral_material_palette(project);
                 if let Some(region) = project.get_region_mut(&server_ctx.curr_region) {
-                    region.map.camera = MapCamera::ThreeDIso;
+                    if server_ctx.editor_view_mode == EditorViewMode::Iso {
+                        region.map.camera = MapCamera::ThreeDIso;
+                    }
                     region.map.clear_selection();
                     region.map.clear_temp();
                     Self::ensure_initial_material_settings(region, neutral_material);
@@ -423,7 +452,7 @@ impl Tool for IsoPaintTool {
                 }
 
                 let current_dock = DOCKMANAGER.read().unwrap().dock.clone();
-                if current_dock != "Iso Paint" {
+                if current_dock != "3D Paint" {
                     self.previous_dock = if current_dock.is_empty() {
                         None
                     } else {
@@ -431,7 +460,7 @@ impl Tool for IsoPaintTool {
                     };
                 }
                 DOCKMANAGER.write().unwrap().set_dock(
-                    "Iso Paint".into(),
+                    "3D Paint".into(),
                     ui,
                     ctx,
                     project,
@@ -452,7 +481,7 @@ impl Tool for IsoPaintTool {
                 server_ctx.hover_cursor = None;
                 server_ctx.hover_cursor_3d = None;
                 server_ctx.iso_paint_hover_screen = None;
-                if DOCKMANAGER.read().unwrap().dock == "Iso Paint"
+                if DOCKMANAGER.read().unwrap().dock == "3D Paint"
                     && let Some(prev) = self.previous_dock.take()
                 {
                     DOCKMANAGER
@@ -537,9 +566,9 @@ impl Tool for IsoPaintTool {
                 self.stroke_before = Some(region.clone());
                 if Self::is_stamp_mode(&region.iso_paint) {
                     let point = Self::paint_point(coord, server_ctx, viewport_size);
-                    self.stamp_clip_owner = Self::stamp_clip_owner(&region.iso_paint, &point);
-                    let clip_owner = self.stamp_clip_owner.clone();
-                    let changed = Self::apply_stamp_at(region, point, clip_owner.as_ref());
+                    self.stamp_clip_geo = Self::stamp_clip_geo(&region.iso_paint, &point);
+                    let clip_geo = self.stamp_clip_geo;
+                    let changed = Self::apply_stamp_at(region, point, clip_geo);
                     self.active_stroke = None;
                     self.last_stamp_screen = Some([coord.x, coord.y]);
                     self.stroke_changed = changed;
@@ -593,8 +622,7 @@ impl Tool for IsoPaintTool {
                     )
                 {
                     let point = Self::paint_point(coord, server_ctx, viewport_size);
-                    let changed =
-                        Self::apply_stamp_at(region, point, self.stamp_clip_owner.as_ref());
+                    let changed = Self::apply_stamp_at(region, point, self.stamp_clip_geo);
                     if changed {
                         self.last_stamp_screen = Some([coord.x, coord.y]);
                     }
@@ -608,8 +636,8 @@ impl Tool for IsoPaintTool {
                     let point = Self::paint_point(coord, server_ctx, viewport_size);
                     if region.iso_paint.append_point(stroke_id, point) {
                         self.stroke_changed = true;
-                        Self::request_paint_redraw(ctx);
                     }
+                    Self::request_paint_redraw(ctx);
                 }
             }
             MapHover(coord) => {
@@ -629,8 +657,7 @@ impl Tool for IsoPaintTool {
                     )
                 {
                     let point = Self::paint_point(coord, server_ctx, viewport_size);
-                    let changed =
-                        Self::apply_stamp_at(region, point, self.stamp_clip_owner.as_ref());
+                    let changed = Self::apply_stamp_at(region, point, self.stamp_clip_geo);
                     self.stroke_changed |= changed;
                 } else if self.painting
                     && let Some(stroke_id) = self.active_stroke

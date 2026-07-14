@@ -312,7 +312,7 @@ icons, avatar defaults, UI color channels, and generated ruleset assets can rely
 on those indices staying stable.
 
 The editable **Art Palette** is separate. It is used for artist-authored tiles,
-pixel drawing, tile graphs, palette-index geometry sources, and Iso Paint.
+pixel drawing, tile graphs, palette-index geometry sources, and 3D Paint.
 
 For ruleset-driven projects:
 

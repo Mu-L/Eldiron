@@ -26,6 +26,7 @@ pub enum GeoId {
 pub struct PaintSurfacePixel {
     pub valid: bool,
     pub geo_id: GeoId,
+    pub paint_geo: [u32; 4],
     pub face_id: u32,
     pub depth: f32,
     pub world: [f32; 3],
@@ -38,6 +39,7 @@ impl Default for PaintSurfacePixel {
         Self {
             valid: false,
             geo_id: GeoId::Unknown(0),
+            paint_geo: [0; 4],
             face_id: u32::MAX,
             depth: f32::INFINITY,
             world: [0.0; 3],

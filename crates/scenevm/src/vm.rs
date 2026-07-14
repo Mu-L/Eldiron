@@ -10,15 +10,15 @@ const DEFAULT_PAINT_MATERIAL_PIXEL: [u8; 4] = [254, 0, 0, 0];
 mod raster3d;
 
 use crate::{
-    Camera3D, CameraKind, Chunk, Light, LightType, Poly2D, Texture,
+    Camera3D, CameraKind, Chunk, Light, LightType, Poly2D, Poly3D, Texture,
     atlas::{
         AtlasEntry, AtlasGpuTables, SharedAtlas, TileEmissiveSummary, default_material_frame,
         normalize_material_frame,
     },
     core::{
         Atom, GeoId, LayerBlendMode, OrganicBillboardInstance, OrganicBillboardSprite,
-        PaintSurfaceBuffer, PaletteRemap2DMode, Raster3DSurfacePaintEntry, RenderMode,
-        VMDebugStats,
+        PaintSurfaceBuffer, PaintSurfacePixel, PaletteRemap2DMode, Raster3DSurfacePaintEntry,
+        RenderMode, VMDebugStats,
     },
     dynamic::{DynamicKind, DynamicObject},
 };
@@ -641,6 +641,17 @@ fn apply_post(color: vec3<f32>, frag_pos: vec4<f32>) -> vec3<f32> {
 
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
   return pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
+}
+
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+  return pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+}
+
+// Base tiles and the 3D Paint atlas are both stored as sRGB bytes. Alpha compositing needs to
+// happen in linear light; mixing their encoded values directly makes a translucent paint layer
+// visibly darker than either of its source colours.
+fn blend_srgb_over(base: vec3<f32>, overlay: vec3<f32>, alpha: f32) -> vec3<f32> {
+  return linear_to_srgb(mix(srgb_to_linear(base), srgb_to_linear(overlay), clamp(alpha, 0.0, 1.0)));
 }
 
 fn semantic_material_rmoe(material_id: u32) -> vec4<f32> {
@@ -1409,6 +1420,21 @@ fn unpack_material_id(m: vec4<f32>) -> u32 {
     return 0u;
 }
 
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    return pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
+}
+
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    return pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+}
+
+// Base tiles and the 3D Paint atlas are both stored as sRGB bytes. Alpha compositing needs to
+// happen in linear light; mixing their encoded values directly makes a translucent paint layer
+// visibly darker than either of its source colours.
+fn blend_srgb_over(base: vec3<f32>, overlay: vec3<f32>, alpha: f32) -> vec3<f32> {
+    return linear_to_srgb(mix(srgb_to_linear(base), srgb_to_linear(overlay), clamp(alpha, 0.0, 1.0)));
+}
+
 fn semantic_material_row(material_id: u32, row: u32, fallback: vec4<f32>) -> vec4<f32> {
     let clamped_id = min(material_id, 255u);
     let index = clamped_id * 3u + row;
@@ -1466,8 +1492,19 @@ fn surface_paint_geo_matches(a: vec4<u32>, b: vec4<u32>) -> bool {
     return all(a == b);
 }
 
-fn surface_paint_atlas_pixel(uv: vec2<f32>, paint_geo: vec4<u32>) -> vec2<i32> {
-    let uv_px = vec2<i32>(floor(uv * 128.0));
+fn surface_paint_coordinate(world_pos: vec3<f32>, paint_geo: vec4<u32>) -> vec2<f32> {
+    let axis = paint_geo.w & 3u;
+    if (axis == 0u) {
+        return world_pos.xz;
+    }
+    if (axis == 1u) {
+        return world_pos.zy;
+    }
+    return world_pos.xy;
+}
+
+fn surface_paint_atlas_pixel(world_pos: vec3<f32>, paint_geo: vec4<u32>) -> vec2<i32> {
+    let paint_px = vec2<i32>(floor(surface_paint_coordinate(world_pos, paint_geo) * 32.0));
     for (var i = 0u; i < arrayLength(&surface_paint_entries.data); i = i + 1u) {
         let entry = surface_paint_entries.data[i];
         if (entry.uv_size.x == 0u || entry.uv_size.y == 0u) {
@@ -1477,32 +1514,32 @@ fn surface_paint_atlas_pixel(uv: vec2<f32>, paint_geo: vec4<u32>) -> vec2<i32> {
             continue;
         }
         let max_px = entry.uv_origin + vec2<i32>(entry.uv_size);
-        if (uv_px.x < entry.uv_origin.x || uv_px.y < entry.uv_origin.y ||
-            uv_px.x >= max_px.x || uv_px.y >= max_px.y) {
+        if (paint_px.x < entry.uv_origin.x || paint_px.y < entry.uv_origin.y ||
+            paint_px.x >= max_px.x || paint_px.y >= max_px.y) {
             continue;
         }
-        let local = vec2<u32>(uv_px - entry.uv_origin);
+        let local = vec2<u32>(paint_px - entry.uv_origin);
         return vec2<i32>(entry.atlas_rect.xy + local);
     }
     return vec2<i32>(-1, -1);
 }
 
-fn sample_surface_paint_overlay(uv: vec2<f32>, paint_geo: vec4<u32>) -> vec4<f32> {
+fn sample_surface_paint_overlay(world_pos: vec3<f32>, paint_geo: vec4<u32>) -> vec4<f32> {
     if (surface_paint_dummy_entries()) {
         return vec4<f32>(0.0);
     }
-    let px = surface_paint_atlas_pixel(uv, paint_geo);
+    let px = surface_paint_atlas_pixel(world_pos, paint_geo);
     if (px.x < 0 || px.y < 0) {
         return vec4<f32>(0.0);
     }
     return textureLoad(paint_color_tex, px, 0);
 }
 
-fn sample_surface_paint_material(uv: vec2<f32>, paint_geo: vec4<u32>) -> vec4<u32> {
+fn sample_surface_paint_material(world_pos: vec3<f32>, paint_geo: vec4<u32>) -> vec4<u32> {
     if (surface_paint_dummy_entries()) {
         return vec4<u32>(0u);
     }
-    let px = surface_paint_atlas_pixel(uv, paint_geo);
+    let px = surface_paint_atlas_pixel(world_pos, paint_geo);
     if (px.x < 0 || px.y < 0) {
         return vec4<u32>(0u);
     }
@@ -1917,15 +1954,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let n1_ts = unpack_material_normal_ts(m1_raw);
     var n_ts = normalize(select(mix(n0_ts, n1_ts, blend), n0_ts, is_avatar));
     var color = select(mix(c0, c1, blend), c0, is_avatar);
-    let color_base = select(mix(c0_base, c1_base, blend), c0_base, is_avatar);
-    let paint_overlay = sample_paint_overlay(in.pos);
-    let paint_material_raw = sample_paint_material(in.pos);
+    var color_base = select(mix(c0_base, c1_base, blend), c0_base, is_avatar);
+    // 3D Paint uses its own stable surface coordinates, never the material texture UVs. This
+    // prevents a tiled/repeating material from duplicating a single painted mark.
+    let paint_overlay = sample_surface_paint_overlay(in.world_pos, in.paint_geo);
+    let paint_material_raw = sample_surface_paint_material(in.world_pos, in.paint_geo);
     let paint_color_weight = clamp(paint_overlay.a, 0.0, 1.0) * select(1.0, 0.0, is_avatar);
     let paint_material_marker = paint_material_raw.r == 254u;
     let paint_material_weight = (f32(paint_material_raw.a) * (1.0 / 255.0)) * select(1.0, 0.0, is_avatar);
     let paint_replace_material = paint_material_raw.b > 0u;
-    let paint_replace_opacity_byte = paint_material_raw.b - min(paint_material_raw.b, 1u);
-    let paint_replace_opacity = clamp(f32(paint_replace_opacity_byte) * (1.0 / 254.0), 0.0, 1.0);
     let paint_replace_active = paint_replace_material && paint_material_weight > 0.001;
     let paint_weight = max(paint_color_weight, paint_material_weight);
     if (paint_material_marker && paint_material_weight > 0.001) {
@@ -1936,18 +1973,24 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         material_id = paint_material_id;
         material_traits0 = semantic_material_traits0(material_id);
         material_traits1 = semantic_material_traits1(material_id);
-        let replace_weight = clamp(paint_replace_opacity * paint_material_weight, 0.0, 1.0);
-        let replace_mat = mix(mat, paint_mat, replace_weight);
+        let replace_mat = vec4<f32>(
+            paint_mat.x,
+            paint_mat.y,
+            paint_mat.z * paint_material_weight,
+            paint_mat.w
+        );
         let coat_mat = vec4<f32>(coated_mat.x, coated_mat.y, base_opacity, coated_mat.w);
         mat = select(coat_mat, replace_mat, paint_replace_material);
         n_ts = select(n_ts, vec3<f32>(0.0, 0.0, 1.0), paint_replace_material);
     }
     if (paint_color_weight > 0.001) {
-        let paint_replace_color_weight = max(paint_color_weight, paint_replace_opacity * paint_material_weight);
-        color = select(
-            vec4<f32>(mix(color.rgb, paint_overlay.rgb, paint_color_weight), color.a),
-            vec4<f32>(mix(color.rgb, paint_overlay.rgb, paint_replace_color_weight), color.a),
-            paint_replace_active
+        color = vec4<f32>(
+            mix(color.rgb, paint_overlay.rgb, paint_color_weight),
+            color.a
+        );
+        color_base = vec4<f32>(
+            mix(color_base.rgb, paint_overlay.rgb, paint_color_weight),
+            color_base.a
         );
     }
     // Keep first-person nearby surfaces crisp by blending from LOD0 near the camera.
@@ -2932,6 +2975,55 @@ pub struct VM {
 }
 
 impl VM {
+    /// A stable coplanar paint-surface group, distinct from material texture UVs. Tessellated
+    /// triangles and repeated tile geometry on the same physical plane intentionally resolve
+    /// to one group; separate floor/wall planes do not. The low two bits remain reserved for
+    /// the projection axis.
+    fn paint_surface_group_id(poly: &Poly3D, normal: [f32; 3], point: [f32; 3]) -> u32 {
+        let mut hasher = rustc_hash::FxHasher::default();
+        poly.id.hash(&mut hasher);
+        poly.layer.hash(&mut hasher);
+        let mut normal = normal;
+        let dominant = if normal[0].abs() >= normal[1].abs() && normal[0].abs() >= normal[2].abs() {
+            normal[0]
+        } else if normal[1].abs() >= normal[2].abs() {
+            normal[1]
+        } else {
+            normal[2]
+        };
+        if dominant < 0.0 {
+            normal = [-normal[0], -normal[1], -normal[2]];
+        }
+        for value in normal {
+            ((value * 4096.0).round() as i32).hash(&mut hasher);
+        }
+        let plane_offset = normal[0] * point[0] + normal[1] * point[1] + normal[2] * point[2];
+        ((plane_offset * 1024.0).round() as i64).hash(&mut hasher);
+        let hash = hasher.finish();
+        (((hash as u32) ^ ((hash >> 32) as u32)) & 0x3fff_ffff) << 2
+    }
+
+    fn paint_projection_axis(normal: [f32; 3]) -> u32 {
+        let x = normal[0].abs();
+        let y = normal[1].abs();
+        let z = normal[2].abs();
+        if y >= x && y >= z {
+            0 // XZ, suitable for floors and ceilings.
+        } else if x >= z {
+            1 // ZY, suitable for east/west walls.
+        } else {
+            2 // XY, suitable for north/south walls.
+        }
+    }
+
+    fn paint_surface_coordinate(world: [f32; 3], paint_geo: [u32; 4]) -> [f32; 2] {
+        match paint_geo[3] & 0x3 {
+            0 => [world[0], world[2]],
+            1 => [world[2], world[1]],
+            _ => [world[0], world[1]],
+        }
+    }
+
     fn palette_tile_indices_uniform(&self) -> [[u32; 4]; 64] {
         let mut out = [[0u32; 4]; 64];
         for index in 0..256u16 {
@@ -9056,7 +9148,21 @@ impl VM {
                             .surface_noise
                             .map(|noise| [noise.scale, noise.amount, noise.seed, 1.0])
                             .unwrap_or([0.0, 0.0, 0.0, 0.0]);
-                        let paint_geo = Self::paint_geo_id_packed(poly.id);
+                        let paint_normal = poly_nrm
+                            .iter()
+                            .copied()
+                            .find(|normal| {
+                                normal[0].abs() + normal[1].abs() + normal[2].abs() > 1e-6
+                            })
+                            .unwrap_or([0.0, 1.0, 0.0]);
+                        let paint_surface_group = Self::paint_surface_group_id(
+                            poly,
+                            paint_normal,
+                            poly_pos.first().copied().unwrap_or([0.0; 3]),
+                        );
+                        let paint_axis = Self::paint_projection_axis(paint_normal);
+                        let mut paint_geo = Self::paint_geo_id_packed(poly.id);
+                        paint_geo[3] = paint_surface_group | paint_axis;
 
                         for (i, p) in poly_pos.iter().enumerate() {
                             let uv0 = poly.uvs[i];
@@ -9504,7 +9610,21 @@ impl VM {
                                 .surface_noise
                                 .map(|noise| [noise.scale, noise.amount, noise.seed, 1.0])
                                 .unwrap_or([0.0, 0.0, 0.0, 0.0]);
-                            let paint_geo = Self::paint_geo_id_packed(poly.id);
+                            let paint_normal = poly_nrm
+                                .iter()
+                                .copied()
+                                .find(|normal| {
+                                    normal[0].abs() + normal[1].abs() + normal[2].abs() > 1e-6
+                                })
+                                .unwrap_or([0.0, 1.0, 0.0]);
+                            let paint_surface_group = Self::paint_surface_group_id(
+                                poly,
+                                paint_normal,
+                                poly_pos.first().copied().unwrap_or([0.0; 3]),
+                            );
+                            let paint_axis = Self::paint_projection_axis(paint_normal);
+                            let mut paint_geo = Self::paint_geo_id_packed(poly.id);
+                            paint_geo[3] = paint_surface_group | paint_axis;
 
                             for (i, p) in poly_pos.iter().enumerate() {
                                 let uv0 = poly.uvs[i];
@@ -11279,6 +11399,12 @@ impl VM {
                 buffer.pixels[index] = crate::core::PaintSurfacePixel {
                     valid: true,
                     geo_id,
+                    paint_geo: self
+                        .cached_static_i3
+                        .get(face_id * 3)
+                        .and_then(|vertex_index| self.cached_static_v3.get(*vertex_index as usize))
+                        .map(|vertex| vertex.paint_geo)
+                        .unwrap_or_else(|| Self::paint_geo_id_packed(geo_id)),
                     face_id: face_id as u32,
                     depth: read_f32(world_base + 12),
                     world: [
@@ -11453,6 +11579,7 @@ impl VM {
                     buffer.pixels[index] = crate::core::PaintSurfacePixel {
                         valid: true,
                         geo_id,
+                        paint_geo: a.paint_geo,
                         face_id,
                         depth: d,
                         world,
@@ -11556,6 +11683,19 @@ impl VM {
                                 buffer.pixels[index] = crate::core::PaintSurfacePixel {
                                     valid: true,
                                     geo_id: poly.id,
+                                    paint_geo: {
+                                        let mut paint_geo = Self::paint_geo_id_packed(poly.id);
+                                        paint_geo[3] = Self::paint_surface_group_id(
+                                            poly,
+                                            [normal_vec.x, normal_vec.y, normal_vec.z],
+                                            a,
+                                        ) | Self::paint_projection_axis([
+                                            normal_vec.x,
+                                            normal_vec.y,
+                                            normal_vec.z,
+                                        ]);
+                                        paint_geo
+                                    },
                                     face_id: face,
                                     depth: d,
                                     world: [
@@ -11587,6 +11727,68 @@ impl VM {
             .get(tri_idx)
             .copied()
             .unwrap_or(false)
+    }
+
+    /// Return the exact rendered-surface identity and interpolated UV under a screen point.
+    /// This is a ray pick, not a full framebuffer rasterization, so authoring tools can query it
+    /// on every brush sample without stalling the editor.
+    pub fn pick_paint_surface_at_uv(
+        &self,
+        fb_w: u32,
+        fb_h: u32,
+        screen_uv: [f32; 2],
+    ) -> Option<PaintSurfacePixel> {
+        if fb_w == 0 || fb_h == 0 || self.accel_dirty || self.geometry3d_dirty {
+            return None;
+        }
+        let (ray_origin, ray_dir) = camera_ray_from_uv(&self.camera3d, fb_w, fb_h, screen_uv);
+        let mut best: Option<(f32, PaintSurfacePixel)> = None;
+        for (tri_idx, tri) in self.cached_static_i3.chunks_exact(3).enumerate() {
+            if !self.static_triangle_visible(tri_idx) {
+                continue;
+            }
+            let (Some(a), Some(b), Some(c)) = (
+                self.cached_static_v3.get(tri[0] as usize),
+                self.cached_static_v3.get(tri[1] as usize),
+                self.cached_static_v3.get(tri[2] as usize),
+            ) else {
+                continue;
+            };
+            let Some((distance, u, v)) =
+                ray_triangle_intersect(ray_origin, ray_dir, a.pos, b.pos, c.pos)
+            else {
+                continue;
+            };
+            if distance <= 1e-5
+                || best
+                    .as_ref()
+                    .is_some_and(|(best_distance, _)| distance >= *best_distance)
+            {
+                continue;
+            }
+            let w = 1.0 - u - v;
+            let geo_id = self.cached_static_tri_geo_ids.get(tri_idx).copied()?;
+            let normal = triangle_normal(a.pos, b.pos, c.pos)?;
+            let world = [
+                a.pos[0] * w + b.pos[0] * u + c.pos[0] * v,
+                a.pos[1] * w + b.pos[1] * u + c.pos[1] * v,
+                a.pos[2] * w + b.pos[2] * u + c.pos[2] * v,
+            ];
+            best = Some((
+                distance,
+                PaintSurfacePixel {
+                    valid: true,
+                    geo_id,
+                    paint_geo: a.paint_geo,
+                    face_id: tri_idx as u32,
+                    depth: distance,
+                    world,
+                    normal: [normal.x, normal.y, normal.z],
+                    uv: Self::paint_surface_coordinate(world, a.paint_geo),
+                },
+            ));
+        }
+        best.map(|(_, pixel)| pixel)
     }
 
     /// Cast a CPU-side ray through a normalized screen UV and return the hit GeoId (if any).

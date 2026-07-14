@@ -313,18 +313,16 @@ impl TheTrait for Client {
                     }
                 }
                 let mut iso_paint = r.iso_paint.clone();
-                self.rusterix.draw_game_with_widget_overlay(
+                let stamp_paint = iso_paint.clone();
+                self.rusterix.draw_game_with_widget_overlays(
                     &r.map,
                     messages,
                     says,
                     choices,
                     |widget, scene_handler| {
                         let render_dim = widget.render_surface_dim();
-                        let display_dim = *widget.buffer.dim();
                         if render_dim.width <= 0
                             || render_dim.height <= 0
-                            || display_dim.width <= 0
-                            || display_dim.height <= 0
                         {
                             return false;
                         }
@@ -356,8 +354,41 @@ impl TheTrait for Client {
                             camera_scale,
                         );
                         scene_handler.vm.set_active_vm(active_vm);
-                        // The widget renders once after this preparation callback.
                         false
+                    },
+                    |widget, scene_handler| {
+                        let display_dim = *widget.buffer.dim();
+                        if display_dim.width <= 0 || display_dim.height <= 0 {
+                            return;
+                        }
+                        let view = widget.camera_d3.view_matrix_for_surface(
+                            display_dim.width as f32,
+                            display_dim.height as f32,
+                        );
+                        let proj = widget.camera_d3.projection_matrix(
+                            display_dim.width as f32,
+                            display_dim.height as f32,
+                        );
+                        let camera = widget.camera_d3.as_scenevm_camera_for_surface(
+                            display_dim.width as f32,
+                            display_dim.height as f32,
+                        );
+                        let active_vm = scene_handler.vm.active_vm_index();
+                        scene_handler.vm.set_active_vm(0);
+                        let stamp_surface = scene_handler.vm.paint_surface_buffer_with_dynamics(
+                            display_dim.width as u32,
+                            display_dim.height as u32,
+                        );
+                        scene_handler.vm.set_active_vm(active_vm);
+                        IsoPaintRenderer::draw_stamps(
+                            &mut widget.buffer,
+                            &stamp_paint,
+                            view,
+                            proj,
+                            Some(&stamp_surface),
+                            camera,
+                            Some(widget.camera_d3.scale()),
+                        );
                     },
                 );
                 self.rusterix

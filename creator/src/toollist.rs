@@ -144,7 +144,7 @@ impl ToolList {
             ShortcutAction::ToolVertex => "Vertex Tool",
             ShortcutAction::ToolEdge => "Linedef / Edge Tool",
             ShortcutAction::ToolFace => "Sector / Face Tool",
-            ShortcutAction::ToolIsoPaint => "Iso Paint Tool",
+            ShortcutAction::ToolIsoPaint => "3D Paint Tool",
         }
     }
 

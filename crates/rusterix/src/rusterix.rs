@@ -467,18 +467,42 @@ impl Rusterix {
     ) where
         F: FnMut(&mut crate::client::widget::game::GameWidget, &mut SceneHandler) -> bool,
     {
+        self.draw_game_with_widget_overlays(
+            map,
+            messages,
+            says,
+            choices,
+            widget_overlay,
+            |_, _| {},
+        );
+    }
+
+    /// Draw the game with a pre-render SceneVM update and a post-render widget pixel overlay.
+    pub fn draw_game_with_widget_overlays<F, G>(
+        &mut self,
+        map: &Map,
+        messages: Vec<crate::server::Message>,
+        says: Vec<crate::server::Say>,
+        choices: Vec<crate::MultipleChoice>,
+        widget_overlay: F,
+        post_widget_overlay: G,
+    ) where
+        F: FnMut(&mut crate::client::widget::game::GameWidget, &mut SceneHandler) -> bool,
+        G: FnMut(&mut crate::client::widget::game::GameWidget, &mut SceneHandler),
+    {
         self.apply_runtime_render_state(map, false);
         let open_container_requests = self.server.get_open_container_requests(&map.id);
         self.client
             .process_open_container_requests(open_container_requests);
         self.client.process_messages(map, says);
-        self.client.draw_game_with_widget_overlay(
+        self.client.draw_game_with_widget_overlays(
             map,
             &self.assets,
             messages,
             choices,
             &mut self.scene_handler,
             widget_overlay,
+            post_widget_overlay,
         );
     }
 

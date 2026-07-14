@@ -66,6 +66,7 @@ enum IsoPaintRenderItem<'a> {
 #[derive(Default)]
 pub struct IsoPaintRenderCache {
     region_id: Option<Uuid>,
+    surface_uploaded_key: Option<u64>,
     chunks: HashMap<String, IsoPaintChunkRenderCache>,
     prepared_key: Option<IsoPaintPreparedOverlayKey>,
     prepared_overlay: Option<IsoPaintPreparedOverlay>,
@@ -108,6 +109,291 @@ pub struct IsoPaintRenderer;
 
 #[allow(dead_code)]
 impl IsoPaintRenderer {
+    /// Rasterize authored 3D paint into stable UV-space chunks.  The old renderer committed
+    /// pixels in camera space; this path is deliberately independent of the active camera.
+    fn surface_chunk_key(paint_geo: [u32; 4], origin: [i32; 2]) -> String {
+        let mut hasher = DefaultHasher::new();
+        paint_geo.hash(&mut hasher);
+        format!("{:016x}:{},{}", hasher.finish(), origin[0], origin[1])
+    }
+
+    fn surface_chunk_origin(uv_pixel: [i32; 2]) -> [i32; 2] {
+        let size = ISO_PAINT_BAKED_CHUNK_SIZE;
+        [
+            uv_pixel[0].div_euclid(size) * size,
+            uv_pixel[1].div_euclid(size) * size,
+        ]
+    }
+
+    fn surface_paint_dab(
+        baked_chunks: &mut IndexMap<String, IsoPaintBakedChunk>,
+        owner: &IsoPaintOwner,
+        paint_geo: [u32; 4],
+        uv: [f32; 2],
+        radius: f32,
+        color: [u8; 4],
+        material_id: u8,
+        writes_material: bool,
+        replace_material: bool,
+        replace_opacity: u8,
+        erase: bool,
+    ) {
+        let center = [
+            (uv[0] * ISO_PAINT_BAKED_PIXELS_PER_UV).round() as i32,
+            (uv[1] * ISO_PAINT_BAKED_PIXELS_PER_UV).round() as i32,
+        ];
+        let radius = radius.max(1.0);
+        let min = [
+            (center[0] as f32 - radius).floor() as i32,
+            (center[1] as f32 - radius).floor() as i32,
+        ];
+        let max = [
+            (center[0] as f32 + radius).ceil() as i32,
+            (center[1] as f32 + radius).ceil() as i32,
+        ];
+
+        for y in min[1]..=max[1] {
+            for x in min[0]..=max[0] {
+                let dx = x as f32 - center[0] as f32;
+                let dy = y as f32 - center[1] as f32;
+                let distance = (dx * dx + dy * dy).sqrt();
+                if distance > radius {
+                    continue;
+                }
+                let coverage = ((1.0 - distance / radius) * color[3] as f32)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+                if coverage == 0 {
+                    continue;
+                }
+                let origin = Self::surface_chunk_origin([x, y]);
+                let key = Self::surface_chunk_key(paint_geo, origin);
+                let chunk = baked_chunks
+                    .entry(key)
+                    .or_insert_with(|| IsoPaintBakedChunk::new(owner.clone(), paint_geo, origin));
+                let local_x = (x - origin[0]) as usize;
+                let local_y = (y - origin[1]) as usize;
+                let index = (local_y * ISO_PAINT_BAKED_CHUNK_SIZE as usize + local_x) * 4;
+                if erase {
+                    let keep = 255_u16.saturating_sub(coverage as u16);
+                    let alpha = ((chunk.color_rgba[index + 3] as u16 * keep) / 255) as u8;
+                    if alpha == 0 {
+                        chunk.color_rgba[index..index + 4].copy_from_slice(&[0, 0, 0, 0]);
+                    } else {
+                        chunk.color_rgba[index + 3] = alpha;
+                    }
+                    Self::iso_paint_clear_material_pixel_at(
+                        &mut chunk.material_rgba,
+                        index,
+                        coverage,
+                    );
+                } else {
+                    Self::iso_paint_blend_pixel_at(
+                        &mut chunk.color_rgba,
+                        index,
+                        [color[0], color[1], color[2], coverage],
+                    );
+                    if writes_material && material_id != 0 {
+                        Self::iso_paint_set_material_pixel_at(
+                            &mut chunk.material_rgba,
+                            index,
+                            material_id,
+                            replace_material,
+                            replace_opacity,
+                            coverage,
+                        );
+                    }
+                }
+                chunk.revision = chunk.revision.wrapping_add(1);
+            }
+        }
+    }
+
+    fn commit_stroke_to_surface_chunks(layer: &mut IsoPaintLayer, stroke: IsoPaintStroke) {
+        let Some(clip_owner) = stroke.points.first().and_then(|point| point.owner.clone()) else {
+            return;
+        };
+        let replace_material = stroke.material_mode == "replace";
+        let replace_opacity = ((stroke.opacity.clamp(0.0, 1.0) * 254.0).round() as u8).min(254);
+        let erase = stroke.operation == "erase";
+        let color = Self::iso_paint_color_with_opacity(stroke.color, stroke.opacity);
+        // Tool size was historically expressed in screen pixels.  Surface paint has 128 texels
+        // per UV unit, so mapping it 1:1 turned a normal 16px brush into half a face.
+        let radius = (stroke.size * 0.5).max(1.0);
+        let writes_material = stroke.brush != "screen";
+        for point in stroke.points {
+            if stroke.clip == "object"
+                && point
+                    .owner
+                    .as_ref()
+                    .is_none_or(|point_owner| !clip_owner.same_paint_object(point_owner))
+            {
+                continue;
+            }
+            let (Some(owner), Some(uv), Some(paint_geo)) =
+                (point.owner.as_ref(), point.surface_uv, point.paint_geo)
+            else {
+                continue;
+            };
+            Self::surface_paint_dab(
+                &mut layer.baked_chunks,
+                owner,
+                paint_geo,
+                uv,
+                radius,
+                color,
+                stroke.material_id,
+                writes_material,
+                replace_material,
+                replace_opacity,
+                erase,
+            );
+        }
+    }
+
+    fn commit_finished_strokes_to_surface_chunks(layer: &mut IsoPaintLayer) -> bool {
+        let pending = std::mem::take(&mut layer.surface_commit_strokes);
+        let mut changed = false;
+        for stroke_id in pending {
+            if let Some(stroke) = layer.take_stroke(stroke_id) {
+                Self::commit_stroke_to_surface_chunks(layer, stroke);
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn build_surface_paint_atlas(
+        baked_chunks: &IndexMap<String, IsoPaintBakedChunk>,
+    ) -> Option<(
+        u32,
+        u32,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<scenevm::Raster3DSurfacePaintEntry>,
+    )> {
+        if baked_chunks.is_empty() {
+            return None;
+        }
+        let count = baked_chunks.len();
+        let columns = (count as f32).sqrt().ceil().max(1.0) as usize;
+        let rows = count.div_ceil(columns);
+        let chunk_size = ISO_PAINT_BAKED_CHUNK_SIZE as usize;
+        let width = (columns * chunk_size) as u32;
+        let height = (rows * chunk_size) as u32;
+        let mut color = vec![0_u8; width as usize * height as usize * 4];
+        let mut material = vec![0_u8; width as usize * height as usize * 4];
+        let mut entries = Vec::with_capacity(count);
+
+        for (index, chunk) in baked_chunks.values().enumerate() {
+            let atlas_x = (index % columns) * chunk_size;
+            let atlas_y = (index / columns) * chunk_size;
+            for row in 0..chunk_size {
+                let source = row * chunk_size * 4;
+                let destination = ((atlas_y + row) * width as usize + atlas_x) * 4;
+                color[destination..destination + chunk_size * 4]
+                    .copy_from_slice(&chunk.color_rgba[source..source + chunk_size * 4]);
+                material[destination..destination + chunk_size * 4]
+                    .copy_from_slice(&chunk.material_rgba[source..source + chunk_size * 4]);
+            }
+            entries.push(scenevm::Raster3DSurfacePaintEntry {
+                geo: chunk.paint_geo,
+                uv_origin: chunk.origin,
+                uv_size: [ISO_PAINT_BAKED_CHUNK_SIZE as u32; 2],
+                atlas_rect: [
+                    atlas_x as u32,
+                    atlas_y as u32,
+                    chunk_size as u32,
+                    chunk_size as u32,
+                ],
+            });
+        }
+        Some((width, height, color, material, entries))
+    }
+
+    fn surface_chunks_with_stamps(layer: &IsoPaintLayer) -> IndexMap<String, IsoPaintBakedChunk> {
+        let mut chunks = layer.baked_chunks.clone();
+        for stamp in layer.chunks.values().flat_map(|chunk| &chunk.stamps) {
+            let (Some(owner), Some(uv), Some(paint_geo)) =
+                (stamp.owner.as_ref(), stamp.surface_uv, stamp.paint_geo)
+            else {
+                continue;
+            };
+            let mut color = stamp.color;
+            color[3] = (stamp.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+            // Stamps use the same surface-space backing as brush paint.  Their procedural
+            // silhouettes are expanded here in a later pass; the persistent anchor is already
+            // UV/owner based, not camera based.
+            Self::surface_paint_dab(
+                &mut chunks,
+                owner,
+                paint_geo,
+                uv,
+                (stamp.size * 0.75).max(1.0),
+                color,
+                stamp.material_id,
+                true,
+                true,
+                254,
+                false,
+            );
+        }
+        chunks
+    }
+
+    pub fn upload_surface_paint_cached(
+        render_cache: &mut IsoPaintRenderCache,
+        layer: &mut IsoPaintLayer,
+        vm: &mut SceneVM,
+    ) -> bool {
+        // The first UV experiment stored camera-space/circle bakes in the same field. There is
+        // no compatibility requirement for that discarded system: never display those pixels as
+        // if they belonged to the current UV brush implementation.
+        if layer.baked_version != ISO_PAINT_BAKE_VERSION {
+            // Current 3D strokes keep stable surface coordinates, so rebake them when the
+            // implementation changes. Legacy screen-space points have no such coordinates and
+            // naturally produce no pixels here.
+            layer.rebuild_baked_paint();
+            layer.surface_commit_strokes.clear();
+            layer.baked_version = ISO_PAINT_BAKE_VERSION;
+        }
+        let mut hasher = DefaultHasher::new();
+        layer.visible.hash(&mut hasher);
+        layer.baked_chunks.len().hash(&mut hasher);
+        for (key, chunk) in &layer.baked_chunks {
+            key.hash(&mut hasher);
+            chunk.paint_geo.hash(&mut hasher);
+            chunk.origin.hash(&mut hasher);
+            chunk.revision.hash(&mut hasher);
+        }
+        let surface_key = hasher.finish();
+        if !layer.visible || layer.baked_chunks.is_empty() {
+            if render_cache.surface_uploaded_key.take().is_some() {
+                vm.execute(Atom::ClearRaster3DPaintOverlay);
+                return true;
+            }
+            return false;
+        }
+        if render_cache.surface_uploaded_key == Some(surface_key) {
+            return false;
+        }
+        let Some((width, height, color_rgba, material_rgba, entries)) =
+            Self::build_surface_paint_atlas(&layer.baked_chunks)
+        else {
+            return false;
+        };
+        vm.set_raster3d_surface_paint(
+            width,
+            height,
+            color_rgba,
+            material_rgba,
+            entries,
+            Vec::new(),
+        );
+        render_cache.surface_uploaded_key = Some(surface_key);
+        true
+    }
+
     fn iso_paint_color_with_opacity(mut color: [u8; 4], opacity: f32) -> [u8; 4] {
         color[3] = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
         color
@@ -1581,10 +1867,18 @@ impl IsoPaintRenderer {
             return None;
         }
         let clip = (proj * view) * Vec4::new(point[0], point[1], point[2], 1.0);
-        if clip.w.abs() <= f32::EPSILON {
+        if !clip.w.is_finite() || clip.w <= f32::EPSILON {
             return None;
         }
         let ndc = Vec3::new(clip.x / clip.w, clip.y / clip.w, clip.z / clip.w);
+        if !ndc.x.is_finite()
+            || !ndc.y.is_finite()
+            || !ndc.z.is_finite()
+            || ndc.z < -1.0
+            || ndc.z > 1.0
+        {
+            return None;
+        }
         Some([
             (ndc.x * 0.5 + 0.5) * width as f32,
             (1.0 - (ndc.y * 0.5 + 0.5)) * height as f32,
@@ -1651,6 +1945,121 @@ impl IsoPaintRenderer {
         let point = Vec3::new(point[0], point[1], point[2]);
         let depth = (point - camera.pos).dot(camera.forward);
         (depth.is_finite() && depth > camera.near && depth < camera.far).then_some(depth)
+    }
+
+    fn iso_paint_projected_stamp_size(
+        stamp: &IsoPaintStamp,
+        camera: scenevm::Camera3D,
+        _width: i32,
+        height: i32,
+    ) -> Option<f32> {
+        let world = stamp.world?;
+        let source_scale = stamp.camera_scale.unwrap_or(6.0).max(0.001);
+        let source_height = stamp
+            .viewport_size
+            .map(|size| size[1])
+            .filter(|height| *height > 0)
+            .unwrap_or(height.max(1)) as f32;
+        let world_units_per_size = 2.0 * source_scale / source_height;
+        let pixels_per_world_unit = match camera.kind {
+            CameraKind::OrthoIso => {
+                height.max(1) as f32 / (2.0 * camera.ortho_half_h.max(0.001))
+            }
+            CameraKind::OrbitPersp | CameraKind::FirstPersonPersp => {
+                let depth = (Vec3::new(world[0], world[1], world[2]) - camera.pos)
+                    .dot(camera.forward);
+                if depth <= camera.near.max(0.001) || depth >= camera.far {
+                    return None;
+                }
+                let half_fov_tan = (camera.vfov_deg.to_radians() * 0.5).tan().max(0.001);
+                height.max(1) as f32 / (2.0 * depth.max(0.001) * half_fov_tan)
+            }
+        };
+        Some(
+            (stamp.size * world_units_per_size * pixels_per_world_unit)
+                .clamp(0.05, stamp.size * 20.0),
+        )
+    }
+
+    /// Stamp generators were authored with pixel-sized minimum and maximum details. Passing a
+    /// camera-scaled `size` into them therefore stopped scaling at those caps: stamps appeared to
+    /// shrink relative to the world up close and grow relative to it far away. Rasterize the
+    /// authored shape once at its native size, then uniformly scale the finished pixels.
+    fn draw_iso_paint_projected_stamp_shape(
+        buffer: &mut TheRGBABuffer,
+        stamp: &IsoPaintStamp,
+        surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
+        screen: [i32; 2],
+        stamp_depth: Option<f32>,
+        owner_geo_id: Option<scenevm::GeoId>,
+        projected_size: f32,
+    ) {
+        let native_size = stamp.size.max(0.01);
+        let scale = (projected_size / native_size).clamp(0.05, 20.0);
+
+        // These bounds cover the tallest native procedural stamp (tree) while remaining small
+        // enough to build per stamp. The subsequent scale is uniform and contains no pixel caps.
+        let side = (native_size * 24.0).ceil().max(16.0) as i32 + 4;
+        let above = (native_size * 34.0).ceil().max(24.0) as i32 + 4;
+        let below = (native_size * 14.0).ceil().max(12.0) as i32 + 4;
+        let source_width = side * 2 + 1;
+        let source_height = above + below + 1;
+        let source_anchor = [side, above];
+        let mut source = TheRGBABuffer::new(TheDim::sized(source_width, source_height));
+        Self::draw_iso_paint_stamp_shape(
+            &mut source,
+            stamp,
+            None,
+            source_anchor,
+            None,
+            None,
+            native_size,
+        );
+
+        let target_dim = *buffer.dim();
+        let min_dx = (-(side as f32) * scale).floor() as i32;
+        let max_dx = (side as f32 * scale).ceil() as i32;
+        let min_dy = (-(above as f32) * scale).floor() as i32;
+        let max_dy = (below as f32 * scale).ceil() as i32;
+        let source_pixels = source.pixels();
+        for dy in min_dy..=max_dy {
+            let y = screen[1] + dy;
+            if y < 0 || y >= target_dim.height {
+                continue;
+            }
+            let source_y = (source_anchor[1] as f32 + dy as f32 / scale)
+                .round()
+                .clamp(0.0, (source_height - 1) as f32) as usize;
+            for dx in min_dx..=max_dx {
+                let x = screen[0] + dx;
+                if x < 0 || x >= target_dim.width {
+                    continue;
+                }
+                let source_x = (source_anchor[0] as f32 + dx as f32 / scale)
+                    .round()
+                    .clamp(0.0, (source_width - 1) as f32)
+                    as usize;
+                let index = (source_y * source_width as usize + source_x) * 4;
+                let color = [
+                    source_pixels[index],
+                    source_pixels[index + 1],
+                    source_pixels[index + 2],
+                    source_pixels[index + 3],
+                ];
+                if color[3] == 0 {
+                    continue;
+                }
+                Self::iso_paint_blend_stamp_pixel(
+                    buffer,
+                    surface_buffer,
+                    stamp_depth,
+                    owner_geo_id,
+                    x,
+                    y,
+                    color,
+                );
+            }
+        }
     }
 
     fn iso_paint_blend_lit_stamp_pixel(
@@ -3046,7 +3455,7 @@ impl IsoPaintRenderer {
         stamp: &IsoPaintStamp,
         target_width: i32,
         target_height: i32,
-        current_camera_scale: Option<f32>,
+        _current_camera_scale: Option<f32>,
         project_world_anchor: &impl Fn([f32; 3], i32, i32) -> Option<[f32; 2]>,
     ) -> ([i32; 2], f32) {
         let screen = stamp
@@ -3054,10 +3463,31 @@ impl IsoPaintRenderer {
             .and_then(|world| project_world_anchor(world, target_width, target_height))
             .map(|screen| [screen[0].floor() as i32, screen[1].floor() as i32])
             .unwrap_or(stamp.screen);
-        let size = if let (Some(source_scale), Some(current_scale)) =
-            (stamp.camera_scale, current_camera_scale)
-        {
-            stamp.size * (source_scale / current_scale.max(0.001)).clamp(0.05, 20.0)
+        // Convert the authored screen size into a small world-space height, then project that
+        // height through the current camera. This makes stamps grow when zooming in and shrink
+        // when zooming out in both orthographic and perspective cameras. The old ratio applied
+        // inverse zoom a second time and behaved backwards.
+        let size = if let (Some(world), Some(source_scale)) = (stamp.world, stamp.camera_scale) {
+            let source_height = stamp
+                .viewport_size
+                .map(|size| size[1])
+                .filter(|height| *height > 0)
+                .unwrap_or(target_height.max(1)) as f32;
+            let world_height = stamp.size * 2.0 * source_scale.max(0.001) / source_height;
+            let base = project_world_anchor(world, target_width, target_height);
+            let top = project_world_anchor(
+                [world[0], world[1] + world_height, world[2]],
+                target_width,
+                target_height,
+            );
+            match (base, top) {
+                (Some(base), Some(top)) => {
+                    let dx = top[0] - base[0];
+                    let dy = top[1] - base[1];
+                    (dx * dx + dy * dy).sqrt().clamp(0.05, stamp.size * 20.0)
+                }
+                _ => stamp.size,
+            }
         } else {
             stamp.size
         };
@@ -3450,7 +3880,7 @@ impl IsoPaintRenderer {
         proj: Mat4<f32>,
         surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
         camera: scenevm::Camera3D,
-        current_camera_scale: Option<f32>,
+        _current_camera_scale: Option<f32>,
     ) {
         if !layer.visible {
             return;
@@ -3459,35 +3889,46 @@ impl IsoPaintRenderer {
         let mut stamps = Vec::new();
         for chunk in layer.chunks.values() {
             for stamp in &chunk.stamps {
-                let screen = stamp
-                    .world
-                    .and_then(|world| {
+                let screen = if let Some(world) = stamp.world {
+                    let Some(screen) =
                         Self::iso_paint_project_world(world, view, proj, dim.width, dim.height)
-                    })
-                    .unwrap_or(stamp.screen);
+                    else {
+                        // A persisted screen coordinate belongs to the camera used for
+                        // placement. Never use it when a valid world anchor is behind the
+                        // current perspective camera.
+                        continue;
+                    };
+                    screen
+                } else {
+                    stamp.screen
+                };
                 stamps.push((screen[1] as f32 + stamp.sort_depth * 0.001, screen, stamp));
             }
         }
         stamps.sort_by(|a, b| a.0.total_cmp(&b.0));
         for (_, screen, stamp) in stamps {
-            let stamp_depth = stamp
-                .world
-                .and_then(|world| Self::iso_paint_world_depth(world, camera))
+            // Use the depth produced by the same paint-surface buffer that clips the stamp.
+            // Perspective cameras store a ray/surface depth which is not interchangeable with
+            // the camera-forward depth used by `iso_paint_world_depth`; mixing those spaces made
+            // stamps pass in orthographic ISO but disappear in First Person and Orbit.
+            let stamp_depth = surface_buffer
+                .and_then(|surface| surface.pixel(screen[0], screen[1]))
+                .filter(|pixel| pixel.valid)
+                .map(|pixel| pixel.depth)
                 .or_else(|| {
-                    surface_buffer
-                        .and_then(|surface| surface.pixel(screen[0], screen[1]))
-                        .filter(|pixel| pixel.valid)
-                        .map(|pixel| pixel.depth)
+                    stamp
+                        .world
+                        .and_then(|world| Self::iso_paint_world_depth(world, camera))
                 });
             let owner_geo_id = stamp.owner.as_ref().map(Self::iso_paint_owner_geo_id);
-            let size = if let (Some(source_scale), Some(current_scale)) =
-                (stamp.camera_scale, current_camera_scale)
-            {
-                stamp.size * (source_scale / current_scale.max(0.001)).clamp(0.05, 20.0)
-            } else {
-                stamp.size
-            };
-            Self::draw_iso_paint_stamp_shape(
+            let size = Self::iso_paint_projected_stamp_size(
+                stamp,
+                camera,
+                dim.width,
+                dim.height,
+            )
+            .unwrap_or(stamp.size);
+            Self::draw_iso_paint_projected_stamp_shape(
                 buffer,
                 stamp,
                 surface_buffer,
@@ -4058,7 +4499,7 @@ impl IsoPaintRenderer {
 
     fn iso_paint_layer_has_upload_content(layer: &IsoPaintLayer) -> bool {
         !layer.screen_chunks.is_empty()
-            || !layer.screen_commit_strokes.is_empty()
+            || !layer.surface_commit_strokes.is_empty()
             || layer
                 .chunks
                 .values()
@@ -5443,11 +5884,11 @@ impl IsoPaintRenderer {
         paint_surface: &scenevm::PaintSurfaceBuffer,
         camera_key: u64,
     ) -> bool {
-        if layer.screen_commit_strokes.is_empty() {
+        if layer.surface_commit_strokes.is_empty() {
             return false;
         }
 
-        let pending = std::mem::take(&mut layer.screen_commit_strokes);
+        let pending = std::mem::take(&mut layer.surface_commit_strokes);
         let mut changed = false;
         for stroke_id in pending {
             let Some(stroke) = Self::iso_paint_find_stroke(layer, stroke_id).cloned() else {
@@ -5465,7 +5906,7 @@ impl IsoPaintRenderer {
         changed
     }
 
-    pub fn upload_overlay_cached(
+    fn upload_legacy_screen_overlay_cached(
         render_cache: &mut IsoPaintRenderCache,
         region_id: Uuid,
         render_context: u8,
@@ -5587,6 +6028,25 @@ impl IsoPaintRenderer {
             }
             false
         }
+    }
+
+    /// Compatibility at the renderer call boundary only.  The implementation no longer uploads
+    /// a camera-space overlay; the retained camera parameters will disappear as call sites move
+    /// to the `PaintRenderer` name.
+    pub fn upload_overlay_cached(
+        render_cache: &mut IsoPaintRenderCache,
+        _region_id: Uuid,
+        _render_context: u8,
+        layer: &mut IsoPaintLayer,
+        vm: &mut SceneVM,
+        _camera: Camera3D,
+        _view: Mat4<f32>,
+        _proj: Mat4<f32>,
+        _width: u32,
+        _height: u32,
+        _current_camera_scale: Option<f32>,
+    ) -> bool {
+        Self::upload_surface_paint_cached(render_cache, layer, vm)
     }
 
     pub fn draw_stamps(

@@ -2095,9 +2095,34 @@ impl Client {
         messages: Vec<crate::server::Message>,
         choices: Vec<crate::MultipleChoice>,
         scene_handler: &mut SceneHandler,
-        mut widget_overlay: F,
+        widget_overlay: F,
     ) where
         F: FnMut(&mut GameWidget, &mut SceneHandler) -> bool,
+    {
+        self.draw_game_with_widget_overlays(
+            map,
+            assets,
+            messages,
+            choices,
+            scene_handler,
+            widget_overlay,
+            |_, _| {},
+        );
+    }
+
+    /// Draw the game with separate pre-render state preparation and post-render pixel overlays.
+    pub fn draw_game_with_widget_overlays<F, G>(
+        &mut self,
+        map: &Map,
+        assets: &Assets,
+        messages: Vec<crate::server::Message>,
+        choices: Vec<crate::MultipleChoice>,
+        scene_handler: &mut SceneHandler,
+        mut widget_overlay: F,
+        mut post_widget_overlay: G,
+    ) where
+        F: FnMut(&mut GameWidget, &mut SceneHandler) -> bool,
+        G: FnMut(&mut GameWidget, &mut SceneHandler),
     {
         scene_handler.vm.set_active_vm(0);
         // Keep scene timing in sync with config
@@ -2140,6 +2165,7 @@ impl Client {
                 assets,
                 scene_handler,
             );
+            post_widget_overlay(widget, scene_handler);
 
             if let Some(font) = &self.messages_font {
                 let widget_say = Self::say_table_from_widget(widget);

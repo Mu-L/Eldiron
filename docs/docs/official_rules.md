@@ -768,7 +768,7 @@ Ruleset Palette. This keeps official item previews, avatar channels, UI defaults
 and generated ruleset icons on stable rules-owned indices.
 
 The editable Art Palette remains separate for tiles, drawing, palette-index
-geometry sources, and Iso Paint.
+geometry sources, and 3D Paint.
 
 ## Tools And Testing
 

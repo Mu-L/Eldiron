@@ -15,7 +15,7 @@ Some tools are specifically designed for **map editing** and display a common **
 - **Rect Tool**
 - **Block Tool**
 - **Builder Tool**
-- **Iso Paint Tool**
+- **3D Paint Tool**
 
 The tool strip also contains **mode toggles** below the main map tools:
 
@@ -93,7 +93,7 @@ With the [Palette Tool](palette), the lower picker area shows the **Palette** do
 - material and finish selectors for Art Palette entries
 - `Apply Color` and `Clear` actions for palette-based assignment
 
-With the [Iso Paint Tool](iso_paint), the lower picker area shows the **Iso Paint** dock instead:
+With the [3D Paint Tool](iso_paint), the lower picker area shows the **3D Paint** dock instead:
 
 - visual brush presets
 - draw/erase/pick and object clipping controls
@@ -150,8 +150,8 @@ It uses a dedicated block grid in 3D views, supports click placement, line and r
 
 For the full workflow, see [Block Tool](blocks).
 
-## Iso Paint Mode
+## 3D Paint Mode
 
-The **Iso Paint Tool** paints persistent isometric beauty layers over 3D region geometry. It is meant for organic detail such as moss, cracks, grass, dirt, puddles, generated brick patterns, and color-only touchups in the fixed iso view.
+The **3D Paint Tool** paints persistent isometric beauty layers over 3D region geometry. It is meant for organic detail such as moss, cracks, grass, dirt, puddles, generated brick patterns, and color-only touchups in the fixed iso view.
 
-For the full workflow, see [Iso Paint Tool](iso_paint).
+For the full workflow, see [3D Paint Tool](iso_paint).

@@ -49,7 +49,7 @@ impl DockManager {
         docks.insert("Palette".into(), dock);
 
         let dock: Box<dyn Dock> = Box::new(crate::docks::iso_paint::IsoPaintDock::new());
-        docks.insert("Iso Paint".into(), dock);
+        docks.insert("3D Paint".into(), dock);
 
         let dock: Box<dyn Dock> = Box::new(crate::docks::authoring::AuthoringDock::new());
         docks.insert("Authoring".into(), dock);

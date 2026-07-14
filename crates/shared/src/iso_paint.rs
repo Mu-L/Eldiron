@@ -1,3 +1,4 @@
+use crate::iso_paint_brush::{self, IsoPaintBrushSample};
 use crate::prelude::*;
 use theframework::prelude::{Uuid, Vec2, Vec3};
 
@@ -38,7 +39,7 @@ fn default_material_mode() -> String {
 }
 
 fn default_clip() -> String {
-    "object".to_string()
+    "surface".to_string()
 }
 
 fn default_size() -> f32 {
@@ -106,8 +107,13 @@ fn default_order() -> u64 {
 }
 
 pub const ISO_PAINT_BAKED_CHUNK_SIZE: i32 = 64;
-pub const ISO_PAINT_BAKED_PIXELS_PER_UV: f32 = 128.0;
+/// Paint coordinates are generated from stable surface space, independent of a material's UVs.
+pub const ISO_PAINT_BAKED_PIXELS_PER_UV: f32 = 32.0;
 pub const ISO_PAINT_NO_SURFACE_DEPTH: f32 = -1.0;
+pub const ISO_PAINT_BAKE_VERSION: u8 = 20;
+/// UI brush size is measured in the old painter's diameter units. Two paint texels per size
+/// unit matches the visible cursor diameter at the current surface-coordinate density.
+const ISO_PAINT_UV_BRUSH_TEXELS_PER_SIZE: f32 = 2.0;
 
 fn deserialize_surface_depth<'de, D>(deserializer: D) -> Result<Vec<f32>, D::Error>
 where
@@ -124,10 +130,10 @@ where
         .collect())
 }
 
-/// Stable reference to the scene element under an Iso Paint point.
+/// Stable reference to the rendered 3D surface under a paint point.
 ///
-/// The paint remains authored in fixed isometric screen space. This optional
-/// metadata is only for later sorting, masking, picking, and scene-aware tools.
+/// Combined with the surface UV, this anchors paint to durable scene geometry rather than a
+/// particular camera projection.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum IsoPaintOwner {
     Unknown(u32),
@@ -166,6 +172,8 @@ pub struct IsoPaintPoint {
     #[serde(default)]
     pub surface_uv: Option<[f32; 2]>,
     #[serde(default)]
+    pub paint_geo: Option<[u32; 4]>,
+    #[serde(default)]
     pub surface_normal: Option<[f32; 3]>,
     #[serde(default)]
     pub camera_scale: Option<f32>,
@@ -180,6 +188,7 @@ impl IsoPaintPoint {
             screen,
             world: world.map(|p| [p.x, p.y, p.z]),
             surface_uv: None,
+            paint_geo: None,
             surface_normal: None,
             camera_scale: None,
             viewport_size: None,
@@ -189,6 +198,11 @@ impl IsoPaintPoint {
 
     pub fn with_surface_uv(mut self, surface_uv: Option<Vec2<f32>>) -> Self {
         self.surface_uv = surface_uv.map(|uv| [uv.x, uv.y]);
+        self
+    }
+
+    pub fn with_paint_geo(mut self, paint_geo: Option<[u32; 4]>) -> Self {
+        self.paint_geo = paint_geo;
         self
     }
 
@@ -217,12 +231,18 @@ pub struct IsoPaintStamp {
     pub screen: [i32; 2],
     pub world: Option<[f32; 3]>,
     #[serde(default)]
+    pub surface_uv: Option<[f32; 2]>,
+    #[serde(default)]
+    pub paint_geo: Option<[u32; 4]>,
+    #[serde(default)]
     pub surface_normal: Option<[f32; 3]>,
     pub owner: Option<IsoPaintOwner>,
     pub sort_depth: f32,
     pub size: f32,
     #[serde(default)]
     pub camera_scale: Option<f32>,
+    #[serde(default)]
+    pub viewport_size: Option<[i32; 2]>,
     #[serde(default = "default_stamp_variant")]
     pub variant: String,
     pub rotation: f32,
@@ -268,11 +288,14 @@ impl IsoPaintStamp {
             kind,
             screen: point.screen,
             world: point.world,
+            surface_uv: point.surface_uv,
+            paint_geo: point.paint_geo,
             surface_normal: point.surface_normal,
             owner: point.owner,
             sort_depth: point.screen[1] as f32,
             size,
             camera_scale: point.camera_scale,
+            viewport_size: point.viewport_size,
             variant: if variant.is_empty() {
                 default_stamp_variant()
             } else {
@@ -433,6 +456,7 @@ impl IsoPaintChunk {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct IsoPaintBakedChunk {
     pub owner: IsoPaintOwner,
+    pub paint_geo: [u32; 4],
     pub origin: [i32; 2],
     #[serde(default = "default_revision")]
     pub revision: u64,
@@ -441,7 +465,7 @@ pub struct IsoPaintBakedChunk {
 }
 
 impl IsoPaintBakedChunk {
-    pub fn new(owner: IsoPaintOwner, origin: [i32; 2]) -> Self {
+    pub fn new(owner: IsoPaintOwner, paint_geo: [u32; 4], origin: [i32; 2]) -> Self {
         let len = ISO_PAINT_BAKED_CHUNK_SIZE as usize * ISO_PAINT_BAKED_CHUNK_SIZE as usize * 4;
         let mut material_rgba = vec![0_u8; len];
         for pixel in material_rgba.chunks_exact_mut(4) {
@@ -449,6 +473,7 @@ impl IsoPaintBakedChunk {
         }
         Self {
             owner,
+            paint_geo,
             origin,
             revision: 0,
             color_rgba: vec![0_u8; len],
@@ -524,12 +549,17 @@ pub struct IsoPaintLayer {
     pub chunk_size: i32,
     #[serde(default)]
     pub chunks: IndexMap<String, IsoPaintChunk>,
-    #[serde(default)]
+    /// Legacy camera-space chunks are intentionally not loaded or saved by 3D Paint.
+    #[serde(skip)]
     pub screen_chunks: IndexMap<String, IsoPaintScreenChunk>,
     #[serde(default)]
     pub baked_chunks: IndexMap<String, IsoPaintBakedChunk>,
+    /// Bumped when the UV bake algorithm changes. Earlier experimental bakes are discarded;
+    /// screen-space paint has intentionally no migration path.
+    #[serde(default)]
+    pub baked_version: u8,
     #[serde(skip)]
-    pub screen_commit_strokes: Vec<Uuid>,
+    pub surface_commit_strokes: Vec<Uuid>,
     #[serde(default = "default_operation")]
     pub active_operation: String,
     #[serde(default = "default_brush")]
@@ -584,7 +614,8 @@ impl Default for IsoPaintLayer {
             chunks: IndexMap::default(),
             screen_chunks: IndexMap::default(),
             baked_chunks: IndexMap::default(),
-            screen_commit_strokes: Vec::new(),
+            baked_version: ISO_PAINT_BAKE_VERSION,
+            surface_commit_strokes: Vec::new(),
             active_operation: default_operation(),
             active_brush: default_brush(),
             active_brush_shape: default_brush_shape(),
@@ -612,6 +643,379 @@ impl Default for IsoPaintLayer {
 }
 
 impl IsoPaintLayer {
+    /// `object` was the persisted key before the UI correctly called this Surface. Keep it as a
+    /// surface clip while rebuilding recently-authored direct-paint strokes.
+    fn is_surface_clip(clip: &str) -> bool {
+        matches!(clip, "surface" | "object")
+    }
+
+    fn baked_chunk_key(paint_geo: [u32; 4], origin: [i32; 2]) -> String {
+        format!(
+            "{}:{}:{}:{}:{}:{}",
+            paint_geo[0], paint_geo[1], paint_geo[2], paint_geo[3], origin[0], origin[1]
+        )
+    }
+
+    fn baked_chunk_origin_for_uv_pixel(pixel: [i32; 2]) -> [i32; 2] {
+        [
+            pixel[0].div_euclid(ISO_PAINT_BAKED_CHUNK_SIZE) * ISO_PAINT_BAKED_CHUNK_SIZE,
+            pixel[1].div_euclid(ISO_PAINT_BAKED_CHUNK_SIZE) * ISO_PAINT_BAKED_CHUNK_SIZE,
+        ]
+    }
+
+    fn baked_material_pixel(&self, coverage: u8) -> [u8; 4] {
+        let mode = if self.active_material_mode == "replace" {
+            // Alpha is stored in the material texture's A channel, alongside the colour
+            // overlay. Keeping the replace marker fully on avoids applying brush opacity a
+            // second time in the shader.
+            255
+        } else {
+            0
+        };
+        [254, self.active_material_id, mode, coverage]
+    }
+
+    fn blend_baked_color_pixel(dst: &mut [u8], src: [u8; 4]) {
+        let src_a = src[3] as u16;
+        if src_a == 0 {
+            return;
+        }
+        let dst_a = dst[3] as u16;
+        let out_a = (src_a + (dst_a * (255 - src_a)) / 255).min(255);
+        for channel in 0..3 {
+            let src_c = src[channel] as u16;
+            let dst_c = dst[channel] as u16;
+            dst[channel] =
+                ((src_c * src_a + dst_c * dst_a * (255 - src_a) / 255) / out_a.max(1)) as u8;
+        }
+        dst[3] = out_a as u8;
+    }
+
+    /// The original paint compositor treats Coat as a layer, not repeated normal-alpha draws.
+    /// A continuous stroke produces many overlapping dabs; regular "over" compositing makes a
+    /// 20% coat silently approach 100% opacity. Keep the strongest coverage and only blend its
+    /// colour within that fixed layer, matching the former screen-space painter.
+    fn coat_baked_color_pixel(dst: &mut [u8], src: [u8; 4]) {
+        let src_a = src[3] as u16;
+        if src_a == 0 {
+            return;
+        }
+        let dst_a = dst[3] as u16;
+        if dst_a == 0 || src_a >= dst_a {
+            dst.copy_from_slice(&src);
+            return;
+        }
+        let keep_a = dst_a - src_a;
+        for channel in 0..3 {
+            dst[channel] = ((src[channel] as u16 * src_a
+                + dst[channel] as u16 * keep_a)
+                / dst_a) as u8;
+        }
+        // Deliberately do not add alpha here: re-sampling a coat must not make it denser.
+    }
+
+    fn write_baked_pixel(
+        &mut self,
+        owner: &IsoPaintOwner,
+        paint_geo: [u32; 4],
+        uv_pixel: [i32; 2],
+        mut color: [u8; 4],
+        coverage: u8,
+    ) {
+        let origin = Self::baked_chunk_origin_for_uv_pixel(uv_pixel);
+        let key = Self::baked_chunk_key(paint_geo, origin);
+        let local_x = uv_pixel[0] - origin[0];
+        let local_y = uv_pixel[1] - origin[1];
+        if local_x < 0
+            || local_y < 0
+            || local_x >= ISO_PAINT_BAKED_CHUNK_SIZE
+            || local_y >= ISO_PAINT_BAKED_CHUNK_SIZE
+        {
+            return;
+        }
+        let index = (local_y as usize * ISO_PAINT_BAKED_CHUNK_SIZE as usize + local_x as usize) * 4;
+        let opacity = self.active_opacity.clamp(0.0, 1.0);
+        let alpha = ((coverage as f32 / 255.0) * opacity * 255.0).round() as u8;
+        let material_pixel = self.baked_material_pixel(alpha);
+        color[3] = alpha;
+        let erase = self.active_operation == "erase";
+        let chunk = self
+            .baked_chunks
+            .entry(key)
+            .or_insert_with(|| IsoPaintBakedChunk::new(owner.clone(), paint_geo, origin));
+        if index + 3 >= chunk.color_rgba.len() || index + 3 >= chunk.material_rgba.len() {
+            return;
+        }
+        if erase {
+            let clear = alpha;
+            chunk.color_rgba[index + 3] = chunk.color_rgba[index + 3].saturating_sub(clear);
+            chunk.material_rgba[index + 3] = chunk.material_rgba[index + 3].saturating_sub(clear);
+        } else {
+            if self.active_material_mode == "replace" {
+                Self::blend_baked_color_pixel(&mut chunk.color_rgba[index..index + 4], color);
+            } else {
+                Self::coat_baked_color_pixel(&mut chunk.color_rgba[index..index + 4], color);
+            }
+            let existing = chunk.material_rgba[index + 3] as u16;
+            let src = material_pixel[3] as u16;
+            let out_alpha = if self.active_material_mode == "replace" {
+                (src + (existing * (255 - src)) / 255).min(255) as u8
+            } else {
+                existing.max(src) as u8
+            };
+            chunk.material_rgba[index..index + 4].copy_from_slice(&[
+                material_pixel[0],
+                material_pixel[1],
+                material_pixel[2],
+                out_alpha,
+            ]);
+        }
+        chunk.revision = chunk.revision.wrapping_add(1);
+    }
+
+    fn paint_baked_pattern_color(&self, x: i32, y: i32) -> [u8; 4] {
+        let fallback = self.active_color;
+        let scale = self.active_pattern_scale.clamp(0.25, 4.0);
+        // Pattern dimensions are independent of surface-coordinate density. Keep the raw
+        // preview cell size so world-space paint does not turn each brick into a wall.
+        let brick_w = if self.active_pattern_kind == "tile" {
+            12.0
+        } else {
+            17.0
+        } * scale;
+        let brick_h = if self.active_pattern_kind == "tile" {
+            12.0
+        } else {
+            8.5
+        } * scale;
+        let mortar = (brick_w.min(brick_h) * self.active_pattern_mortar.clamp(0.0, 0.4))
+            .min(brick_w.min(brick_h) * 0.45);
+        // Pattern dimensions are expressed in painter texels. This keeps the visible brick
+        // density aligned with the brush preview instead of stretching one brick across most
+        // of a UV island.
+        let px = x as f32;
+        let py = y as f32;
+        let row = (py / brick_h).floor() as i32;
+        let offset = if self.active_pattern_kind != "tile" && row & 1 != 0 {
+            brick_w * 0.5
+        } else {
+            0.0
+        };
+        let local_x = (px + offset).rem_euclid(brick_w);
+        let local_y = py.rem_euclid(brick_h);
+        if local_x < mortar || local_y < mortar {
+            return [fallback[0], fallback[1], fallback[2], 0];
+        }
+        let col = ((px + offset) / brick_w).floor() as i32;
+        let noise = |nx: i32, ny: i32, salt: i32| {
+            let mut hash = nx
+                .wrapping_mul(374_761_393)
+                .wrapping_add(ny.wrapping_mul(668_265_263))
+                .wrapping_add(salt.wrapping_mul(1_274_126_177));
+            hash = (hash ^ (hash >> 13)).wrapping_mul(1_274_126_177);
+            ((hash ^ (hash >> 16)) & 0xffff) as f32 / 65_535.0
+        };
+        let variation = noise(col, row, 11);
+        let base = self
+            .active_palette_colors
+            .get((noise(col, row, 29) * self.active_palette_colors.len() as f32) as usize)
+            .copied()
+            .unwrap_or(fallback);
+        let edge = local_x
+            .min(local_y)
+            .min(brick_w - local_x)
+            .min(brick_h - local_y);
+        let detail = self.active_pattern_detail.clamp(0.0, 1.0);
+        let edge_shade = if edge < mortar + 1.6 {
+            1.0 - 0.12 * detail
+        } else {
+            1.0
+        };
+        let shade = edge_shade
+            * (1.0 + (variation - 0.5) * 0.62 * self.active_pattern_variation.clamp(0.0, 1.0));
+        [
+            (base[0] as f32 * shade).clamp(0.0, 255.0) as u8,
+            (base[1] as f32 * shade).clamp(0.0, 255.0) as u8,
+            (base[2] as f32 * shade).clamp(0.0, 255.0) as u8,
+            base[3],
+        ]
+    }
+
+    fn paint_baked_at_point(&mut self, point: &IsoPaintPoint, clip_geo: Option<[u32; 4]>) {
+        let (Some(owner), Some(uv), Some(paint_geo)) =
+            (point.owner.as_ref(), point.surface_uv, point.paint_geo)
+        else {
+            return;
+        };
+        if Self::is_surface_clip(&self.active_clip)
+            && clip_geo.is_some_and(|clip_geo| clip_geo != paint_geo)
+        {
+            return;
+        }
+        let center = [
+            (uv[0] * ISO_PAINT_BAKED_PIXELS_PER_UV).round() as i32,
+            (uv[1] * ISO_PAINT_BAKED_PIXELS_PER_UV).round() as i32,
+        ];
+        let radius = (self.active_size * ISO_PAINT_UV_BRUSH_TEXELS_PER_SIZE)
+            .round()
+            .clamp(1.0, 96.0) as i32;
+        let mut seed = paint_geo[0] ^ paint_geo[1].rotate_left(7) ^ paint_geo[2].rotate_left(13);
+        seed ^= paint_geo[3].rotate_left(19);
+        seed ^= (center[0] as u32).wrapping_mul(0x9e37_79b9);
+        seed ^= (center[1] as u32).wrapping_mul(0x85eb_ca6b);
+        let brush = self.active_brush.clone();
+        let shape = self.active_brush_shape.clone();
+        let color = self.active_color;
+        let palette = self.active_palette_colors.clone();
+        let sample = IsoPaintBrushSample {
+            brush: &brush,
+            shape: &shape,
+            color,
+            palette: &palette,
+            opacity: 1.0,
+            radius,
+            seed,
+        };
+        for y in center[1] - radius..=center[1] + radius {
+            for x in center[0] - radius..=center[0] + radius {
+                let Some(mut color) =
+                    iso_paint_brush::sample_pixel(&sample, x - center[0], y - center[1])
+                else {
+                    continue;
+                };
+                if brush == "brick" {
+                    let pattern_color = self.paint_baked_pattern_color(x, y);
+                    if pattern_color[3] == 0 {
+                        continue;
+                    }
+                    color[0..3].copy_from_slice(&pattern_color[0..3]);
+                }
+                self.write_baked_pixel(owner, paint_geo, [x, y], color, color[3]);
+            }
+        }
+    }
+
+    fn paint_baked_segment(
+        &mut self,
+        a: &IsoPaintPoint,
+        b: &IsoPaintPoint,
+        clip_geo: Option<[u32; 4]>,
+    ) {
+        let (Some(uv_a), Some(uv_b), Some(paint_geo_a), Some(paint_geo_b)) =
+            (a.surface_uv, b.surface_uv, a.paint_geo, b.paint_geo)
+        else {
+            return;
+        };
+        if paint_geo_a != paint_geo_b {
+            self.paint_baked_at_point(b, clip_geo);
+            return;
+        }
+        let ax = uv_a[0] * ISO_PAINT_BAKED_PIXELS_PER_UV;
+        let ay = uv_a[1] * ISO_PAINT_BAKED_PIXELS_PER_UV;
+        let bx = uv_b[0] * ISO_PAINT_BAKED_PIXELS_PER_UV;
+        let by = uv_b[1] * ISO_PAINT_BAKED_PIXELS_PER_UV;
+        let distance = ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
+        let radius = (self.active_size * ISO_PAINT_UV_BRUSH_TEXELS_PER_SIZE)
+            .round()
+            .max(1.0);
+        let steps = (distance / (radius * 0.35).clamp(1.0, 10.0))
+            .ceil()
+            .max(1.0) as usize;
+        for step in 0..=steps {
+            let t = step as f32 / steps.max(1) as f32;
+            let mut point = b.clone();
+            point.surface_uv = Some([
+                uv_a[0] + (uv_b[0] - uv_a[0]) * t,
+                uv_a[1] + (uv_b[1] - uv_a[1]) * t,
+            ]);
+            point.paint_geo = Some(paint_geo_a);
+            self.paint_baked_at_point(&point, clip_geo);
+        }
+    }
+
+    fn bake_stroke(&mut self, stroke: &IsoPaintStroke) {
+        let saved = (
+            self.active_operation.clone(),
+            self.active_brush.clone(),
+            self.active_brush_shape.clone(),
+            self.active_material_id,
+            self.active_material_mode.clone(),
+            self.active_clip.clone(),
+            self.active_color,
+            self.active_palette_colors.clone(),
+            self.active_pattern_kind.clone(),
+            self.active_pattern_scale,
+            self.active_pattern_mortar,
+            self.active_pattern_detail,
+            self.active_pattern_variation,
+            self.active_size,
+            self.active_opacity,
+        );
+        self.active_operation = stroke.operation.clone();
+        self.active_brush = stroke.brush.clone();
+        self.active_brush_shape = stroke.brush_shape.clone();
+        self.active_material_id = stroke.material_id;
+        self.active_material_mode = stroke.material_mode.clone();
+        self.active_clip = if Self::is_surface_clip(&stroke.clip) {
+            "surface".to_string()
+        } else {
+            "none".to_string()
+        };
+        self.active_color = stroke.color;
+        self.active_palette_colors = stroke.palette_colors.clone();
+        self.active_pattern_kind = stroke.pattern_kind.clone();
+        self.active_pattern_scale = stroke.pattern_scale;
+        self.active_pattern_mortar = stroke.pattern_mortar;
+        self.active_pattern_detail = stroke.pattern_detail;
+        self.active_pattern_variation = stroke.pattern_variation;
+        self.active_size = stroke.size;
+        self.active_opacity = stroke.opacity;
+
+        let clip_geo = Self::is_surface_clip(&stroke.clip)
+            .then(|| stroke.points.first().and_then(|point| point.paint_geo))
+            .flatten();
+        if let Some(first) = stroke.points.first() {
+            self.paint_baked_at_point(first, clip_geo);
+        }
+        for points in stroke.points.windows(2) {
+            self.paint_baked_segment(&points[0], &points[1], clip_geo);
+        }
+
+        (
+            self.active_operation,
+            self.active_brush,
+            self.active_brush_shape,
+            self.active_material_id,
+            self.active_material_mode,
+            self.active_clip,
+            self.active_color,
+            self.active_palette_colors,
+            self.active_pattern_kind,
+            self.active_pattern_scale,
+            self.active_pattern_mortar,
+            self.active_pattern_detail,
+            self.active_pattern_variation,
+            self.active_size,
+            self.active_opacity,
+        ) = saved;
+    }
+
+    /// Rebuild the transient surface-space bake from persistent surface strokes. Stamps remain
+    /// world-anchored procedural shapes and are rendered by the depth-aware stamp pass.
+    /// Points from the discarded screen-space experiment have no surface coordinates and are
+    /// therefore ignored rather than being projected with the wrong semantics.
+    pub fn rebuild_baked_paint(&mut self) {
+        let strokes: Vec<_> = self
+            .chunks
+            .values()
+            .flat_map(|chunk| chunk.strokes.iter().cloned())
+            .collect();
+        self.baked_chunks.clear();
+        for stroke in &strokes {
+            self.bake_stroke(stroke);
+        }
+    }
+
     pub fn stroke_first_owner(&self, stroke_id: Uuid) -> Option<IsoPaintOwner> {
         self.chunks
             .values()
@@ -619,6 +1023,15 @@ impl IsoPaintLayer {
             .find(|stroke| stroke.id == stroke_id)
             .and_then(|stroke| stroke.points.first())
             .and_then(|point| point.owner.clone())
+    }
+
+    pub fn stroke_first_paint_geo(&self, stroke_id: Uuid) -> Option<[u32; 4]> {
+        self.chunks
+            .values()
+            .flat_map(|chunk| &chunk.strokes)
+            .find(|stroke| stroke.id == stroke_id)
+            .and_then(|stroke| stroke.points.first())
+            .and_then(|point| point.paint_geo)
     }
 
     pub fn set_active_settings(
@@ -716,6 +1129,7 @@ impl IsoPaintLayer {
     }
 
     pub fn begin_stroke(&mut self, first_point: IsoPaintPoint) -> Uuid {
+        self.paint_baked_at_point(&first_point, first_point.paint_geo);
         let origin = self.chunk_origin_for_screen(first_point.screen);
         let key = Self::chunk_key(origin);
         let mut stroke = IsoPaintStroke::new(
@@ -823,10 +1237,21 @@ impl IsoPaintLayer {
                 changed = true;
             }
         }
+        if changed {
+            self.rebuild_baked_paint();
+        }
         changed
     }
 
     pub fn append_point(&mut self, stroke_id: Uuid, point: IsoPaintPoint) -> bool {
+        let previous_point = self
+            .chunks
+            .values()
+            .flat_map(|chunk| &chunk.strokes)
+            .find(|stroke| stroke.id == stroke_id)
+            .and_then(|stroke| stroke.points.last())
+            .cloned();
+        let mut baked_segment = None;
         for chunk in self.chunks.values_mut() {
             if let Some(stroke) = chunk
                 .strokes
@@ -843,8 +1268,20 @@ impl IsoPaintLayer {
                 }
                 stroke.append_point(point);
                 chunk.revision = chunk.revision.wrapping_add(1);
-                return true;
+                baked_segment = previous_point.and_then(|previous_point| {
+                    stroke
+                        .points
+                        .last()
+                        .cloned()
+                        .map(|current_point| (previous_point, current_point))
+                });
+                break;
             }
+        }
+        if let Some((previous_point, current_point)) = baked_segment {
+            let clip_geo = self.stroke_first_paint_geo(stroke_id);
+            self.paint_baked_segment(&previous_point, &current_point, clip_geo);
+            return true;
         }
         false
     }
@@ -864,15 +1301,20 @@ impl IsoPaintLayer {
     }
 
     pub fn mark_stroke_for_screen_commit(&mut self, stroke_id: Uuid) {
-        if !self.screen_commit_strokes.contains(&stroke_id) {
-            self.screen_commit_strokes.push(stroke_id);
-        }
+        let _ = stroke_id;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn former_object_clip_key_remains_a_surface_clip() {
+        assert!(IsoPaintLayer::is_surface_clip("object"));
+        assert!(IsoPaintLayer::is_surface_clip("surface"));
+        assert!(!IsoPaintLayer::is_surface_clip("none"));
+    }
 
     #[test]
     fn chunk_origin_uses_floor_division_for_negative_screen_coords() {
@@ -921,6 +1363,39 @@ mod tests {
         assert_eq!(chunk.stamps[0].kind, "grass");
         assert_eq!(chunk.stamps[0].world, Some([1.0, 2.0, 3.0]));
         assert!(chunk.stamp_revision > 0);
+        assert!(layer.baked_chunks.is_empty());
+    }
+
+    #[test]
+    fn coat_opacity_does_not_accumulate_across_overlapping_dabs() {
+        let mut layer = IsoPaintLayer::default();
+        layer.active_material_mode = "coat".to_string();
+        layer.active_brush = "material".to_string();
+        layer.active_brush_shape = "solid".to_string();
+        layer.active_opacity = 0.2;
+        let point = IsoPaintPoint::new([10, 12], None, Some(IsoPaintOwner::Sector(7)))
+            .with_surface_uv(Some(Vec2::new(0.25, 0.25)))
+            .with_paint_geo(Some([7, 0, 0, 1]));
+
+        layer.begin_stroke(point.clone());
+        let first_alpha = layer
+            .baked_chunks
+            .values()
+            .flat_map(|chunk| chunk.color_rgba.chunks_exact(4))
+            .map(|pixel| pixel[3])
+            .max()
+            .unwrap_or(0);
+        layer.begin_stroke(point);
+        let second_alpha = layer
+            .baked_chunks
+            .values()
+            .flat_map(|chunk| chunk.color_rgba.chunks_exact(4))
+            .map(|pixel| pixel[3])
+            .max()
+            .unwrap_or(0);
+
+        assert!((49..=52).contains(&first_alpha));
+        assert_eq!(second_alpha, first_alpha);
     }
 
     #[test]
@@ -1061,5 +1536,70 @@ mod tests {
             .collect();
         assert_eq!(stamps.len(), 1);
         assert_eq!(stamps[0].screen, [200, 240]);
+    }
+
+    #[test]
+    fn direct_uv_paint_is_baked_per_rendered_face() {
+        let mut layer = IsoPaintLayer::default();
+        let owner = IsoPaintOwner::Sector(7);
+        let first = IsoPaintPoint::new([10, 12], None, Some(owner.clone()))
+            .with_surface_uv(Some(Vec2::new(0.25, 0.25)))
+            .with_paint_geo(Some([7, 0, 0, 1]));
+        let second = IsoPaintPoint::new([20, 12], None, Some(owner))
+            .with_surface_uv(Some(Vec2::new(0.25, 0.25)))
+            .with_paint_geo(Some([7, 0, 0, 2]));
+
+        layer.begin_stroke(first);
+        layer.begin_stroke(second);
+
+        assert_eq!(layer.baked_chunks.len(), 2);
+        assert!(
+            layer
+                .baked_chunks
+                .values()
+                .all(|chunk| chunk.color_rgba.chunks_exact(4).any(|pixel| pixel[3] > 0))
+        );
+    }
+
+    #[test]
+    fn object_clip_rejects_points_on_another_owner() {
+        let mut layer = IsoPaintLayer::default();
+        layer.active_clip = "surface".to_string();
+        let first = IsoPaintPoint::new([10, 12], None, Some(IsoPaintOwner::Sector(1)))
+            .with_surface_uv(Some(Vec2::new(0.25, 0.25)))
+            .with_paint_geo(Some([1, 0, 0, 1]));
+        let second = IsoPaintPoint::new([30, 12], None, Some(IsoPaintOwner::Sector(2)))
+            .with_surface_uv(Some(Vec2::new(0.25, 0.25)))
+            .with_paint_geo(Some([2, 0, 0, 1]));
+
+        let stroke = layer.begin_stroke(first);
+        assert!(layer.append_point(stroke, second));
+        assert!(
+            layer
+                .baked_chunks
+                .values()
+                .all(|chunk| chunk.paint_geo == [1, 0, 0, 1])
+        );
+    }
+
+    #[test]
+    fn object_clip_rejects_another_surface_of_the_same_owner() {
+        let mut layer = IsoPaintLayer::default();
+        layer.active_clip = "surface".to_string();
+        let first = IsoPaintPoint::new([10, 12], None, Some(IsoPaintOwner::Sector(1)))
+            .with_surface_uv(Some(Vec2::new(0.25, 0.25)))
+            .with_paint_geo(Some([1, 0, 0, 1]));
+        let second = IsoPaintPoint::new([30, 12], None, Some(IsoPaintOwner::Sector(1)))
+            .with_surface_uv(Some(Vec2::new(0.25, 0.25)))
+            .with_paint_geo(Some([1, 0, 0, 2]));
+
+        let stroke = layer.begin_stroke(first);
+        assert!(layer.append_point(stroke, second));
+        assert!(
+            layer
+                .baked_chunks
+                .values()
+                .all(|chunk| chunk.paint_geo == [1, 0, 0, 1])
+        );
     }
 }

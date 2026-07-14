@@ -6,32 +6,32 @@ use rusterix::material_library::{
 };
 use shared::iso_paint_brush::{self, IsoPaintBrushSample};
 
-const ISO_PAINT_PRESET_STRIP: &str = "Iso Paint Preset Strip";
-const ISO_PAINT_MATERIAL_STRIP: &str = "Iso Paint Material Strip";
-const ISO_PAINT_INSPECTOR_PRIMARY: &str = "Iso Paint Inspector Primary";
-const ISO_PAINT_INSPECTOR_DETAIL: &str = "Iso Paint Inspector Detail";
-const ISO_PAINT_BRUSH_EDITOR: &str = "Iso Paint Brush Editor";
-const ISO_PAINT_BRUSH_SHAPE_GROUP: &str = "Iso Paint Brush Shape Group";
-const ISO_PAINT_BRUSH_SELECTED: &str = "Iso Paint Brush Selected";
-const ISO_PAINT_MATERIAL_PRESET_SELECTED: &str = "Iso Paint Material Preset Selected";
-const ISO_PAINT_MATERIAL_FINISH_SELECTED: &str = "Iso Paint Material Finish Selected";
-const ISO_PAINT_MATERIAL_MODE: &str = "Iso Paint Material Mode";
-const ISO_PAINT_OPERATION_GROUP: &str = "Iso Paint Operation Group";
-const ISO_PAINT_LAYER_VISIBLE: &str = "Iso Paint Layer Visible";
-const ISO_PAINT_CLEAR_ALL: &str = "Iso Paint Clear All";
-const ISO_PAINT_CLIP_GROUP: &str = "Iso Paint Clip Group";
-const ISO_PAINT_TOOL_SIZE: &str = "Iso Paint Tool Size";
-const ISO_PAINT_TOOL_OPACITY: &str = "Iso Paint Tool Opacity";
-const ISO_PAINT_PATTERN_KIND: &str = "Iso Paint Pattern Kind";
-const ISO_PAINT_PATTERN_SCALE: &str = "Iso Paint Pattern Scale";
-const ISO_PAINT_MORTAR: &str = "Iso Paint Mortar";
-const ISO_PAINT_PATTERN_DETAIL: &str = "Iso Paint Pattern Detail";
-const ISO_PAINT_PATTERN_VARIATION: &str = "Iso Paint Pattern Variation";
-const ISO_PAINT_STAMP_DENSITY: &str = "Iso Paint Stamp Density";
-const ISO_PAINT_STAMP_SIZE_JITTER: &str = "Iso Paint Stamp Size Jitter";
-const ISO_PAINT_STAMP_ROTATION_JITTER: &str = "Iso Paint Stamp Rotation Jitter";
-const ISO_PAINT_FLOWER_TYPE: &str = "Iso Paint Flower Type";
-const ISO_PAINT_ACTIVE_BRUSH_COLOR: &str = "Iso Paint Active Brush Color";
+const ISO_PAINT_PRESET_STRIP: &str = "3D Paint Preset Strip";
+const ISO_PAINT_MATERIAL_STRIP: &str = "3D Paint Material Strip";
+const ISO_PAINT_INSPECTOR_PRIMARY: &str = "3D Paint Inspector Primary";
+const ISO_PAINT_INSPECTOR_DETAIL: &str = "3D Paint Inspector Detail";
+const ISO_PAINT_BRUSH_EDITOR: &str = "3D Paint Brush Editor";
+const ISO_PAINT_BRUSH_SHAPE_GROUP: &str = "3D Paint Brush Shape Group";
+const ISO_PAINT_BRUSH_SELECTED: &str = "3D Paint Brush Selected";
+const ISO_PAINT_MATERIAL_PRESET_SELECTED: &str = "3D Paint Material Preset Selected";
+const ISO_PAINT_MATERIAL_FINISH_SELECTED: &str = "3D Paint Material Finish Selected";
+const ISO_PAINT_MATERIAL_MODE: &str = "3D Paint Material Mode";
+const ISO_PAINT_OPERATION_GROUP: &str = "3D Paint Operation Group";
+const ISO_PAINT_LAYER_VISIBLE: &str = "3D Paint Layer Visible";
+const ISO_PAINT_CLEAR_ALL: &str = "3D Paint Clear All";
+const ISO_PAINT_CLIP_GROUP: &str = "3D Paint Clip Group";
+const ISO_PAINT_TOOL_SIZE: &str = "3D Paint Tool Size";
+const ISO_PAINT_TOOL_OPACITY: &str = "3D Paint Tool Opacity";
+const ISO_PAINT_PATTERN_KIND: &str = "3D Paint Pattern Kind";
+const ISO_PAINT_PATTERN_SCALE: &str = "3D Paint Pattern Scale";
+const ISO_PAINT_MORTAR: &str = "3D Paint Mortar";
+const ISO_PAINT_PATTERN_DETAIL: &str = "3D Paint Pattern Detail";
+const ISO_PAINT_PATTERN_VARIATION: &str = "3D Paint Pattern Variation";
+const ISO_PAINT_STAMP_DENSITY: &str = "3D Paint Stamp Density";
+const ISO_PAINT_STAMP_SIZE_JITTER: &str = "3D Paint Stamp Size Jitter";
+const ISO_PAINT_STAMP_ROTATION_JITTER: &str = "3D Paint Stamp Rotation Jitter";
+const ISO_PAINT_FLOWER_TYPE: &str = "3D Paint Flower Type";
+const ISO_PAINT_ACTIVE_BRUSH_COLOR: &str = "3D Paint Active Brush Color";
 const ISO_PAINT_BRUSH_COUNT: usize = 17;
 const ISO_PAINT_SHAPE_STRIP_TILE_WIDTH: i32 = 44;
 const ISO_PAINT_SHAPE_STRIP_ICON_PADDING: i32 = 2;
@@ -50,7 +50,7 @@ enum IsoPaintOperation {
 #[derive(Clone, Copy, PartialEq)]
 enum IsoPaintClipMode {
     None,
-    Object,
+    Surface,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -2868,35 +2868,35 @@ impl IsoPaintDock {
     fn clip_key(clip: IsoPaintClipMode) -> &'static str {
         match clip {
             IsoPaintClipMode::None => "none",
-            IsoPaintClipMode::Object => "object",
+            IsoPaintClipMode::Surface => "surface",
         }
     }
 
     fn clip_index(clip: IsoPaintClipMode) -> i32 {
         match clip {
             IsoPaintClipMode::None => 0,
-            IsoPaintClipMode::Object => 1,
+            IsoPaintClipMode::Surface => 1,
         }
     }
 
     fn clip_from_index(index: usize) -> IsoPaintClipMode {
         match index {
             0 => IsoPaintClipMode::None,
-            _ => IsoPaintClipMode::Object,
+            _ => IsoPaintClipMode::Surface,
         }
     }
 
     fn clip_label(clip: IsoPaintClipMode) -> String {
         match clip {
             IsoPaintClipMode::None => fl!("iso_paint_clip_none"),
-            IsoPaintClipMode::Object => fl!("iso_paint_clip_object"),
+            IsoPaintClipMode::Surface => fl!("iso_paint_clip_object"),
         }
     }
 
     fn clip_from_key(key: &str) -> IsoPaintClipMode {
         match key {
             "none" => IsoPaintClipMode::None,
-            _ => IsoPaintClipMode::Object,
+            _ => IsoPaintClipMode::Surface,
         }
     }
 
@@ -3661,7 +3661,7 @@ impl Dock for IsoPaintDock {
             material_mode: IsoPaintMaterialMode::Coat,
             brush_shape: brush_shapes[0],
             paint_visible: true,
-            clip_mode: IsoPaintClipMode::Object,
+            clip_mode: IsoPaintClipMode::Surface,
             pattern_kind: IsoPaintPatternKind::Bricks,
             pattern_scale: Self::BRUSHES[0].pattern_scale,
             pattern_mortar: Self::BRUSHES[0].mortar,
@@ -3680,7 +3680,7 @@ impl Dock for IsoPaintDock {
 
         let mut toolbar_canvas = TheCanvas::default();
         toolbar_canvas.set_widget(TheTraybar::new(TheId::empty()));
-        let mut toolbar = TheHLayout::new(TheId::named("Iso Paint Toolbar"));
+        let mut toolbar = TheHLayout::new(TheId::named("3D Paint Toolbar"));
         toolbar.set_background_color(None);
         toolbar.set_margin(Vec4::new(10, 2, 6, 2));
         toolbar.set_padding(7);
@@ -3727,7 +3727,7 @@ impl Dock for IsoPaintDock {
             fl!("status_iso_paint_clip"),
         );
         clip_group.add_text_status(
-            Self::clip_label(IsoPaintClipMode::Object),
+            Self::clip_label(IsoPaintClipMode::Surface),
             fl!("status_iso_paint_clip"),
         );
         clip_group.set_item_width(76);
@@ -3934,14 +3934,12 @@ impl Dock for IsoPaintDock {
                 if id.name == ISO_PAINT_CLEAR_ALL =>
             {
                 if let Some(region) = project.get_region_mut(&server_ctx.curr_region)
-                    && (!region.iso_paint.screen_chunks.is_empty()
-                        || !region.iso_paint.screen_commit_strokes.is_empty()
+                    && (!region.iso_paint.surface_commit_strokes.is_empty()
                         || !region.iso_paint.chunks.is_empty()
                         || !region.iso_paint.baked_chunks.is_empty())
                 {
                     let old_region = region.clone();
-                    region.iso_paint.screen_chunks.clear();
-                    region.iso_paint.screen_commit_strokes.clear();
+                    region.iso_paint.surface_commit_strokes.clear();
                     region.iso_paint.chunks.clear();
                     region.iso_paint.baked_chunks.clear();
                     let undo_atom = ProjectUndoAtom::RegionEdit(

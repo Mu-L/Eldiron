@@ -496,7 +496,7 @@ pub struct ServerContext {
 
     /// The current 3d hover position
     pub hover_cursor_3d: Option<Vec3<f32>>,
-    /// Current Iso Paint hover position in render-buffer screen coordinates.
+    /// Current 3D Paint hover position in render-buffer screen coordinates.
     pub iso_paint_hover_screen: Option<Vec2<i32>>,
     /// Ray origin for the current 3D hover position.
     pub hover_ray_origin_3d: Option<Vec3<f32>>,
