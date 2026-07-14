@@ -2709,6 +2709,7 @@ struct VsOut {
     @location(1) @interpolate(flat) sprite_index: u32,
     @location(2) world_pos: vec3<f32>,
     @location(3) normal: vec3<f32>,
+    @location(4) @interpolate(flat) flags: u32,
 };
 
 fn organic_word(index: u32) -> u32 {
@@ -2781,6 +2782,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VsOut {
         out.sprite_index = 0u;
         out.world_pos = vec3<f32>(0.0);
         out.normal = vec3<f32>(0.0, 1.0, 0.0);
+        out.flags = 0u;
         return out;
     }
 
@@ -2804,6 +2806,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VsOut {
     let width = max(organic_f32(instance_base + 3u), 0.001);
     let height = max(organic_f32(instance_base + 4u), 0.001);
     let sprite_index = organic_word(instance_base + 5u);
+    let flags = organic_word(instance_base + 6u);
     let right = normalize(UBO.cam_right.xyz) * (width * 0.5);
     let up = normalize(UBO.cam_up.xyz) * (height * 0.5);
     let world_pos = center + right * corner.x + up * corner.y;
@@ -2813,7 +2816,40 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VsOut {
     out.sprite_index = sprite_index;
     out.world_pos = world_pos;
     out.normal = normalize(cross(right, up));
+    out.flags = flags;
     return out;
+}
+
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    return pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
+}
+
+fn paint_stamp_environment(world_pos: vec3<f32>) -> vec3<f32> {
+    let ambient = UBO.ambient_color_strength.xyz * UBO.ambient_color_strength.w;
+    let sun_enabled = UBO.sun_dir_enabled.w > 0.5;
+    let sun = select(
+        vec3<f32>(0.0),
+        UBO.sun_color_intensity.xyz * (UBO.sun_color_intensity.w * 0.35),
+        sun_enabled
+    );
+    var lighting = max(ambient + sun, vec3<f32>(0.0));
+
+    // Stamps are camera-facing cutouts rather than physical surfaces, so use isotropic point-light
+    // irradiance instead of a view-dependent billboard normal. This lets torches illuminate them
+    // without making their brightness change as the camera rotates.
+    let point_count = min(UBO.point_light_count_pad.x, 8u);
+    for (var li: u32 = 0u; li < point_count; li = li + 1u) {
+        let to_light = UBO.point_light_pos_intensity[li].xyz - world_pos;
+        let dist2 = max(dot(to_light, to_light), 1e-4);
+        let dist = sqrt(dist2);
+        let intensity = max(UBO.point_light_pos_intensity[li].w, 0.0);
+        let range = max(UBO.point_light_color_range[li].w, 0.001);
+        let range_factor = clamp(1.0 - dist / range, 0.0, 1.0);
+        let attenuation = intensity * range_factor * range_factor / dist2;
+        lighting += UBO.point_light_color_range[li].xyz * attenuation;
+    }
+
+    return clamp(lighting, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 fn sample_sprite(sprite_index: u32, uv: vec2<f32>) -> vec4<f32> {
@@ -2838,12 +2874,19 @@ fn sample_sprite(sprite_index: u32, uv: vec2<f32>) -> vec4<f32> {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let texel = sample_sprite(in.sprite_index, in.uv);
-    if (texel.a <= 0.5) {
+    if (texel.a <= 0.001) {
         discard;
     }
     // These sprites are already baked as tiny pixel-art colors. Keep them readable
     // instead of pushing them through the full scene lighting path.
-    var lit = texel.rgb;
+    // Paint stamp rasters are authored and stored as sRGB bytes. The billboard pass writes into
+    // the linear HDR scene target, so decode them before alpha blending and final post/gamma.
+    // Organic geometry billboards predate this flag and retain their existing color path.
+    let is_paint_stamp = (in.flags & 1u) != 0u;
+    var lit = select(texel.rgb, srgb_to_linear(texel.rgb), is_paint_stamp);
+    if (is_paint_stamp) {
+        lit *= paint_stamp_environment(in.world_pos);
+    }
 
     let fog_density = max(UBO.fog_color_density.w, 0.0);
     if (fog_density > 0.0) {
@@ -2852,7 +2895,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         lit = mix(UBO.fog_color_density.xyz, lit, fog_factor);
     }
 
-    return vec4<f32>(lit, 1.0);
+    return vec4<f32>(lit, texel.a);
 }
 "#;
 
@@ -2917,6 +2960,7 @@ pub struct VM {
     dynamic_avatar_objects: FxHashMap<GeoId, DynamicObject>,
     dynamic_avatar_data: FxHashMap<GeoId, DynamicAvatarData>,
     organic_billboards: OrganicBillboardData,
+    paint_billboards: OrganicBillboardData,
 
     pub current_layer: i32,
 
@@ -3998,10 +4042,14 @@ impl VM {
             .values()
             .map(|chunk| chunk.organic_billboard_instances.len())
             .sum();
-        let sprite_count = (self.organic_billboards.sprites.len() + chunk_sprite_count)
-            .min(u32::MAX as usize) as u32;
-        let instance_count = (self.organic_billboards.instances.len() + chunk_instance_count)
-            .min(u32::MAX as usize) as u32;
+        let sprite_count = (self.organic_billboards.sprites.len()
+            + chunk_sprite_count
+            + self.paint_billboards.sprites.len())
+        .min(u32::MAX as usize) as u32;
+        let instance_count = (self.organic_billboards.instances.len()
+            + chunk_instance_count
+            + self.paint_billboards.instances.len())
+        .min(u32::MAX as usize) as u32;
         let instance_offset_words = 8u32;
         let sprite_meta_offset_words = instance_offset_words + instance_count * 8;
         let pixel_offset_words = sprite_meta_offset_words + sprite_count * 4;
@@ -4044,6 +4092,18 @@ impl VM {
             }
             sprite_base = sprite_base.saturating_add(chunk.organic_billboard_sprites.len() as u32);
         }
+        for instance in &self.paint_billboards.instances {
+            words.extend_from_slice(&[
+                instance.center[0].to_bits(),
+                instance.center[1].to_bits(),
+                instance.center[2].to_bits(),
+                instance.width.to_bits(),
+                instance.height.to_bits(),
+                sprite_base.saturating_add(instance.sprite_index),
+                instance.flags,
+                0,
+            ]);
+        }
 
         let mut pixel_words = Vec::new();
         for sprite in &self.organic_billboards.sprites {
@@ -4062,6 +4122,13 @@ impl VM {
                 }
             }
         }
+        for sprite in &self.paint_billboards.sprites {
+            let offset_pixels = pixel_words.len() as u32;
+            words.extend_from_slice(&[offset_pixels, sprite.width, sprite.height, 0]);
+            for px in sprite.rgba.chunks_exact(4) {
+                pixel_words.push(u32::from_le_bytes([px[0], px[1], px[2], px[3]]));
+            }
+        }
         words.extend_from_slice(&pixel_words);
 
         if words.is_empty() {
@@ -4076,14 +4143,20 @@ impl VM {
         let organic_words = self.build_organic_billboard_words();
         let organic_bytes: &[u8] = bytemuck::cast_slice(&organic_words);
         let organic_byte_len = organic_bytes.len().max(std::mem::size_of::<u32>());
-        let instance_count = self.organic_billboards.instances.len().saturating_add(
-            self.chunks_map
-                .values()
-                .map(|chunk| chunk.organic_billboard_instances.len())
-                .sum::<usize>(),
-        ) as u32;
+        let instance_count =
+            self.organic_billboards
+                .instances
+                .len()
+                .saturating_add(
+                    self.chunks_map
+                        .values()
+                        .map(|chunk| chunk.organic_billboard_instances.len())
+                        .sum::<usize>(),
+                )
+                .saturating_add(self.paint_billboards.instances.len()) as u32;
         let needs_recreate = if let Some(g) = self.gpu.as_ref() {
             self.organic_billboards.dirty
+                || self.paint_billboards.dirty
                 || g.organic_billboard_ssbo.is_none()
                 || g.organic_billboard_ssbo_size != organic_byte_len
         } else {
@@ -4108,6 +4181,7 @@ impl VM {
         g.organic_billboard_ssbo_size = organic_byte_len;
         g.organic_billboard_count = instance_count;
         self.organic_billboards.dirty = false;
+        self.paint_billboards.dirty = false;
     }
 
     #[inline]
@@ -4547,6 +4621,7 @@ impl VM {
             dynamic_avatar_objects: FxHashMap::default(),
             dynamic_avatar_data: FxHashMap::default(),
             organic_billboards: OrganicBillboardData::default(),
+            paint_billboards: OrganicBillboardData::default(),
             current_layer: 0,
             scene_accel: SceneAccel::default(),
             accel_dirty: true,
@@ -5236,6 +5311,42 @@ impl VM {
             }
             Atom::ClearOrganicBillboards => {
                 self.organic_billboards = OrganicBillboardData {
+                    dirty: true,
+                    ..OrganicBillboardData::default()
+                };
+            }
+            Atom::SetPaintBillboards { sprites, instances } => {
+                let sanitized_sprites: Vec<OrganicBillboardSprite> = sprites
+                    .into_iter()
+                    .filter(|sprite| {
+                        sprite.width > 0
+                            && sprite.height > 0
+                            && sprite.width <= 256
+                            && sprite.height <= 256
+                            && sprite.rgba.len()
+                                == sprite.width as usize * sprite.height as usize * 4
+                    })
+                    .collect();
+                let sprite_count = sanitized_sprites.len() as u32;
+                let sanitized_instances: Vec<OrganicBillboardInstance> = instances
+                    .into_iter()
+                    .filter(|instance| {
+                        instance.sprite_index < sprite_count
+                            && instance.width.is_finite()
+                            && instance.width > 0.0
+                            && instance.height.is_finite()
+                            && instance.height > 0.0
+                            && instance.center.iter().all(|v| v.is_finite())
+                    })
+                    .collect();
+                self.paint_billboards = OrganicBillboardData {
+                    sprites: sanitized_sprites,
+                    instances: sanitized_instances,
+                    dirty: true,
+                };
+            }
+            Atom::ClearPaintBillboards => {
+                self.paint_billboards = OrganicBillboardData {
                     dirty: true,
                     ..OrganicBillboardData::default()
                 };
@@ -7137,7 +7248,7 @@ impl VM {
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: wgpu::TextureFormat::Rgba16Float,
-                        blend: None,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
@@ -11526,12 +11637,19 @@ impl VM {
             for y in min_y..=max_y {
                 for x in min_x..=max_x {
                     let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
-                    let w0 = paint_edge(pb, pc, p) / area;
-                    let w1 = paint_edge(pc, pa, p) / area;
-                    let w2 = paint_edge(pa, pb, p) / area;
-                    if w0 < -0.0001 || w1 < -0.0001 || w2 < -0.0001 {
+                    let screen_w0 = paint_edge(pb, pc, p) / area;
+                    let screen_w1 = paint_edge(pc, pa, p) / area;
+                    let screen_w2 = paint_edge(pa, pb, p) / area;
+                    if screen_w0 < -0.0001 || screen_w1 < -0.0001 || screen_w2 < -0.0001 {
                         continue;
                     }
+                    let Some(([w0, w1, w2], d)) = paint_interpolation_weights(
+                        &self.camera3d,
+                        [screen_w0, screen_w1, screen_w2],
+                        [da, db, dc],
+                    ) else {
+                        continue;
+                    };
                     if let Some(avatar) = avatar
                         && avatar.size > 0
                     {
@@ -11552,7 +11670,6 @@ impl VM {
                         }
                     }
 
-                    let d = w0 * da + w1 * db + w2 * dc;
                     let index = y as usize * fb_w as usize + x as usize;
                     if d >= depth[index] {
                         continue;
@@ -11666,14 +11783,20 @@ impl VM {
                         for y in min_y..=max_y {
                             for x in min_x..=max_x {
                                 let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
-                                let w0 = paint_edge(pb, pc, p) / area;
-                                let w1 = paint_edge(pc, pa, p) / area;
-                                let w2 = paint_edge(pa, pb, p) / area;
-                                if w0 < -0.0001 || w1 < -0.0001 || w2 < -0.0001 {
+                                let screen_w0 = paint_edge(pb, pc, p) / area;
+                                let screen_w1 = paint_edge(pc, pa, p) / area;
+                                let screen_w2 = paint_edge(pa, pb, p) / area;
+                                if screen_w0 < -0.0001 || screen_w1 < -0.0001 || screen_w2 < -0.0001
+                                {
                                     continue;
                                 }
-
-                                let d = w0 * da + w1 * db + w2 * dc;
+                                let Some(([w0, w1, w2], d)) = paint_interpolation_weights(
+                                    &self.camera3d,
+                                    [screen_w0, screen_w1, screen_w2],
+                                    [da, db, dc],
+                                ) else {
+                                    continue;
+                                };
                                 let index = y as usize * fb_w as usize + x as usize;
                                 if d >= depth[index] {
                                     continue;
@@ -12866,6 +12989,45 @@ fn paint_project_point(
     ))
 }
 
+/// Convert screen-space barycentric weights into the perspective-correct weights used by the
+/// GPU rasterizer. Camera-forward depth and every world/UV attribute must use these corrected
+/// weights; linear screen interpolation makes steep walls report the wrong depth.
+fn paint_interpolation_weights(
+    camera: &Camera3D,
+    screen_weights: [f32; 3],
+    depths: [f32; 3],
+) -> Option<([f32; 3], f32)> {
+    match camera.kind {
+        CameraKind::OrthoIso => {
+            let depth = screen_weights[0] * depths[0]
+                + screen_weights[1] * depths[1]
+                + screen_weights[2] * depths[2];
+            depth.is_finite().then_some((screen_weights, depth))
+        }
+        CameraKind::OrbitPersp | CameraKind::FirstPersonPersp => {
+            if depths
+                .iter()
+                .any(|depth| !depth.is_finite() || *depth <= 0.0)
+            {
+                return None;
+            }
+            let weighted_reciprocal_depth = screen_weights[0] / depths[0]
+                + screen_weights[1] / depths[1]
+                + screen_weights[2] / depths[2];
+            if !weighted_reciprocal_depth.is_finite() || weighted_reciprocal_depth <= f32::EPSILON {
+                return None;
+            }
+            let depth = 1.0 / weighted_reciprocal_depth;
+            let weights = [
+                screen_weights[0] * depth / depths[0],
+                screen_weights[1] * depth / depths[1],
+                screen_weights[2] * depth / depths[2],
+            ];
+            Some((weights, depth))
+        }
+    }
+}
+
 fn paint_edge(a: Vec2<f32>, b: Vec2<f32>, c: Vec2<f32>) -> f32 {
     (c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x)
 }
@@ -12924,4 +13086,15 @@ fn hash_u32(mut state: u32) -> u32 {
     state = state.wrapping_mul(0x27d4eb2d);
     state ^= state >> 15;
     state
+}
+
+#[cfg(test)]
+mod shader_tests {
+    use super::SCENEVM_3D_ORGANIC_BILLBOARD_WGSL;
+
+    #[test]
+    fn organic_billboard_shader_parses() {
+        wgpu::naga::front::wgsl::parse_str(SCENEVM_3D_ORGANIC_BILLBOARD_WGSL)
+            .expect("organic billboard WGSL should parse");
+    }
 }

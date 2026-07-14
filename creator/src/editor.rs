@@ -8584,7 +8584,6 @@ impl TheTrait for Editor {
                                     rusterix.scene_handler.vm.set_active_vm(active_vm);
                                     self.iso_paint_render_cache = Default::default();
                                 }
-                                let stamp_paint = iso_paint.clone();
                                 rusterix.draw_game_with_widget_overlays(
                                     &r.map,
                                     game_messages,
@@ -8592,9 +8591,7 @@ impl TheTrait for Editor {
                                     game_choices,
                                     |widget, scene_handler| {
                                         let render_dim = widget.render_surface_dim();
-                                        if render_dim.width <= 0
-                                            || render_dim.height <= 0
-                                        {
+                                        if render_dim.width <= 0 || render_dim.height <= 0 {
                                             scene_handler
                                                 .vm
                                                 .execute(scenevm::Atom::ClearRaster3DPaintOverlay);
@@ -8636,42 +8633,7 @@ impl TheTrait for Editor {
                                         scene_handler.vm.set_active_vm(active_vm);
                                         false
                                     },
-                                    |widget, scene_handler| {
-                                        let display_dim = *widget.buffer.dim();
-                                        if display_dim.width <= 0 || display_dim.height <= 0 {
-                                            return;
-                                        }
-                                        let view = widget.camera_d3.view_matrix_for_surface(
-                                            display_dim.width as f32,
-                                            display_dim.height as f32,
-                                        );
-                                        let proj = widget.camera_d3.projection_matrix(
-                                            display_dim.width as f32,
-                                            display_dim.height as f32,
-                                        );
-                                        let camera = widget.camera_d3.as_scenevm_camera_for_surface(
-                                            display_dim.width as f32,
-                                            display_dim.height as f32,
-                                        );
-                                        let active_vm = scene_handler.vm.active_vm_index();
-                                        scene_handler.vm.set_active_vm(0);
-                                        let stamp_surface = scene_handler
-                                            .vm
-                                            .paint_surface_buffer_with_dynamics(
-                                                display_dim.width as u32,
-                                                display_dim.height as u32,
-                                            );
-                                        scene_handler.vm.set_active_vm(active_vm);
-                                        IsoPaintRenderer::draw_stamps(
-                                            &mut widget.buffer,
-                                            &stamp_paint,
-                                            view,
-                                            proj,
-                                            Some(&stamp_surface),
-                                            camera,
-                                            Some(widget.camera_d3.scale()),
-                                        );
-                                    },
+                                    |_, _| {},
                                 );
                                 break;
                             }
@@ -9044,47 +9006,6 @@ impl TheTrait for Editor {
                         .map(|region| region.iso_paint.clone());
                     if let Some(iso_paint) = iso_paint {
                         let buffer = render_view.render_buffer_mut();
-                        let has_stamps = iso_paint
-                            .chunks
-                            .values()
-                            .any(|chunk| !chunk.stamps.is_empty());
-                        if has_stamps && let Ok(rusterix) = RUSTERIX.read() {
-                            let dim = *buffer.dim();
-                            if dim.width > 0 && dim.height > 0 {
-                                let view = rusterix.client.camera_d3.view_matrix_for_surface(
-                                    dim.width as f32,
-                                    dim.height as f32,
-                                );
-                                let proj = rusterix.client.camera_d3.projection_matrix(
-                                    dim.width as f32,
-                                    dim.height as f32,
-                                );
-                                let stamp_surface = rusterix
-                                    .scene_handler
-                                    .vm
-                                    .paint_surface_buffer_with_dynamics(
-                                        dim.width as u32,
-                                        dim.height as u32,
-                                    );
-                                let camera = rusterix
-                                    .client
-                                    .camera_d3
-                                    .as_scenevm_camera_for_surface(
-                                        dim.width as f32,
-                                        dim.height as f32,
-                                    );
-                                let camera_scale = Some(rusterix.client.camera_d3.scale());
-                                IsoPaintRenderer::draw_stamps(
-                                    buffer,
-                                    &iso_paint,
-                                    view,
-                                    proj,
-                                    Some(&stamp_surface),
-                                    camera,
-                                    camera_scale,
-                                );
-                            }
-                        }
                         if self.server_ctx.editor_view_mode == EditorViewMode::Iso
                             && self.server_ctx.curr_map_tool_type == MapToolType::IsoPaint
                         {

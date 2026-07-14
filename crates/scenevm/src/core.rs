@@ -337,6 +337,11 @@ pub enum Atom {
         instances: Vec<OrganicBillboardInstance>,
     },
     ClearOrganicBillboards,
+    SetPaintBillboards {
+        sprites: Vec<OrganicBillboardSprite>,
+        instances: Vec<OrganicBillboardInstance>,
+    },
+    ClearPaintBillboards,
     RemoveAvatarBillboardData {
         id: GeoId,
     },

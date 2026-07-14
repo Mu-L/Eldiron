@@ -67,6 +67,7 @@ enum IsoPaintRenderItem<'a> {
 pub struct IsoPaintRenderCache {
     region_id: Option<Uuid>,
     surface_uploaded_key: Option<u64>,
+    stamp_billboard_key: Option<u64>,
     chunks: HashMap<String, IsoPaintChunkRenderCache>,
     prepared_key: Option<IsoPaintPreparedOverlayKey>,
     prepared_overlay: Option<IsoPaintPreparedOverlay>,
@@ -391,6 +392,133 @@ impl IsoPaintRenderer {
             Vec::new(),
         );
         render_cache.surface_uploaded_key = Some(surface_key);
+        true
+    }
+
+    fn upload_stamp_billboards_cached(
+        render_cache: &mut IsoPaintRenderCache,
+        layer: &IsoPaintLayer,
+        vm: &mut SceneVM,
+        camera: Camera3D,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        let mut hasher = DefaultHasher::new();
+        layer.visible.hash(&mut hasher);
+        width.hash(&mut hasher);
+        height.hash(&mut hasher);
+        Self::iso_paint_camera_key(camera, TheDim::sized(width as i32, height as i32))
+            .hash(&mut hasher);
+        for chunk in layer.chunks.values() {
+            chunk.stamp_revision.hash(&mut hasher);
+            for stamp in &chunk.stamps {
+                stamp.id.hash(&mut hasher);
+                stamp.order.hash(&mut hasher);
+                stamp.size.to_bits().hash(&mut hasher);
+                stamp
+                    .world
+                    .map(|world| world.map(f32::to_bits))
+                    .hash(&mut hasher);
+                stamp.camera_scale.map(f32::to_bits).hash(&mut hasher);
+                stamp.viewport_size.hash(&mut hasher);
+            }
+        }
+        let key = hasher.finish();
+        if render_cache.stamp_billboard_key == Some(key) {
+            return false;
+        }
+
+        if !layer.visible {
+            vm.execute(Atom::ClearPaintBillboards);
+            render_cache.stamp_billboard_key = Some(key);
+            return true;
+        }
+
+        let mut sprites = Vec::new();
+        let mut instances = Vec::new();
+        for chunk in layer.chunks.values() {
+            for stamp in &chunk.stamps {
+                let Some(world) = stamp.world else {
+                    continue;
+                };
+                let (source, anchor) = Self::iso_paint_native_stamp_raster(stamp);
+                let source_width = source.dim().width.max(0) as usize;
+                let source_height = source.dim().height.max(0) as usize;
+                if source_width == 0 || source_height == 0 {
+                    continue;
+                }
+                let pixels = source.pixels();
+                let mut min_x = source_width;
+                let mut min_y = source_height;
+                let mut max_x = 0usize;
+                let mut max_y = 0usize;
+                let mut found = false;
+                for y in 0..source_height {
+                    for x in 0..source_width {
+                        if pixels[(y * source_width + x) * 4 + 3] == 0 {
+                            continue;
+                        }
+                        found = true;
+                        min_x = min_x.min(x);
+                        min_y = min_y.min(y);
+                        max_x = max_x.max(x);
+                        max_y = max_y.max(y);
+                    }
+                }
+                if !found {
+                    continue;
+                }
+                let crop_width = max_x - min_x + 1;
+                let crop_height = max_y - min_y + 1;
+                let sprite_width = crop_width.min(256);
+                let sprite_height = crop_height.min(256);
+                let mut rgba = vec![0u8; sprite_width * sprite_height * 4];
+                for y in 0..sprite_height {
+                    let source_y = min_y + y * crop_height / sprite_height;
+                    for x in 0..sprite_width {
+                        let source_x = min_x + x * crop_width / sprite_width;
+                        let source_index = (source_y * source_width + source_x) * 4;
+                        let target_index = (y * sprite_width + x) * 4;
+                        rgba[target_index..target_index + 4]
+                            .copy_from_slice(&pixels[source_index..source_index + 4]);
+                    }
+                }
+
+                let authored_height = stamp
+                    .viewport_size
+                    .map(|size| size[1])
+                    .filter(|height| *height > 0)
+                    .unwrap_or(height.max(1) as i32) as f32;
+                let world_per_pixel =
+                    2.0 * stamp.camera_scale.unwrap_or(6.0).max(0.001) / authored_height;
+                let crop_center_x = (min_x as f32 + max_x as f32) * 0.5;
+                let crop_center_y = (min_y as f32 + max_y as f32) * 0.5;
+                let offset_x = (crop_center_x - anchor[0] as f32) * world_per_pixel;
+                let offset_y = (crop_center_y - anchor[1] as f32) * world_per_pixel;
+                let anchor_world = Vec3::new(world[0], world[1], world[2]);
+                let center = anchor_world + camera.right * offset_x - camera.up * offset_y;
+                let sprite_index = sprites.len() as u32;
+                sprites.push(scenevm::OrganicBillboardSprite {
+                    width: sprite_width as u32,
+                    height: sprite_height as u32,
+                    rgba,
+                });
+                instances.push(scenevm::OrganicBillboardInstance {
+                    center: [center.x, center.y, center.z],
+                    width: crop_width as f32 * world_per_pixel,
+                    height: crop_height as f32 * world_per_pixel,
+                    sprite_index,
+                    flags: 1,
+                });
+            }
+        }
+
+        if sprites.is_empty() {
+            vm.execute(Atom::ClearPaintBillboards);
+        } else {
+            vm.execute(Atom::SetPaintBillboards { sprites, instances });
+        }
+        render_cache.stamp_billboard_key = Some(key);
         true
     }
 
@@ -1962,12 +2090,10 @@ impl IsoPaintRenderer {
             .unwrap_or(height.max(1)) as f32;
         let world_units_per_size = 2.0 * source_scale / source_height;
         let pixels_per_world_unit = match camera.kind {
-            CameraKind::OrthoIso => {
-                height.max(1) as f32 / (2.0 * camera.ortho_half_h.max(0.001))
-            }
+            CameraKind::OrthoIso => height.max(1) as f32 / (2.0 * camera.ortho_half_h.max(0.001)),
             CameraKind::OrbitPersp | CameraKind::FirstPersonPersp => {
-                let depth = (Vec3::new(world[0], world[1], world[2]) - camera.pos)
-                    .dot(camera.forward);
+                let depth =
+                    (Vec3::new(world[0], world[1], world[2]) - camera.pos).dot(camera.forward);
                 if depth <= camera.near.max(0.001) || depth >= camera.far {
                     return None;
                 }
@@ -1991,34 +2117,22 @@ impl IsoPaintRenderer {
         surface_buffer: Option<&scenevm::PaintSurfaceBuffer>,
         screen: [i32; 2],
         stamp_depth: Option<f32>,
-        owner_geo_id: Option<scenevm::GeoId>,
+        _owner_geo_id: Option<scenevm::GeoId>,
         projected_size: f32,
     ) {
         let native_size = stamp.size.max(0.01);
         let scale = (projected_size / native_size).clamp(0.05, 20.0);
 
-        // These bounds cover the tallest native procedural stamp (tree) while remaining small
-        // enough to build per stamp. The subsequent scale is uniform and contains no pixel caps.
-        let side = (native_size * 24.0).ceil().max(16.0) as i32 + 4;
-        let above = (native_size * 34.0).ceil().max(24.0) as i32 + 4;
-        let below = (native_size * 14.0).ceil().max(12.0) as i32 + 4;
-        let source_width = side * 2 + 1;
-        let source_height = above + below + 1;
-        let source_anchor = [side, above];
-        let mut source = TheRGBABuffer::new(TheDim::sized(source_width, source_height));
-        Self::draw_iso_paint_stamp_shape(
-            &mut source,
-            stamp,
-            None,
-            source_anchor,
-            None,
-            None,
-            native_size,
-        );
+        let (source, source_anchor) = Self::iso_paint_native_stamp_raster(stamp);
+        let source_width = source.dim().width;
+        let source_height = source.dim().height;
 
         let target_dim = *buffer.dim();
+        let side = source_anchor[0];
+        let above = source_anchor[1];
+        let below = source_height - source_anchor[1] - 1;
         let min_dx = (-(side as f32) * scale).floor() as i32;
-        let max_dx = (side as f32 * scale).ceil() as i32;
+        let max_dx = ((source_width - source_anchor[0] - 1) as f32 * scale).ceil() as i32;
         let min_dy = (-(above as f32) * scale).floor() as i32;
         let max_dy = (below as f32 * scale).ceil() as i32;
         let source_pixels = source.pixels();
@@ -2037,8 +2151,7 @@ impl IsoPaintRenderer {
                 }
                 let source_x = (source_anchor[0] as f32 + dx as f32 / scale)
                     .round()
-                    .clamp(0.0, (source_width - 1) as f32)
-                    as usize;
+                    .clamp(0.0, (source_width - 1) as f32) as usize;
                 let index = (source_y * source_width as usize + source_x) * 4;
                 let color = [
                     source_pixels[index],
@@ -2049,17 +2162,59 @@ impl IsoPaintRenderer {
                 if color[3] == 0 {
                     continue;
                 }
-                Self::iso_paint_blend_stamp_pixel(
-                    buffer,
-                    surface_buffer,
+
+                if let (Some(surface_pixel), Some(stamp_depth)) = (
+                    surface_buffer
+                        .and_then(|surface| surface.pixel(x, y))
+                        .filter(|pixel| pixel.valid),
                     stamp_depth,
-                    owner_geo_id,
+                ) {
+                    let authored_surface = stamp
+                        .paint_geo
+                        .is_some_and(|paint_geo| paint_geo == surface_pixel.paint_geo);
+                    let tolerance = if authored_surface {
+                        0.12
+                    } else {
+                        (stamp_depth.abs() * 0.00001).max(0.0001)
+                    };
+                    if surface_pixel.depth + tolerance < stamp_depth {
+                        continue;
+                    }
+                }
+
+                Self::iso_paint_blend_lit_stamp_pixel(
+                    buffer.pixels_mut(),
+                    target_dim.width as usize,
+                    target_dim.height as usize,
                     x,
                     y,
                     color,
                 );
             }
         }
+    }
+
+    fn iso_paint_native_stamp_raster(stamp: &IsoPaintStamp) -> (TheRGBABuffer, [i32; 2]) {
+        let native_size = stamp.size.max(0.01);
+        // These bounds cover the tallest native procedural stamp (tree) while remaining small
+        // enough to build per stamp.
+        let side = (native_size * 24.0).ceil().max(16.0) as i32 + 4;
+        let above = (native_size * 34.0).ceil().max(24.0) as i32 + 4;
+        let below = (native_size * 14.0).ceil().max(12.0) as i32 + 4;
+        let source_width = side * 2 + 1;
+        let source_height = above + below + 1;
+        let source_anchor = [side, above];
+        let mut source = TheRGBABuffer::new(TheDim::sized(source_width, source_height));
+        Self::draw_iso_paint_stamp_shape(
+            &mut source,
+            stamp,
+            None,
+            source_anchor,
+            None,
+            None,
+            native_size,
+        );
+        (source, source_anchor)
     }
 
     fn iso_paint_blend_lit_stamp_pixel(
@@ -3907,27 +4062,22 @@ impl IsoPaintRenderer {
         }
         stamps.sort_by(|a, b| a.0.total_cmp(&b.0));
         for (_, screen, stamp) in stamps {
-            // Use the depth produced by the same paint-surface buffer that clips the stamp.
-            // Perspective cameras store a ray/surface depth which is not interchangeable with
-            // the camera-forward depth used by `iso_paint_world_depth`; mixing those spaces made
-            // stamps pass in orthographic ISO but disappear in First Person and Orbit.
-            let stamp_depth = surface_buffer
-                .and_then(|surface| surface.pixel(screen[0], screen[1]))
-                .filter(|pixel| pixel.valid)
-                .map(|pixel| pixel.depth)
+            // The visible surface at the projected anchor may be an occluding wall. Taking that
+            // pixel's depth makes the stamp adopt the wall depth and draw on top of it. Derive
+            // depth from the stamp's own world anchor; the CPU paint surface stores the same
+            // camera-forward depth produced by `paint_project_point`.
+            let stamp_depth = stamp
+                .world
+                .and_then(|world| Self::iso_paint_world_depth(world, camera))
                 .or_else(|| {
-                    stamp
-                        .world
-                        .and_then(|world| Self::iso_paint_world_depth(world, camera))
+                    surface_buffer
+                        .and_then(|surface| surface.pixel(screen[0], screen[1]))
+                        .filter(|pixel| pixel.valid)
+                        .map(|pixel| pixel.depth)
                 });
             let owner_geo_id = stamp.owner.as_ref().map(Self::iso_paint_owner_geo_id);
-            let size = Self::iso_paint_projected_stamp_size(
-                stamp,
-                camera,
-                dim.width,
-                dim.height,
-            )
-            .unwrap_or(stamp.size);
+            let size = Self::iso_paint_projected_stamp_size(stamp, camera, dim.width, dim.height)
+                .unwrap_or(stamp.size);
             Self::draw_iso_paint_projected_stamp_shape(
                 buffer,
                 stamp,
@@ -6039,14 +6189,17 @@ impl IsoPaintRenderer {
         _render_context: u8,
         layer: &mut IsoPaintLayer,
         vm: &mut SceneVM,
-        _camera: Camera3D,
+        camera: Camera3D,
         _view: Mat4<f32>,
         _proj: Mat4<f32>,
-        _width: u32,
-        _height: u32,
+        width: u32,
+        height: u32,
         _current_camera_scale: Option<f32>,
     ) -> bool {
-        Self::upload_surface_paint_cached(render_cache, layer, vm)
+        let surface_changed = Self::upload_surface_paint_cached(render_cache, layer, vm);
+        let stamps_changed =
+            Self::upload_stamp_billboards_cached(render_cache, layer, vm, camera, width, height);
+        surface_changed || stamps_changed
     }
 
     pub fn draw_stamps(
