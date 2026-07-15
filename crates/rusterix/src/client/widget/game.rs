@@ -1622,24 +1622,19 @@ impl GameWidget {
                 current_alpha
             };
 
-            if target_alpha > 0.0 && next_alpha > 0.0 {
-                scene_handler.vm.execute(scenevm::Atom::SetGeoVisible {
-                    id: scenevm::GeoId::GeometryObject(object.id),
-                    visible: object.visible,
-                });
-            }
+            // `hide_iso` only fades the object out of the camera render. Keep its canonical VM
+            // visibility so Raster3D continues to submit it to the shadow pass; that pass
+            // deliberately ignores per-geometry fade opacity. Otherwise a fully faded roof is
+            // removed from the shadow map and suddenly lets sunlight into the room below.
+            scene_handler.vm.execute(scenevm::Atom::SetGeoVisible {
+                id: scenevm::GeoId::GeometryObject(object.id),
+                visible: object.visible,
+            });
 
             scene_handler.vm.execute(scenevm::Atom::SetGeoOpacity {
                 id: scenevm::GeoId::GeometryObject(object.id),
                 opacity: next_alpha,
             });
-
-            if next_alpha <= 0.001 {
-                scene_handler.vm.execute(scenevm::Atom::SetGeoVisible {
-                    id: scenevm::GeoId::GeometryObject(object.id),
-                    visible: false,
-                });
-            }
 
             self.iso_geometry_fade.insert(object.id, next_alpha);
         }
