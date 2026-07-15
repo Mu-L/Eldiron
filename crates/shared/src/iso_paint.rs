@@ -110,7 +110,7 @@ pub const ISO_PAINT_BAKED_CHUNK_SIZE: i32 = 64;
 /// Paint coordinates are generated from stable surface space, independent of a material's UVs.
 pub const ISO_PAINT_BAKED_PIXELS_PER_UV: f32 = 32.0;
 pub const ISO_PAINT_NO_SURFACE_DEPTH: f32 = -1.0;
-pub const ISO_PAINT_BAKE_VERSION: u8 = 20;
+pub const ISO_PAINT_BAKE_VERSION: u8 = 21;
 /// UI brush size is measured in the old painter's diameter units. Two paint texels per size
 /// unit matches the visible cursor diameter at the current surface-coordinate density.
 const ISO_PAINT_UV_BRUSH_TEXELS_PER_SIZE: f32 = 2.0;
@@ -665,30 +665,17 @@ impl IsoPaintLayer {
 
     fn baked_material_pixel(&self, coverage: u8) -> [u8; 4] {
         let mode = if self.active_material_mode == "replace" {
-            // Alpha is stored in the material texture's A channel, alongside the colour
-            // overlay. Keeping the replace marker fully on avoids applying brush opacity a
-            // second time in the shader.
-            255
+            // Zero means Coat. Replace stores the selected opacity plus one, leaving the A
+            // channel for spatial brush coverage. The renderer can therefore route a globally
+            // translucent Replace through the alpha pass without confusing it with the soft edge
+            // of an otherwise opaque stroke.
+            let replace_opacity = ((self.active_opacity.clamp(0.0, 1.0) * 254.0).round() as u8)
+                .min(254);
+            replace_opacity.saturating_add(1).max(1)
         } else {
             0
         };
         [254, self.active_material_id, mode, coverage]
-    }
-
-    fn blend_baked_color_pixel(dst: &mut [u8], src: [u8; 4]) {
-        let src_a = src[3] as u16;
-        if src_a == 0 {
-            return;
-        }
-        let dst_a = dst[3] as u16;
-        let out_a = (src_a + (dst_a * (255 - src_a)) / 255).min(255);
-        for channel in 0..3 {
-            let src_c = src[channel] as u16;
-            let dst_c = dst[channel] as u16;
-            dst[channel] =
-                ((src_c * src_a + dst_c * dst_a * (255 - src_a) / 255) / out_a.max(1)) as u8;
-        }
-        dst[3] = out_a as u8;
     }
 
     /// The original paint compositor treats Coat as a layer, not repeated normal-alpha draws.
@@ -736,7 +723,14 @@ impl IsoPaintLayer {
         let index = (local_y as usize * ISO_PAINT_BAKED_CHUNK_SIZE as usize + local_x as usize) * 4;
         let opacity = self.active_opacity.clamp(0.0, 1.0);
         let alpha = ((coverage as f32 / 255.0) * opacity * 255.0).round() as u8;
-        let material_pixel = self.baked_material_pixel(alpha);
+        // Replace needs a spatial mask even at opacity zero so it can make the surface fully
+        // transparent. Coat continues to weight material coverage by its selected opacity.
+        let material_coverage = if self.active_material_mode == "replace" {
+            coverage
+        } else {
+            alpha
+        };
+        let material_pixel = self.baked_material_pixel(material_coverage);
         color[3] = alpha;
         let erase = self.active_operation == "erase";
         let chunk = self
@@ -752,7 +746,17 @@ impl IsoPaintLayer {
             chunk.material_rgba[index + 3] = chunk.material_rgba[index + 3].saturating_sub(clear);
         } else {
             if self.active_material_mode == "replace" {
-                Self::blend_baked_color_pixel(&mut chunk.color_rgba[index..index + 4], color);
+                if alpha == 0 {
+                    // A zero-opacity Replace is an intentional transparent cut, including when it
+                    // is painted over an older non-zero Replace.
+                    chunk.color_rgba[index..index + 4]
+                        .copy_from_slice(&[color[0], color[1], color[2], 0]);
+                } else {
+                    // Repeated dabs within a continuous stroke must not build selected opacity
+                    // toward one. Keep the strongest coverage while allowing an equally strong
+                    // new dab to replace RGB, matching the stable layer behavior used by Coat.
+                    Self::coat_baked_color_pixel(&mut chunk.color_rgba[index..index + 4], color);
+                }
             } else {
                 Self::coat_baked_color_pixel(&mut chunk.color_rgba[index..index + 4], color);
             }

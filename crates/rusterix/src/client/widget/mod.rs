@@ -1536,7 +1536,7 @@ impl Widget {
             .or_else(|| item.attributes.get_int("color"))
             .or_else(|| item.attributes.get_int("color_index"))
         {
-            return Self::palette_color(assets, index, fallback);
+            return Self::ruleset_palette_color(assets, index, fallback);
         }
         fallback
     }
@@ -1551,21 +1551,21 @@ impl Widget {
             return TheColor::from_hex(hex).to_u8_array();
         }
         if let Some(index) = item.attributes.get_int(&color_key) {
-            return Self::palette_color(assets, index, fallback);
+            return Self::ruleset_palette_color(assets, index, fallback);
         }
         if let Some(index) = item.attributes.get_int(&index_key) {
-            return Self::palette_color(assets, index, fallback);
+            return Self::ruleset_palette_color(assets, index, fallback);
         }
         fallback
     }
 
-    fn palette_color(assets: &Assets, index: i32, fallback: [u8; 4]) -> [u8; 4] {
+    fn ruleset_palette_color(assets: &Assets, index: i32, fallback: [u8; 4]) -> [u8; 4] {
         if index < 0 {
             return fallback;
         }
         let index = index as usize;
-        if index < assets.palette.colors.len()
-            && let Some(color) = &assets.palette[index]
+        if index < assets.ruleset_palette.colors.len()
+            && let Some(color) = &assets.ruleset_palette[index]
         {
             return color.to_u8_array();
         }
@@ -1579,5 +1579,30 @@ impl Widget {
             (color[2] as i16 + delta).clamp(0, 255) as u8,
             color[3],
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_item_icon_colors_use_ruleset_palette() {
+        let mut assets = Assets::default();
+        assets.ruleset_palette.colors[10] = Some(TheColor::from_u8(41, 82, 123, 255));
+        assets.palette.colors[10] = Some(TheColor::from_u8(240, 96, 16, 255));
+
+        let mut item = Item::default();
+        item.attributes.set("color_index", Value::Int(10));
+        item.attributes.set("blade_color_index", Value::Int(10));
+
+        assert_eq!(
+            Widget::item_icon_color(&assets, &item, [0, 0, 0, 255]),
+            [41, 82, 123, 255]
+        );
+        assert_eq!(
+            Widget::item_role_color(&assets, &item, "blade", [0, 0, 0, 255]),
+            [41, 82, 123, 255]
+        );
     }
 }

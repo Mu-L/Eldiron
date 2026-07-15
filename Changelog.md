@@ -4,9 +4,9 @@
 
 ### Creator
 
-- Added the first **Iso Paint** system for fixed-isometric painting over 3D region geometry, including persistent per-region/chunk paint layers, camera/world-anchored strokes and stamps, object/no-clip painting, undoable clear-all, editor/game rendering paths, material-aware overlays, and a dock workflow for visibility, draw/erase/pick, brush presets, brush shapes, materials, finishes, palette slots, generated tile/brick/arch patterns, and scene-aware stamp brushes such as grass, rubble, leaves, flowers, vines, roots, bushes, tree, candles, footprints, mud, puddles, and dirt/color touchup.
-- Reworked project palette ownership into a fixed **Ruleset Palette** for rules-owned gameplay visuals plus an editable 256-entry **Art Palette** for tiles, drawing, Iso Paint, palette picking, and artist-facing color work; the Art Palette defaults to the Endesga 64 colors and restored palette loading/editing for art workflows.
-- Moved material rendering toward material-family IDs and the shared material library so tiles and Iso Paint can select abstract material/finish combinations such as stone, dirt, foliage, water, glass, mirror, emissive, skin, bone, and wax instead of carrying unrelated per-tile PBR sliders through the authoring UI.
+- Added the first **3D Paint** system for painting directly onto 3D region surfaces, including persistent per-region/chunk surface-space paint layers, camera-independent strokes, depth-tested surface stamps, Surface/No Clip painting, undoable clear-all, editor/game rendering paths, material-aware Coat/Replace modes, and a dock workflow for visibility, draw/erase/pick, brush presets, brush shapes, materials, finishes, palette slots, generated tile/brick/arch patterns, and stamps such as grass, rubble, leaves, flowers, vines, roots, bushes, trees, candles, footprints, mud, puddles, and dirt/color touchup.
+- Reworked project palette ownership into a fixed **Ruleset Palette** for rules-owned gameplay visuals plus an editable 256-entry **Art Palette** for tiles, drawing, 3D Paint, palette picking, and artist-facing color work; the Art Palette defaults to the Endesga 64 colors and restored palette loading/editing for art workflows.
+- Moved material rendering toward material-family IDs and the shared material library so tiles and 3D Paint can select abstract material/finish combinations such as stone, dirt, foliage, water, glass, mirror, emissive, skin, bone, and wax instead of carrying unrelated per-tile PBR sliders through the authoring UI.
 - Replaced the older optional render-style paths with the Nomad-style material renderer direction for 3D views, including material-aware lighting/post treatment used by both iso and first-person rendering.
 - Added copy, cut, and paste support for selected 3D Geometry Objects, including fresh object IDs, undoable pastes, selection of the newly pasted objects, and placement at the current 3D mouse hover/hit point.
 - Added the first block-driven 3D building workflow with a **Blocks** dock and Lego icon, 3D-rendered block previews, practical dungeon stamps such as floor+wall, floor+wall+ceiling, corner, doorway+floor, stairs, 1x1 and 2x2 solids, click/drag line and rectangle stamping, Place/Replace/Erase modes that operate on whole block instances, a dedicated block grid with active-plane placement/preview, stack levels, 90-degree rotation, and component-aware height/width shortcuts where walls, posts, columns, ceilings, and lintels resize intelligently, floors ignore height changes, and widened doorways grow the opening without thickening the side posts; the older Builder Tool is hidden while this workflow takes over.
@@ -15,6 +15,7 @@
 
 ### Creator
 
+- Fixed generated inventory and equipment icons so rules-owned item color indices use the Ruleset Palette, matching the equipped avatar rendered in the game world.
 - Fixed isometric gameplay preview rendering so sky-colored outdoor fill and post/bloom treatment no longer wash out tile contrast when switching from editor iso view into game mode.
 
 ### Windows

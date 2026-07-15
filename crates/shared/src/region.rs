@@ -14,7 +14,7 @@ pub struct Region {
     pub name: String,
     pub map: Map,
 
-    /// Fixed-camera isometric screen-space paint authored over this region.
+    /// Persistent surface-space 3D paint authored over this region.
     #[serde(default)]
     pub iso_paint: IsoPaintLayer,
 

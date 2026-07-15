@@ -194,7 +194,10 @@ impl IsoPaintRenderer {
                         index,
                         [color[0], color[1], color[2], coverage],
                     );
-                    if writes_material && material_id != 0 {
+                    // Material 0 is the valid Default material, not an absence marker. The paint
+                    // material texture also carries Coat/Replace mode, so skipping this write for
+                    // Default made low-opacity Replace indistinguishable from Coat in the shader.
+                    if writes_material {
                         Self::iso_paint_set_material_pixel_at(
                             &mut chunk.material_rgba,
                             index,
@@ -312,6 +315,30 @@ impl IsoPaintRenderer {
         Some((width, height, color, material, entries))
     }
 
+    fn surface_paint_alpha_geo_ids(
+        baked_chunks: &IndexMap<String, IsoPaintBakedChunk>,
+    ) -> Vec<scenevm::GeoId> {
+        let mut seen = HashSet::new();
+        let mut geo_ids = Vec::new();
+        for chunk in baked_chunks.values() {
+            let needs_alpha = chunk.material_rgba.chunks_exact(4).any(|pixel| {
+                if pixel[0] != 254 || pixel[3] == 0 || pixel[2] == 0 {
+                    return false;
+                }
+                let material_id = pixel[1];
+                let replace_opacity = pixel[2].saturating_sub(1);
+                replace_opacity < 254 || Self::iso_paint_material_is_translucent(material_id)
+            });
+            if needs_alpha {
+                let geo_id = Self::iso_paint_owner_geo_id(&chunk.owner);
+                if seen.insert(geo_id) {
+                    geo_ids.push(geo_id);
+                }
+            }
+        }
+        geo_ids
+    }
+
     fn surface_chunks_with_stamps(layer: &IsoPaintLayer) -> IndexMap<String, IsoPaintBakedChunk> {
         let mut chunks = layer.baked_chunks.clone();
         for stamp in layer.chunks.values().flat_map(|chunk| &chunk.stamps) {
@@ -383,13 +410,14 @@ impl IsoPaintRenderer {
         else {
             return false;
         };
+        let paint_alpha_geo_ids = Self::surface_paint_alpha_geo_ids(&layer.baked_chunks);
         vm.set_raster3d_surface_paint(
             width,
             height,
             color_rgba,
             material_rgba,
             entries,
-            Vec::new(),
+            paint_alpha_geo_ids,
         );
         render_cache.surface_uploaded_key = Some(surface_key);
         true
@@ -6220,5 +6248,114 @@ impl IsoPaintRenderer {
             camera,
             current_camera_scale,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_material_replace_keeps_mode_and_selects_alpha_pass() {
+        let mut layer = IsoPaintLayer::default();
+        layer.active_material_mode = "replace".to_string();
+        layer.active_material_id = 0;
+        layer.active_color = [180, 90, 40, 255];
+        layer.active_opacity = 0.2;
+        let point = IsoPaintPoint::new([10, 12], None, Some(IsoPaintOwner::Sector(7)))
+            .with_surface_uv(Some(Vec2::new(0.25, 0.25)))
+            .with_paint_geo(Some([7, 0, 0, 1]));
+        layer.begin_stroke(point);
+
+        let chunk = layer
+            .baked_chunks
+            .values()
+            .next()
+            .expect("replace stroke creates a baked chunk");
+        assert!(chunk.material_rgba.chunks_exact(4).any(|pixel| {
+            pixel[0] == 254 && pixel[1] == 0 && pixel[2] == 52 && pixel[3] > 0
+        }));
+        assert_eq!(
+            IsoPaintRenderer::surface_paint_alpha_geo_ids(&layer.baked_chunks),
+            vec![scenevm::GeoId::Sector(7)]
+        );
+    }
+
+    #[test]
+    fn opaque_default_material_replace_stays_on_opaque_pass() {
+        let mut layer = IsoPaintLayer::default();
+        layer.active_material_mode = "replace".to_string();
+        layer.active_material_id = 0;
+        layer.active_color = [180, 90, 40, 255];
+        layer.active_opacity = 1.0;
+        let point = IsoPaintPoint::new([10, 12], None, Some(IsoPaintOwner::Sector(7)))
+            .with_surface_uv(Some(Vec2::new(0.25, 0.25)))
+            .with_paint_geo(Some([7, 0, 0, 1]));
+        layer.begin_stroke(point);
+
+        assert!(
+            IsoPaintRenderer::surface_paint_alpha_geo_ids(&layer.baked_chunks).is_empty()
+        );
+    }
+
+    #[test]
+    fn zero_opacity_replace_keeps_mask_and_selects_alpha_pass() {
+        let mut layer = IsoPaintLayer::default();
+        layer.active_material_mode = "replace".to_string();
+        layer.active_material_id = 0;
+        layer.active_color = [180, 90, 40, 255];
+        let point = IsoPaintPoint::new([10, 12], None, Some(IsoPaintOwner::Sector(7)))
+            .with_surface_uv(Some(Vec2::new(0.25, 0.25)))
+            .with_paint_geo(Some([7, 0, 0, 1]));
+        layer.active_opacity = 0.5;
+        layer.begin_stroke(point.clone());
+        layer.active_opacity = 0.0;
+        layer.begin_stroke(point);
+
+        let chunk = layer
+            .baked_chunks
+            .values()
+            .next()
+            .expect("zero-opacity Replace still creates its spatial mask");
+        assert!(chunk.color_rgba.chunks_exact(4).all(|pixel| pixel[3] == 0));
+        assert!(chunk.material_rgba.chunks_exact(4).any(|pixel| {
+            pixel[0] == 254 && pixel[1] == 0 && pixel[2] == 1 && pixel[3] > 0
+        }));
+        assert_eq!(
+            IsoPaintRenderer::surface_paint_alpha_geo_ids(&layer.baked_chunks),
+            vec![scenevm::GeoId::Sector(7)]
+        );
+    }
+
+    #[test]
+    fn replace_opacity_does_not_accumulate_across_overlapping_dabs() {
+        let mut layer = IsoPaintLayer::default();
+        layer.active_material_mode = "replace".to_string();
+        layer.active_material_id = 0;
+        layer.active_color = [180, 90, 40, 255];
+        layer.active_opacity = 0.2;
+        let point = IsoPaintPoint::new([10, 12], None, Some(IsoPaintOwner::Sector(7)))
+            .with_surface_uv(Some(Vec2::new(0.25, 0.25)))
+            .with_paint_geo(Some([7, 0, 0, 1]));
+
+        layer.begin_stroke(point.clone());
+        let first_alpha = layer
+            .baked_chunks
+            .values()
+            .flat_map(|chunk| chunk.color_rgba.chunks_exact(4))
+            .map(|pixel| pixel[3])
+            .max()
+            .unwrap_or(0);
+        layer.begin_stroke(point);
+        let second_alpha = layer
+            .baked_chunks
+            .values()
+            .flat_map(|chunk| chunk.color_rgba.chunks_exact(4))
+            .map(|pixel| pixel[3])
+            .max()
+            .unwrap_or(0);
+
+        assert!((49..=52).contains(&first_alpha));
+        assert_eq!(second_alpha, first_alpha);
     }
 }

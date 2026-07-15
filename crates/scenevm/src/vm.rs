@@ -1976,14 +1976,27 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let replace_mat = vec4<f32>(
             paint_mat.x,
             paint_mat.y,
-            paint_mat.z * paint_material_weight,
+            paint_mat.z,
             paint_mat.w
         );
         let coat_mat = vec4<f32>(coated_mat.x, coated_mat.y, base_opacity, coated_mat.w);
         mat = select(coat_mat, replace_mat, paint_replace_material);
         n_ts = select(n_ts, vec3<f32>(0.0, 0.0, 1.0), paint_replace_material);
     }
-    if (paint_color_weight > 0.001) {
+    if (paint_replace_active) {
+        // Replace controls real fragment alpha, but its RGB transitions from the original surface
+        // toward the authored replacement color. Keeping straight RGB independent from the final
+        // framebuffer blend prevents low opacity from introducing transparent-black color.
+        color = vec4<f32>(
+            mix(color.rgb, paint_overlay.rgb, paint_color_weight),
+            color.a
+        );
+        color_base = vec4<f32>(
+            mix(color_base.rgb, paint_overlay.rgb, paint_color_weight),
+            color_base.a
+        );
+    } else if (paint_color_weight > 0.001) {
+        // Coat remains an overlay on the original surface color.
         color = vec4<f32>(
             mix(color.rgb, paint_overlay.rgb, paint_color_weight),
             color.a
@@ -2005,7 +2018,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         alpha_sample = mix(color_base.a, color.a, lod_t);
     }
     // Keep opacity/cutout tied to the same sample path as color to avoid distant dark speckles.
-    let intrinsic_alpha = clamp(alpha_sample * mat.z, 0.0, 1.0);
+    let base_intrinsic_alpha = alpha_sample * mat.z;
+    let replace_intrinsic_alpha = paint_color_weight * mat.z;
+    let intrinsic_alpha = clamp(
+        select(base_intrinsic_alpha, replace_intrinsic_alpha, paint_replace_active),
+        0.0,
+        1.0
+    );
     var coverage = clamp(intrinsic_alpha * in.opacity, 0.0, 1.0);
     if (is_particle) {
         if (coverage <= 0.04) {
@@ -2017,7 +2036,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
     let fade_mode = UBO._pad0.x;
-    let has_material_fade = mat.z < 0.999;
+    let has_material_fade = mat.z < 0.999
+        || (paint_replace_active && intrinsic_alpha < 0.999);
     let is_fading = in.opacity < 0.999 || has_material_fade;
     if (is_fading) {
         if (!is_particle && !has_material_fade && fade_mode == 0u) {
@@ -13090,7 +13110,13 @@ fn hash_u32(mut state: u32) -> u32 {
 
 #[cfg(test)]
 mod shader_tests {
-    use super::SCENEVM_3D_ORGANIC_BILLBOARD_WGSL;
+    use super::{SCENEVM_3D_ORGANIC_BILLBOARD_WGSL, SCENEVM_3D_RASTER_WGSL};
+
+    #[test]
+    fn raster_shader_parses() {
+        wgpu::naga::front::wgsl::parse_str(SCENEVM_3D_RASTER_WGSL)
+            .expect("3D raster WGSL should parse");
+    }
 
     #[test]
     fn organic_billboard_shader_parses() {

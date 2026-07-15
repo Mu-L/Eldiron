@@ -96,9 +96,9 @@ With the [Palette Tool](palette), the lower picker area shows the **Palette** do
 With the [3D Paint Tool](iso_paint), the lower picker area shows the **3D Paint** dock instead:
 
 - visual brush presets
-- draw/erase/pick and object clipping controls
+- draw/erase/pick and Surface/No Clip controls
 - Art Palette color slots
-- material, finish, shape, and pattern settings for isometric paint strokes
+- material, finish, shape, and pattern settings for surface-space paint strokes
 
 With the [Block Tool](blocks), the lower picker area shows the **Blocks** dock instead:
 
@@ -152,6 +152,6 @@ For the full workflow, see [Block Tool](blocks).
 
 ## 3D Paint Mode
 
-The **3D Paint Tool** paints persistent isometric beauty layers over 3D region geometry. It is meant for organic detail such as moss, cracks, grass, dirt, puddles, generated brick patterns, and color-only touchups in the fixed iso view.
+The **3D Paint Tool** paints persistent surface-space layers directly onto 3D region geometry. It is meant for organic detail such as moss, cracks, grass, dirt, puddles, generated brick patterns, stamps, and color-only touchups. The paint stays attached to its surface in isometric, orbit, and first-person views; it is not available in the 2D map view.
 
 For the full workflow, see [3D Paint Tool](iso_paint).

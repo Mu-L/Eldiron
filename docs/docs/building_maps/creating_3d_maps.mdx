@@ -122,7 +122,7 @@ Surface lines are the shared workflow for custom relief and holes:
 - **Duplicate Surface Detail** repeats the selected guide shape on the same face using face-local offsets.
 - **Surface Curve** sets selected guide segments, or the shortest path between two selected guide points, to straight lines or configurable arcs. Positive and negative amounts bend the arc in opposite directions, so the same drawn loop can become a plain cutout, an arched opening, or a decorative curved pattern.
 - **Surface Noise** applies procedural noise to selected 3D faces. Its **NOISE** HUD material slot can be assigned or cleared from the Tiles dock or the Palette dock's Art Palette controls, and the noise is evaluated from object/world-space coordinates so adjoining noisy faces can stay continuous around corners.
-- **3D Paint** adds persistent fixed-isometric paint layers over the 3D scene for organic details such as moss, cracks, dirt, grass, puddles, and generated brick/tile patterns.
+- **3D Paint** adds persistent surface-space paint to 3D geometry for organic details such as moss, cracks, dirt, grass, puddles, stamps, and generated brick/tile patterns.
 
 Ridges and grooves become persistent Geometry Objects, are selected after creation, and inherit the tile, color, tilegraph, or nodegraph source from the host face by default. This makes small details like mortar lines, brick seams, carved floor patterns, and raised borders immediately visible without selecting and painting each tiny face.
 
@@ -177,7 +177,7 @@ Use **Edit Face Texture** on selected faces, or on a selected object, to adjust 
 5. Use **Linedef / Edge** surface lines for ridges, grooves, custom cutouts, and surface relief.
 6. Use **Vertex** tools for boundary fill, cleanup, and custom shapes.
 7. Paint faces with tiles, Art Palette colors, tilegraphs, or nodegraphs.
-8. For a fixed isometric presentation, use **3D Paint** to add organic beauty details over the clean 3D structure.
+8. Use **3D Paint** to add organic surface detail that remains attached to the clean 3D structure in every 3D camera.
 
 This workflow is meant to stay realtime while editing.
 

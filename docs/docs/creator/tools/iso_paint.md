@@ -9,7 +9,7 @@ Use it when the 3D model provides the playable structure, collision, hit testing
 
 ## What It Paints
 
-3D Paint stores a persistent paint layer on the region. Strokes are stored by their hit surface, geometry owner, and surface UV position, so they render with the scene instead of being camera-dependent editor marks.
+3D Paint stores a persistent paint layer on the region. Strokes use stable local surface coordinates that are independent of the surface material's tiled UVs. They render with the geometry instead of becoming camera-dependent editor marks or repeating once per texture tile.
 
 It is intended for:
 
@@ -31,7 +31,7 @@ The 3D Paint toolbar contains:
 - **Draw / Erase / Pick**: choose the editing operation
 - **Visible**: show or hide the authored 3D Paint layer in the editor render
 - **Clear All**: remove the current region's 3D Paint layer with undo support
-- **No Clip / Surface**: paint freely or constrain the stroke to the starting surface
+- **No Clip / Surface**: continue across visible 3D surfaces or constrain the whole stroke to the surface where it started
 
 ## Brush Presets
 
@@ -80,8 +80,8 @@ The material row selects the material family and finish used by the brush. 3D Pa
 
 Material mode controls how the stroke interacts with the underlying surface:
 
-- **Coat**: paint over the existing surface while keeping the original surface as the base.
-- **Replace**: replace the painted color/material contribution for the covered pixels.
+- **Coat**: blend paint and its material response over the existing surface while keeping the original surface visible underneath.
+- **Replace**: replace the covered surface color and material. Opacity controls the replacement alpha, including transparent replacement at zero opacity.
 - **Stamp**: place generated scene-aware stamp details instead of a continuous stroke.
 
 Stamp brushes honor the currently selected material family and finish. They also write material pixels for their generated shape, so a candle can be emissive, mud can stay wet, foliage can remain foliage, and custom user material choices are preserved per stamp.
@@ -104,12 +104,12 @@ Pattern scale controls the generated tile/brick size independently from the brus
 
 ## Stamp Brushes
 
-Stamp mode places individual generated details at the painted hit point. Stamps store their surface UV, world anchor, owning surface, selected material ID, palette colors, size, opacity, rotation, and variation seed.
+Stamp mode places individual generated details at the painted hit point. Stamps store a stable surface anchor, owning surface, selected material ID, palette colors, size, opacity, rotation, and variation seed.
 
 This lets stamps:
 
-- stay tied to the scene instead of only the screen
-- sort and occlude with the 3D render path
+- stay tied to the scene at a constant world size instead of scaling with the camera
+- sort and occlude against scene geometry in the 3D render path
 - repaint their material contribution into the material overlay
 - erase by nearby stamp, surface clip, and active stamp kind
 - remain attached to the same surface in every 3D camera
