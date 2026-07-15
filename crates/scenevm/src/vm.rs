@@ -1503,47 +1503,172 @@ fn surface_paint_coordinate(world_pos: vec3<f32>, paint_geo: vec4<u32>) -> vec2<
     return world_pos.xy;
 }
 
-fn surface_paint_atlas_pixel(world_pos: vec3<f32>, paint_geo: vec4<u32>) -> vec2<i32> {
-    let paint_px = vec2<i32>(floor(surface_paint_coordinate(world_pos, paint_geo) * 32.0));
-    for (var i = 0u; i < arrayLength(&surface_paint_entries.data); i = i + 1u) {
-        let entry = surface_paint_entries.data[i];
+fn surface_paint_entry_hash(paint_geo: vec4<u32>, origin: vec2<i32>) -> u32 {
+    var hash = 2166136261u;
+    hash = (hash ^ paint_geo.x) * 16777619u;
+    hash = (hash ^ paint_geo.y) * 16777619u;
+    hash = (hash ^ paint_geo.z) * 16777619u;
+    hash = (hash ^ paint_geo.w) * 16777619u;
+    hash = (hash ^ bitcast<u32>(origin.x)) * 16777619u;
+    hash = (hash ^ bitcast<u32>(origin.y)) * 16777619u;
+    return hash;
+}
+
+fn surface_paint_chunk_origin(paint_px: vec2<i32>) -> vec2<i32> {
+    let chunk_size = 64;
+    let remainder = ((paint_px % vec2<i32>(chunk_size)) + vec2<i32>(chunk_size)) %
+        vec2<i32>(chunk_size);
+    return paint_px - remainder;
+}
+
+fn surface_paint_entry_contains(entry: SurfacePaintEntry, paint_px: vec2<i32>) -> bool {
+    let max_px = entry.uv_origin + vec2<i32>(entry.uv_size);
+    return paint_px.x >= entry.uv_origin.x && paint_px.y >= entry.uv_origin.y &&
+        paint_px.x < max_px.x && paint_px.y < max_px.y;
+}
+
+fn surface_paint_entry_index(paint_px: vec2<i32>, paint_geo: vec4<u32>) -> i32 {
+    if (surface_paint_dummy_entries()) {
+        return -1;
+    }
+    let count = arrayLength(&surface_paint_entries.data);
+    let mask = count - 1u;
+    let origin = surface_paint_chunk_origin(paint_px);
+    var index = surface_paint_entry_hash(paint_geo, origin) & mask;
+    for (var probe = 0u; probe < count; probe = probe + 1u) {
+        let entry = surface_paint_entries.data[index];
         if (entry.uv_size.x == 0u || entry.uv_size.y == 0u) {
-            continue;
+            return -1;
         }
-        if (!surface_paint_geo_matches(entry.geo, paint_geo)) {
-            continue;
+        if (surface_paint_geo_matches(entry.geo, paint_geo) && all(entry.uv_origin == origin)) {
+            return i32(index);
         }
-        let max_px = entry.uv_origin + vec2<i32>(entry.uv_size);
-        if (paint_px.x < entry.uv_origin.x || paint_px.y < entry.uv_origin.y ||
-            paint_px.x >= max_px.x || paint_px.y >= max_px.y) {
-            continue;
-        }
-        let local = vec2<u32>(paint_px - entry.uv_origin);
-        return vec2<i32>(entry.atlas_rect.xy + local);
+        index = (index + 1u) & mask;
     }
-    return vec2<i32>(-1, -1);
+    return -1;
 }
 
-fn sample_surface_paint_overlay(world_pos: vec3<f32>, paint_geo: vec4<u32>) -> vec4<f32> {
-    if (surface_paint_dummy_entries()) {
-        return vec4<f32>(0.0);
+fn surface_paint_atlas_pixel(entry_index: i32, paint_px: vec2<i32>) -> vec2<i32> {
+    if (entry_index < 0) {
+        return vec2<i32>(-1, -1);
     }
-    let px = surface_paint_atlas_pixel(world_pos, paint_geo);
-    if (px.x < 0 || px.y < 0) {
-        return vec4<f32>(0.0);
+    let entry = surface_paint_entries.data[u32(entry_index)];
+    if (!surface_paint_entry_contains(entry, paint_px)) {
+        return vec2<i32>(-1, -1);
     }
-    return textureLoad(paint_color_tex, px, 0);
+    let local = vec2<u32>(paint_px - entry.uv_origin);
+    return vec2<i32>(entry.atlas_rect.xy + local);
 }
 
-fn sample_surface_paint_material(world_pos: vec3<f32>, paint_geo: vec4<u32>) -> vec4<u32> {
-    if (surface_paint_dummy_entries()) {
-        return vec4<u32>(0u);
+fn surface_paint_color_at(
+    paint_px: vec2<i32>,
+    paint_geo: vec4<u32>,
+    preferred_entry: i32,
+) -> vec4<f32> {
+    var entry_index = preferred_entry;
+    if (entry_index < 0 ||
+        !surface_paint_entry_contains(surface_paint_entries.data[u32(entry_index)], paint_px)) {
+        entry_index = surface_paint_entry_index(paint_px, paint_geo);
     }
-    let px = surface_paint_atlas_pixel(world_pos, paint_geo);
-    if (px.x < 0 || px.y < 0) {
-        return vec4<u32>(0u);
+    let atlas_px = surface_paint_atlas_pixel(entry_index, paint_px);
+    if (atlas_px.x < 0 || atlas_px.y < 0) {
+        return vec4<f32>(0.0);
     }
-    return textureLoad(paint_material_tex, px, 0);
+    return textureLoad(paint_color_tex, atlas_px, 0);
+}
+
+struct SurfacePaintSample {
+    overlay: vec4<f32>,
+    material: vec4<u32>,
+};
+
+fn surface_paint_alpha_correct_filter(
+    c00: vec4<f32>,
+    c10: vec4<f32>,
+    c01: vec4<f32>,
+    c11: vec4<f32>,
+    blend: vec2<f32>,
+) -> vec4<f32> {
+    let weights = vec4<f32>(
+        (1.0 - blend.x) * (1.0 - blend.y),
+        blend.x * (1.0 - blend.y),
+        (1.0 - blend.x) * blend.y,
+        blend.x * blend.y
+    );
+    let alpha = dot(vec4<f32>(c00.a, c10.a, c01.a, c11.a), weights);
+    if (alpha <= 0.00001) {
+        return vec4<f32>(0.0);
+    }
+    let premultiplied = c00.rgb * (c00.a * weights.x) +
+        c10.rgb * (c10.a * weights.y) +
+        c01.rgb * (c01.a * weights.z) +
+        c11.rgb * (c11.a * weights.w);
+    return vec4<f32>(premultiplied / alpha, alpha);
+}
+
+fn surface_paint_minification_filter(
+    paint_pos: vec2<f32>,
+    paint_dx: vec2<f32>,
+    paint_dy: vec2<f32>,
+    paint_geo: vec4<u32>,
+    entry_index: i32,
+) -> vec4<f32> {
+    var premultiplied = vec3<f32>(0.0);
+    var alpha_sum = 0.0;
+    for (var y = -1; y <= 1; y = y + 1) {
+        for (var x = -1; x <= 1; x = x + 1) {
+            let offset = paint_dx * (f32(x) * 0.3333333) +
+                paint_dy * (f32(y) * 0.3333333);
+            let color = surface_paint_color_at(
+                vec2<i32>(floor(paint_pos + offset)), paint_geo, entry_index);
+            premultiplied += color.rgb * color.a;
+            alpha_sum += color.a;
+        }
+    }
+    if (alpha_sum <= 0.00001) {
+        return vec4<f32>(0.0);
+    }
+    return vec4<f32>(premultiplied / alpha_sum, alpha_sum * (1.0 / 9.0));
+}
+
+fn sample_surface_paint(world_pos: vec3<f32>, paint_geo: vec4<u32>) -> SurfacePaintSample {
+    let empty = SurfacePaintSample(vec4<f32>(0.0), vec4<u32>(0u));
+    let paint_pos = surface_paint_coordinate(world_pos, paint_geo) * 32.0;
+    let paint_dx = dpdx(paint_pos);
+    let paint_dy = dpdy(paint_pos);
+    let center_px = vec2<i32>(floor(paint_pos));
+    let entry_index = surface_paint_entry_index(center_px, paint_geo);
+    let center_atlas_px = surface_paint_atlas_pixel(entry_index, center_px);
+    if (center_atlas_px.x < 0 || center_atlas_px.y < 0) {
+        return empty;
+    }
+
+    let material = textureLoad(paint_material_tex, center_atlas_px, 0);
+    let footprint = max(length(paint_dx), length(paint_dy));
+    var overlay: vec4<f32>;
+    if (footprint <= 1.0) {
+        // Keep pixel-art texel interiors flat and sharp. Only blend through a narrow transition
+        // at texel boundaries, approximately one screen pixel wide.
+        let texel_pos = paint_pos - vec2<f32>(0.5);
+        let base = vec2<i32>(floor(texel_pos));
+        let transition = clamp(abs(paint_dx) + abs(paint_dy), vec2<f32>(0.02), vec2<f32>(1.0));
+        let blend = clamp(
+            (fract(texel_pos) - vec2<f32>(0.5)) / transition + vec2<f32>(0.5),
+            vec2<f32>(0.0),
+            vec2<f32>(1.0)
+        );
+        let c00 = surface_paint_color_at(base, paint_geo, entry_index);
+        let c10 = surface_paint_color_at(base + vec2<i32>(1, 0), paint_geo, entry_index);
+        let c01 = surface_paint_color_at(base + vec2<i32>(0, 1), paint_geo, entry_index);
+        let c11 = surface_paint_color_at(base + vec2<i32>(1, 1), paint_geo, entry_index);
+        overlay = surface_paint_alpha_correct_filter(c00, c10, c01, c11, blend);
+    } else {
+        // A regular 3x3 footprint is important for periodic details such as brick mortar: four
+        // corner taps can synchronize with the pattern and still flicker as the camera moves.
+        overlay = surface_paint_minification_filter(
+            paint_pos, paint_dx, paint_dy, paint_geo, entry_index);
+    }
+    return SurfacePaintSample(overlay, material);
 }
 
 fn unpack_material_normal_ts(m: vec4<f32>) -> vec3<f32> {
@@ -1957,8 +2082,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var color_base = select(mix(c0_base, c1_base, blend), c0_base, is_avatar);
     // 3D Paint uses its own stable surface coordinates, never the material texture UVs. This
     // prevents a tiled/repeating material from duplicating a single painted mark.
-    let paint_overlay = sample_surface_paint_overlay(in.world_pos, in.paint_geo);
-    let paint_material_raw = sample_surface_paint_material(in.world_pos, in.paint_geo);
+    let paint_sample = sample_surface_paint(in.world_pos, in.paint_geo);
+    let paint_overlay = paint_sample.overlay;
+    let paint_material_raw = paint_sample.material;
     let paint_color_weight = clamp(paint_overlay.a, 0.0, 1.0) * select(1.0, 0.0, is_avatar);
     let paint_material_marker = paint_material_raw.r == 254u;
     let paint_material_weight = (f32(paint_material_raw.a) * (1.0 / 255.0)) * select(1.0, 0.0, is_avatar);
@@ -7339,7 +7465,10 @@ impl VM {
                 }),
                 multisample: wgpu::MultisampleState {
                     count: raster_samples,
-                    alpha_to_coverage_enabled: true,
+                    // Billboard pixels already carry authored alpha and use alpha blending.
+                    // Alpha-to-coverage applied that coverage a second time, making paint stamps
+                    // look stippled and substantially more transparent than their source raster.
+                    alpha_to_coverage_enabled: false,
                     ..Default::default()
                 },
                 multiview_mask: None,

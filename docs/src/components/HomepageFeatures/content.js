@@ -17,12 +17,12 @@ export const homepageContent = {
       },
     ],
     screenshot: {
-      label: "First ruleset-based version.",
-      linkLabel: "See blog",
-      href: "/blog/2026/06/12/eldiron-v0.91.0",
-      version: "Eldiron v0.91.0",
-      image: "/img/screenshots/Hideout_v0.91.0.png",
-      alt: "Eldiron v0.91.0 Hideout2D ruleset gameplay screenshot",
+      label: "3D Painting.",
+      linkLabel: "See blog.",
+      href: "/blog/2026/07/15/eldiron-v0.92.0",
+      version: "Eldiron v0.92.0",
+      image: "/img/Eldironv0.92.png",
+      alt: "Eldiron v0.92.0 3D painting in the Gate project",
     },
   },
   sections: [
@@ -49,6 +49,14 @@ export const homepageContent = {
       type: "news",
       items: [
         {
+          date: "Jul 15, 2026",
+          title: "Eldiron v0.92.0",
+          description:
+            "Paint persistent detail directly onto 3D surfaces, add generated patterns and stamps, and build editable rooms and dungeons quickly with the new Block Tool.",
+          href: "/blog/2026/07/15/eldiron-v0.92.0",
+          linkLabel: "Read more",
+        },
+        {
           date: "Jun 12, 2026",
           title: "Eldiron v0.91.0",
           description:
@@ -62,14 +70,6 @@ export const homepageContent = {
           description:
             "Turn-based and hybrid simulation modes, NPC sequences, multiple-choice menus, nested dialogs, surface editing, and renderer/post-processing controls.",
           href: "/blog/2026/04/26/eldiron-v0.9.7",
-          linkLabel: "Read more",
-        },
-        {
-          date: "Apr 19, 2026",
-          title: "Eldiron v0.9.3",
-          description:
-            "A mostly bugfix release with stronger 2D support, including LOS, point-and-click style intents, auto-walk, and runtime world/region render control.",
-          href: "/blog/2026/04/19/eldiron-v0.9.3",
           linkLabel: "Read more",
         },
       ],
@@ -150,12 +150,21 @@ export const homepageContent = {
           linkLabel: "Open docs",
         },
         {
-          title: "Builder Graph",
+          title: "3D Painting",
           description:
-            "Create reusable builder graphs for props, furniture, fences, and other structural assemblies, with live preview, material slots, and attachment points for nested builds.",
-          image: "/img/screenshots/Eldiron_v0.92_BG.png",
-          alt: "Builder Graph preview",
-          href: "/docs/creator/tools/builder",
+            "Paint persistent organic detail directly onto 3D surfaces with varied brushes, generated patterns, material finishes, and anchored vegetation, rubble, and prop stamps.",
+          image: "/img/Eldironv0.92.png",
+          alt: "3D Painting in Eldiron v0.92.0",
+          href: "/docs/creator/tools/iso_paint",
+          linkLabel: "Open docs",
+        },
+        {
+          title: "Block Tool",
+          description:
+            "Build editable rooms, corridors, walls, doorways, stairs, and columns quickly from modular block stamps, with line, rectangle, clean, and damaged placement modes.",
+          image: "/img/Eldironv0.92_block.png",
+          alt: "Block Tool in Eldiron v0.92.0",
+          href: "/docs/creator/tools/blocks",
           linkLabel: "Open docs",
         },
         {

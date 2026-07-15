@@ -8581,6 +8581,10 @@ impl TheTrait for Editor {
                                         .scene_handler
                                         .vm
                                         .execute(scenevm::Atom::ClearRaster3DPaintOverlay);
+                                    rusterix
+                                        .scene_handler
+                                        .vm
+                                        .execute(scenevm::Atom::ClearPaintBillboards);
                                     rusterix.scene_handler.vm.set_active_vm(active_vm);
                                     self.iso_paint_render_cache = Default::default();
                                 }
@@ -8595,6 +8599,9 @@ impl TheTrait for Editor {
                                             scene_handler
                                                 .vm
                                                 .execute(scenevm::Atom::ClearRaster3DPaintOverlay);
+                                            scene_handler
+                                                .vm
+                                                .execute(scenevm::Atom::ClearPaintBillboards);
                                             self.iso_paint_render_cache = Default::default();
                                             return true;
                                         }
@@ -8746,6 +8753,10 @@ impl TheTrait for Editor {
                                         .scene_handler
                                         .vm
                                         .execute(scenevm::Atom::ClearRaster3DPaintOverlay);
+                                    rusterix
+                                        .scene_handler
+                                        .vm
+                                        .execute(scenevm::Atom::ClearPaintBillboards);
                                     rusterix.scene_handler.vm.set_active_vm(active_vm);
                                     self.iso_paint_render_cache = Default::default();
                                 }

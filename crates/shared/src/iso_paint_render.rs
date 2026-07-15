@@ -110,6 +110,38 @@ pub struct IsoPaintRenderer;
 
 #[allow(dead_code)]
 impl IsoPaintRenderer {
+    fn surface_paint_entry_hash(geo: [u32; 4], origin: [i32; 2]) -> u32 {
+        let mut hash = 2_166_136_261_u32;
+        for value in geo.into_iter().chain(origin.map(|value| value as u32)) {
+            hash = (hash ^ value).wrapping_mul(16_777_619);
+        }
+        hash
+    }
+
+    /// Arrange chunk metadata as a half-full open-addressed table. The raster shader can then
+    /// locate the one chunk for a fragment directly instead of scanning every painted chunk.
+    fn surface_paint_entry_table(
+        entries: Vec<scenevm::Raster3DSurfacePaintEntry>,
+    ) -> Vec<scenevm::Raster3DSurfacePaintEntry> {
+        let table_len = (entries.len().saturating_mul(2)).next_power_of_two().max(2);
+        let empty = scenevm::Raster3DSurfacePaintEntry {
+            geo: [0; 4],
+            uv_origin: [0; 2],
+            uv_size: [0; 2],
+            atlas_rect: [0; 4],
+        };
+        let mut table = vec![empty; table_len];
+        for entry in entries {
+            let mut index = Self::surface_paint_entry_hash(entry.geo, entry.uv_origin) as usize
+                & (table_len - 1);
+            while table[index].uv_size != [0; 2] {
+                index = (index + 1) & (table_len - 1);
+            }
+            table[index] = entry;
+        }
+        table
+    }
+
     /// Rasterize authored 3D paint into stable UV-space chunks.  The old renderer committed
     /// pixels in camera space; this path is deliberately independent of the active camera.
     fn surface_chunk_key(paint_geo: [u32; 4], origin: [i32; 2]) -> String {
@@ -312,6 +344,7 @@ impl IsoPaintRenderer {
                 ],
             });
         }
+        let entries = Self::surface_paint_entry_table(entries);
         Some((width, height, color, material, entries))
     }
 
@@ -6254,6 +6287,38 @@ impl IsoPaintRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn surface_paint_entries_use_a_direct_chunk_lookup_table() {
+        let entries: Vec<_> = (0..37)
+            .map(|index| scenevm::Raster3DSurfacePaintEntry {
+                geo: [7, index % 3, 11, 1],
+                uv_origin: [(index as i32 - 18) * 64, (index as i32 % 5 - 2) * 64],
+                uv_size: [64, 64],
+                atlas_rect: [index * 64, 0, 64, 64],
+            })
+            .collect();
+        let table = IsoPaintRenderer::surface_paint_entry_table(entries.clone());
+
+        assert!(table.len().is_power_of_two());
+        assert!(table.len() >= entries.len() * 2);
+        for expected in entries {
+            let mut index = IsoPaintRenderer::surface_paint_entry_hash(
+                expected.geo,
+                expected.uv_origin,
+            ) as usize
+                & (table.len() - 1);
+            loop {
+                let candidate = table[index];
+                assert_ne!(candidate.uv_size, [0; 2], "entry missing from lookup table");
+                if candidate.geo == expected.geo && candidate.uv_origin == expected.uv_origin {
+                    assert_eq!(candidate, expected);
+                    break;
+                }
+                index = (index + 1) & (table.len() - 1);
+            }
+        }
+    }
 
     #[test]
     fn default_material_replace_keeps_mode_and_selects_alpha_pass() {
