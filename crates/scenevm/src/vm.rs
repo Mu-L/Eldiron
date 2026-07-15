@@ -3088,6 +3088,55 @@ impl VM {
         }
     }
 
+    /// Return the surface-space footprint of a screen-round brush at a hit.
+    /// The matrix maps local brush coordinates into the stable coordinates used by 3D Paint.
+    pub fn paint_surface_brush_transform(
+        &self,
+        fb_w: u32,
+        fb_h: u32,
+        screen_uv: [f32; 2],
+        surface: &PaintSurfacePixel,
+    ) -> Option<[f32; 4]> {
+        if fb_w == 0 || fb_h == 0 {
+            return None;
+        }
+        let center = Vec3::new(surface.world[0], surface.world[1], surface.world[2]);
+        let normal = Vec3::new(surface.normal[0], surface.normal[1], surface.normal[2]);
+        if normal.magnitude_squared() <= 1e-12 {
+            return None;
+        }
+        let normal = normal.normalized();
+        let surface_coord_at = |uv: [f32; 2]| -> Option<[f32; 2]> {
+            let (ray_origin, ray_dir) = camera_ray_from_uv(&self.camera3d, fb_w, fb_h, uv);
+            let denominator = normal.dot(ray_dir);
+            if denominator.abs() <= 1e-6 {
+                return None;
+            }
+            let distance = (center - ray_origin).dot(normal) / denominator;
+            if !distance.is_finite() || distance <= 0.0 {
+                return None;
+            }
+            let world = ray_origin + ray_dir * distance;
+            Some(Self::paint_surface_coordinate(
+                [world.x, world.y, world.z],
+                surface.paint_geo,
+            ))
+        };
+
+        let half_x = 0.5 / fb_w as f32;
+        let half_y = 0.5 / fb_h as f32;
+        let left = surface_coord_at([screen_uv[0] - half_x, screen_uv[1]])?;
+        let right = surface_coord_at([screen_uv[0] + half_x, screen_uv[1]])?;
+        let up = surface_coord_at([screen_uv[0], screen_uv[1] - half_y])?;
+        let down = surface_coord_at([screen_uv[0], screen_uv[1] + half_y])?;
+        screen_round_paint_brush_transform([
+            right[0] - left[0],
+            down[0] - up[0],
+            right[1] - left[1],
+            down[1] - up[1],
+        ])
+    }
+
     fn palette_tile_indices_uniform(&self) -> [[u32; 4]; 64] {
         let mut out = [[0u32; 4]; 64];
         for index in 0..256u16 {
@@ -12965,6 +13014,33 @@ fn camera_ray_from_uv(
     }
 }
 
+fn screen_round_paint_brush_transform(matrix: [f32; 4]) -> Option<[f32; 4]> {
+    if matrix.iter().any(|value| !value.is_finite()) {
+        return None;
+    }
+    let determinant = matrix[0] * matrix[3] - matrix[1] * matrix[2];
+    if !determinant.is_finite() || determinant.abs() <= 1e-12 {
+        return None;
+    }
+    let squared_trace = matrix.iter().map(|value| value * value).sum::<f32>();
+    let discriminant = (squared_trace * squared_trace - 4.0 * determinant * determinant).max(0.0);
+    let min_squared = 0.5 * (squared_trace - discriminant.sqrt());
+    let max_squared = 0.5 * (squared_trace + discriminant.sqrt());
+    if min_squared <= 1e-12 || max_squared / min_squared > 64.0 {
+        return None;
+    }
+    // Keep the already-correct, wider projected brush diameter and expand only the compressed
+    // axis. Normalizing by area would also shrink the good axis, which is especially visible on
+    // isometric walls.
+    let min_scale = min_squared.sqrt();
+    Some([
+        matrix[0] / min_scale,
+        matrix[1] / min_scale,
+        matrix[2] / min_scale,
+        matrix[3] / min_scale,
+    ])
+}
+
 fn paint_project_point(
     camera: &Camera3D,
     fb_w: u32,
@@ -13110,7 +13186,10 @@ fn hash_u32(mut state: u32) -> u32 {
 
 #[cfg(test)]
 mod shader_tests {
-    use super::{SCENEVM_3D_ORGANIC_BILLBOARD_WGSL, SCENEVM_3D_RASTER_WGSL};
+    use super::{
+        SCENEVM_3D_ORGANIC_BILLBOARD_WGSL, SCENEVM_3D_RASTER_WGSL,
+        screen_round_paint_brush_transform,
+    };
 
     #[test]
     fn raster_shader_parses() {
@@ -13122,5 +13201,11 @@ mod shader_tests {
     fn organic_billboard_shader_parses() {
         wgpu::naga::front::wgsl::parse_str(SCENEVM_3D_ORGANIC_BILLBOARD_WGSL)
             .expect("organic billboard WGSL should parse");
+    }
+
+    #[test]
+    fn paint_brush_transform_preserves_wide_axis_and_expands_compressed_axis() {
+        let transform = screen_round_paint_brush_transform([4.0, 0.0, 0.0, 1.0]).unwrap();
+        assert_eq!(transform, [4.0, 0.0, 0.0, 1.0]);
     }
 }

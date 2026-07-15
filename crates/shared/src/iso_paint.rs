@@ -110,10 +110,47 @@ pub const ISO_PAINT_BAKED_CHUNK_SIZE: i32 = 64;
 /// Paint coordinates are generated from stable surface space, independent of a material's UVs.
 pub const ISO_PAINT_BAKED_PIXELS_PER_UV: f32 = 32.0;
 pub const ISO_PAINT_NO_SURFACE_DEPTH: f32 = -1.0;
-pub const ISO_PAINT_BAKE_VERSION: u8 = 21;
+pub const ISO_PAINT_BAKE_VERSION: u8 = 23;
 /// UI brush size is measured in the old painter's diameter units. Two paint texels per size
 /// unit matches the visible cursor diameter at the current surface-coordinate density.
 const ISO_PAINT_UV_BRUSH_TEXELS_PER_SIZE: f32 = 2.0;
+
+fn validated_brush_transform(transform: Option<[f32; 4]>) -> Option<[f32; 4]> {
+    let transform = transform?;
+    if transform.iter().any(|value| !value.is_finite()) {
+        return None;
+    }
+    let determinant = transform[0] * transform[3] - transform[1] * transform[2];
+    if !determinant.is_finite() || determinant.abs() <= 1e-6 {
+        return None;
+    }
+    Some(transform)
+}
+
+fn brush_local_offset(transform: [f32; 4], offset: [f32; 2]) -> [f32; 2] {
+    let determinant = transform[0] * transform[3] - transform[1] * transform[2];
+    [
+        (transform[3] * offset[0] - transform[1] * offset[1]) / determinant,
+        (-transform[2] * offset[0] + transform[0] * offset[1]) / determinant,
+    ]
+}
+
+fn interpolated_brush_transform(
+    a: Option<[f32; 4]>,
+    b: Option<[f32; 4]>,
+    t: f32,
+) -> Option<[f32; 4]> {
+    match (validated_brush_transform(a), validated_brush_transform(b)) {
+        (Some(a), Some(b)) => validated_brush_transform(Some([
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+            a[3] + (b[3] - a[3]) * t,
+        ])),
+        (Some(transform), None) | (None, Some(transform)) => Some(transform),
+        (None, None) => None,
+    }
+}
 
 fn deserialize_surface_depth<'de, D>(deserializer: D) -> Result<Vec<f32>, D::Error>
 where
@@ -179,6 +216,10 @@ pub struct IsoPaintPoint {
     pub camera_scale: Option<f32>,
     #[serde(default)]
     pub viewport_size: Option<[i32; 2]>,
+    /// Transform from a screen-round brush into stable surface coordinates.
+    /// Stored per point so rebaking keeps the footprint authored from that camera angle.
+    #[serde(default)]
+    pub brush_transform: Option<[f32; 4]>,
     pub owner: Option<IsoPaintOwner>,
 }
 
@@ -192,6 +233,7 @@ impl IsoPaintPoint {
             surface_normal: None,
             camera_scale: None,
             viewport_size: None,
+            brush_transform: None,
             owner,
         }
     }
@@ -218,6 +260,11 @@ impl IsoPaintPoint {
 
     pub fn with_viewport_size(mut self, viewport_size: Option<[i32; 2]>) -> Self {
         self.viewport_size = viewport_size;
+        self
+    }
+
+    pub fn with_brush_transform(mut self, brush_transform: Option<[f32; 4]>) -> Self {
+        self.brush_transform = brush_transform;
         self
     }
 }
@@ -643,6 +690,15 @@ impl Default for IsoPaintLayer {
 }
 
 impl IsoPaintLayer {
+    fn point_brush_transform(&self, point: &IsoPaintPoint) -> [f32; 4] {
+        if self.active_brush == "material" {
+            [1.0, 0.0, 0.0, 1.0]
+        } else {
+            validated_brush_transform(point.brush_transform)
+                .unwrap_or([1.0, 0.0, 0.0, 1.0])
+        }
+    }
+
     /// `object` was the persisted key before the UI correctly called this Surface. Keep it as a
     /// surface clip while rebuilding recently-authored direct-paint strokes.
     fn is_surface_clip(clip: &str) -> bool {
@@ -811,37 +867,44 @@ impl IsoPaintLayer {
             return [fallback[0], fallback[1], fallback[2], 0];
         }
         let col = ((px + offset) / brick_w).floor() as i32;
-        let noise = |nx: i32, ny: i32, salt: i32| {
-            let mut hash = nx
+        let hash = |nx: i32, ny: i32, salt: i32| -> f32 {
+            let mut n = nx
                 .wrapping_mul(374_761_393)
                 .wrapping_add(ny.wrapping_mul(668_265_263))
-                .wrapping_add(salt.wrapping_mul(1_274_126_177));
-            hash = (hash ^ (hash >> 13)).wrapping_mul(1_274_126_177);
-            ((hash ^ (hash >> 16)) & 0xffff) as f32 / 65_535.0
+                .wrapping_add(salt.wrapping_mul(2_147_483_647));
+            n = (n ^ (n >> 13)).wrapping_mul(1_274_126_177);
+            ((n ^ (n >> 16)) & 0xffff) as f32 / 65_535.0
         };
-        let variation = noise(col, row, 11);
-        let base = self
-            .active_palette_colors
-            .get((noise(col, row, 29) * self.active_palette_colors.len() as f32) as usize)
-            .copied()
-            .unwrap_or(fallback);
-        let edge = local_x
+
+        // Keep the original brick treatment: the selected primary color defines the whole wall,
+        // while deterministic tonal variation gives individual bricks character. Choosing a
+        // different palette slot for every cell made the baked 3D pattern much more patchy than
+        // the former screen-space painter.
+        let edge_distance = local_x
             .min(local_y)
             .min(brick_w - local_x)
             .min(brick_h - local_y);
         let detail = self.active_pattern_detail.clamp(0.0, 1.0);
-        let edge_shade = if edge < mortar + 1.6 {
-            1.0 - 0.12 * detail
+        let edge_wear = if edge_distance < mortar + 1.6 {
+            1.0 - 0.12 * detail + hash(col, row, 31) * 0.06 * detail
         } else {
             1.0
         };
-        let shade = edge_shade
-            * (1.0 + (variation - 0.5) * 0.62 * self.active_pattern_variation.clamp(0.0, 1.0));
+        let brick_variation =
+            1.0 + (hash(col, row, 11) - 0.5) * 0.44 * self.active_pattern_variation.clamp(0.0, 1.0);
+        let grain =
+            1.0 + (hash(x, y, col.wrapping_mul(19) ^ row.wrapping_mul(23)) - 0.5) * 0.20 * detail;
+        let hairline = if (local_y - mortar).abs() < 1.0 || (local_x - mortar).abs() < 0.8 {
+            1.0 - 0.07 * detail
+        } else {
+            1.0
+        };
+        let shade = brick_variation * grain * edge_wear * hairline;
         [
-            (base[0] as f32 * shade).clamp(0.0, 255.0) as u8,
-            (base[1] as f32 * shade).clamp(0.0, 255.0) as u8,
-            (base[2] as f32 * shade).clamp(0.0, 255.0) as u8,
-            base[3],
+            (fallback[0] as f32 * shade).clamp(0.0, 255.0) as u8,
+            (fallback[1] as f32 * shade).clamp(0.0, 255.0) as u8,
+            (fallback[2] as f32 * shade).clamp(0.0, 255.0) as u8,
+            fallback[3],
         ]
     }
 
@@ -863,6 +926,13 @@ impl IsoPaintLayer {
         let radius = (self.active_size * ISO_PAINT_UV_BRUSH_TEXELS_PER_SIZE)
             .round()
             .clamp(1.0, 96.0) as i32;
+        let transform = self.point_brush_transform(point);
+        let extent_x = (radius as f32
+            * (transform[0] * transform[0] + transform[1] * transform[1]).sqrt())
+        .ceil() as i32;
+        let extent_y = (radius as f32
+            * (transform[2] * transform[2] + transform[3] * transform[3]).sqrt())
+        .ceil() as i32;
         let mut seed = paint_geo[0] ^ paint_geo[1].rotate_left(7) ^ paint_geo[2].rotate_left(13);
         seed ^= paint_geo[3].rotate_left(19);
         seed ^= (center[0] as u32).wrapping_mul(0x9e37_79b9);
@@ -880,11 +950,15 @@ impl IsoPaintLayer {
             radius,
             seed,
         };
-        for y in center[1] - radius..=center[1] + radius {
-            for x in center[0] - radius..=center[0] + radius {
-                let Some(mut color) =
-                    iso_paint_brush::sample_pixel(&sample, x - center[0], y - center[1])
-                else {
+        for y in center[1] - extent_y..=center[1] + extent_y {
+            for x in center[0] - extent_x..=center[0] + extent_x {
+                let local =
+                    brush_local_offset(transform, [(x - center[0]) as f32, (y - center[1]) as f32]);
+                let Some(mut color) = iso_paint_brush::sample_pixel(
+                    &sample,
+                    local[0].round() as i32,
+                    local[1].round() as i32,
+                ) else {
                     continue;
                 };
                 if brush == "brick" {
@@ -918,7 +992,14 @@ impl IsoPaintLayer {
         let ay = uv_a[1] * ISO_PAINT_BAKED_PIXELS_PER_UV;
         let bx = uv_b[0] * ISO_PAINT_BAKED_PIXELS_PER_UV;
         let by = uv_b[1] * ISO_PAINT_BAKED_PIXELS_PER_UV;
-        let distance = ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
+        let spacing_transform = if self.active_brush == "material" {
+            [1.0, 0.0, 0.0, 1.0]
+        } else {
+            interpolated_brush_transform(a.brush_transform, b.brush_transform, 0.5)
+                .unwrap_or([1.0, 0.0, 0.0, 1.0])
+        };
+        let local_delta = brush_local_offset(spacing_transform, [bx - ax, by - ay]);
+        let distance = (local_delta[0].powi(2) + local_delta[1].powi(2)).sqrt();
         let radius = (self.active_size * ISO_PAINT_UV_BRUSH_TEXELS_PER_SIZE)
             .round()
             .max(1.0);
@@ -933,6 +1014,8 @@ impl IsoPaintLayer {
                 uv_a[1] + (uv_b[1] - uv_a[1]) * t,
             ]);
             point.paint_geo = Some(paint_geo_a);
+            point.brush_transform =
+                interpolated_brush_transform(a.brush_transform, b.brush_transform, t);
             self.paint_baked_at_point(&point, clip_geo);
         }
     }
@@ -1336,6 +1419,69 @@ mod tests {
         assert_eq!(chunk.surface_depth.len(), 512 * 512);
         assert_eq!(&chunk.color_rgba[0..4], &[0, 0, 0, 0]);
         assert_eq!(&chunk.material_rgba[0..4], &[254, 0, 0, 0]);
+    }
+
+    #[test]
+    fn baked_bricks_use_primary_color_instead_of_random_palette_slots() {
+        let mut layer = IsoPaintLayer::default();
+        layer.active_color = [144, 96, 64, 255];
+        layer.active_palette_colors = vec![
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [255, 0, 255, 255],
+        ];
+
+        let with_palette = layer.paint_baked_pattern_color(4, 4);
+        layer.active_palette_colors.clear();
+        let without_palette = layer.paint_baked_pattern_color(4, 4);
+
+        assert_eq!(with_palette, without_palette);
+        assert!(with_palette[0] > with_palette[1]);
+        assert!(with_palette[1] > with_palette[2]);
+        assert_eq!(with_palette[3], 255);
+    }
+
+    #[test]
+    fn baked_brush_transform_compensates_for_projected_surface_axes() {
+        let mut layer = IsoPaintLayer::default();
+        layer.active_brush = "crack".to_string();
+        layer.active_brush_shape = "scratch".to_string();
+        layer.active_size = 4.0;
+        let point = IsoPaintPoint::new([32, 32], None, Some(IsoPaintOwner::Sector(7)))
+            .with_surface_uv(Some(Vec2::new(1.0, 1.0)))
+            .with_paint_geo(Some([7, 0, 0, 1]))
+            .with_brush_transform(Some([2.0, 0.0, 0.0, 0.5]));
+
+        layer.begin_stroke(point);
+
+        let chunk = layer.baked_chunks.values().next().unwrap();
+        let mut bounds = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+        for y in 0..ISO_PAINT_BAKED_CHUNK_SIZE {
+            for x in 0..ISO_PAINT_BAKED_CHUNK_SIZE {
+                let index = (y * ISO_PAINT_BAKED_CHUNK_SIZE + x) as usize * 4;
+                if chunk.color_rgba[index + 3] == 0 {
+                    continue;
+                }
+                bounds[0] = bounds[0].min(x);
+                bounds[1] = bounds[1].min(y);
+                bounds[2] = bounds[2].max(x);
+                bounds[3] = bounds[3].max(y);
+            }
+        }
+        let width = bounds[2] - bounds[0] + 1;
+        let height = bounds[3] - bounds[1] + 1;
+        assert!(width > height * 2, "expected wide ellipse, got {width}x{height}");
+    }
+
+    #[test]
+    fn material_brush_keeps_legacy_round_footprint() {
+        let mut layer = IsoPaintLayer::default();
+        layer.active_brush = "material".to_string();
+        let point = IsoPaintPoint::new([32, 32], None, Some(IsoPaintOwner::Sector(7)))
+            .with_brush_transform(Some([3.0, 0.0, 0.0, 1.0]));
+
+        assert_eq!(layer.point_brush_transform(&point), [1.0, 0.0, 0.0, 1.0]);
     }
 
     #[test]

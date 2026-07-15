@@ -303,21 +303,34 @@ impl IsoPaintTool {
     ) -> IsoPaintPoint {
         // Read the dedicated paint coordinate emitted by the actual rasterized triangle. It is
         // intentionally separate from the material texture UV, which may repeat across tiles.
-        let raster_surface = viewport_size.and_then(|[width, height]| {
-            if width <= 0 || height <= 0 {
-                return None;
-            }
-            RUSTERIX.read().ok().and_then(|rusterix| {
-                rusterix.scene_handler.vm.pick_paint_surface_at_uv(
-                    width as u32,
-                    height as u32,
-                    [
+        let (raster_surface, brush_transform) = viewport_size
+            .and_then(|[width, height]| {
+                if width <= 0 || height <= 0 {
+                    return None;
+                }
+                RUSTERIX.read().ok().and_then(|rusterix| {
+                    let screen_uv = [
                         coord.x as f32 / width as f32,
                         coord.y as f32 / height as f32,
-                    ],
-                )
+                    ];
+                    let surface = rusterix.scene_handler.vm.pick_paint_surface_at_uv(
+                        width as u32,
+                        height as u32,
+                        screen_uv,
+                    )?;
+                    let brush_transform =
+                        rusterix.scene_handler.vm.paint_surface_brush_transform(
+                            width as u32,
+                            height as u32,
+                            screen_uv,
+                            &surface,
+                        );
+                    Some((surface, brush_transform))
+                })
             })
-        });
+            .map_or((None, None), |(surface, transform)| {
+                (Some(surface), transform)
+            });
         let owner = raster_surface
             .as_ref()
             .map(|surface| Self::owner_from_geo_id(surface.geo_id))
@@ -355,6 +368,7 @@ impl IsoPaintTool {
             .with_surface_normal(surface_normal)
             .with_camera_scale(camera_scale)
             .with_viewport_size(viewport_size)
+            .with_brush_transform(brush_transform)
     }
 
     fn paint_viewport_size(ui: &mut TheUI) -> Option<[i32; 2]> {
