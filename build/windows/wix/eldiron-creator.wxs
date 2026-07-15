@@ -39,7 +39,10 @@
 
         <DirectoryRef Id="INSTALLDIR">
             <Component Id="EldironCreatorExe" Guid="*">
-                <File Id="EldironCreatorExeFile" Source=".\eldiron-creator.exe" Name="eldiron-creator.exe" KeyPath="yes" Checksum="yes"/>
+                <File Id="EldironCreatorExeFile" Source=".\eldiron-creator.exe" Name="eldiron-creator.exe" Checksum="yes"/>
+                <RegistryValue Root="HKCU" Key="Software\MarkusMoenig\EldironCreator" Name="installDir" Type="string" Value="[INSTALLDIR]" KeyPath="yes"/>
+                <RemoveFolder Id="RemoveInstallDir" Directory="INSTALLDIR" On="uninstall"/>
+                <RemoveFolder Id="RemoveProgramsFolder" Directory="ProgramsFolder" On="uninstall"/>
             </Component>
         </DirectoryRef>
 
@@ -62,8 +65,9 @@
         </DirectoryRef>
 
         <DirectoryRef Id="INSTALLDIR">
-            <Component Id="ModifyPathEnv" Guid="33568f59-697c-47ff-b239-a46bc0f22ab0" KeyPath="yes">
+            <Component Id="ModifyPathEnv" Guid="33568f59-697c-47ff-b239-a46bc0f22ab0">
                 <Environment Id="PathEnv" Value="[INSTALLDIR]" Name="PATH" Permanent="no" Part="first" Action="set" System="no"/>
+                <RegistryValue Root="HKCU" Key="Software\MarkusMoenig\EldironCreator" Name="pathConfigured" Type="integer" Value="1" KeyPath="yes"/>
             </Component>
         </DirectoryRef>
 
