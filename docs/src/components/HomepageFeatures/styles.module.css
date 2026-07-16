@@ -124,16 +124,42 @@
 }
 
 .newsCard {
+  display: flex;
+  flex-direction: column;
   padding: 1.35rem;
 }
 
-.newsCard h3,
+.newsThumbnailLink {
+  display: block;
+  margin-top: 0.35rem;
+}
+
+.newsThumbnail {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 14px;
+}
+
+.newsLink {
+  margin-top: auto;
+}
+
+.newsTitle,
 .toolCopy h3,
 .formatCopy h3 {
+  margin-top: 0;
   margin-bottom: 0.55rem;
 }
 
-.newsCard p:last-of-type,
+.newsTitle {
+  font-size: var(--ifm-h3-font-size);
+  font-weight: var(--ifm-heading-font-weight);
+  line-height: var(--ifm-heading-line-height);
+}
+
+.newsDescription,
 .toolCopy p,
 .formatCopy p {
   color: var(--ifm-font-color-secondary);

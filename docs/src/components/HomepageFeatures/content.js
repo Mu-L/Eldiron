@@ -49,6 +49,15 @@ export const homepageContent = {
       type: "news",
       items: [
         {
+          date: "Jul 16, 2026",
+          title: "3D Painting Video",
+          href: "https://www.youtube.com/watch?v=6xSJTX0ES54",
+          thumbnail: {
+            image: "https://i.ytimg.com/vi/6xSJTX0ES54/maxresdefault.jpg",
+            alt: "Eldiron v0.92.0 3D Painting video thumbnail",
+          },
+        },
+        {
           date: "Jul 15, 2026",
           title: "Eldiron v0.92.0",
           description:
@@ -62,14 +71,6 @@ export const homepageContent = {
           description:
             "First ruleset-based version, with rules-driven combat/items/spells, resource gathering and crafting, rules-aware UI state, and stronger 3D mesh movement.",
           href: "/blog/2026/06/12/eldiron-v0.91.0",
-          linkLabel: "Read more",
-        },
-        {
-          date: "Apr 26, 2026",
-          title: "Eldiron v0.9.7",
-          description:
-            "Turn-based and hybrid simulation modes, NPC sequences, multiple-choice menus, nested dialogs, surface editing, and renderer/post-processing controls.",
-          href: "/blog/2026/04/26/eldiron-v0.9.7",
           linkLabel: "Read more",
         },
       ],

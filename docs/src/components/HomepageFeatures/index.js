@@ -29,9 +29,28 @@ function NewsSection({ section }) {
         {section.items.map((item) => (
           <article key={item.href} className={styles.newsCard}>
             <p className={styles.newsDate}>{item.date}</p>
-            <h3>{item.title}</h3>
-            <p>{item.description}</p>
-            <Link to={item.href}>{item.linkLabel}</Link>
+            <h3 className={styles.newsTitle}>{item.title}</h3>
+            {item.thumbnail && (
+              <Link
+                className={styles.newsThumbnailLink}
+                to={item.href}
+                aria-label={item.title}
+              >
+                <Screenshot
+                  className={styles.newsThumbnail}
+                  src={item.thumbnail.image}
+                  alt={item.thumbnail.alt}
+                />
+              </Link>
+            )}
+            {item.description && (
+              <p className={styles.newsDescription}>{item.description}</p>
+            )}
+            {item.linkLabel && (
+              <Link className={styles.newsLink} to={item.href}>
+                {item.linkLabel}
+              </Link>
+            )}
           </article>
         ))}
       </div>
