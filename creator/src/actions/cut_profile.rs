@@ -24,8 +24,11 @@ fn geometry_face(
     source_face: Option<&rusterix::GeometryFace>,
 ) -> rusterix::GeometryFace {
     rusterix::GeometryFace {
+        id: Uuid::new_v4(),
+        paint_surface_id: None,
         indices,
         uvs: Vec::new(),
+        paint_uvs: Vec::new(),
         auto_uv: true,
         texture_offset: source_face
             .map(|face| face.texture_offset)

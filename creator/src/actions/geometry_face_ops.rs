@@ -312,8 +312,11 @@ pub(crate) fn fill_selected_geometry_vertices(map: &mut Map) -> bool {
         let face_index = object.faces.len();
         let uvs = face_uvs_for_indices(object, &indices);
         object.faces.push(rusterix::GeometryFace {
+            id: Uuid::new_v4(),
+            paint_surface_id: None,
             indices,
             uvs,
+            paint_uvs: Vec::new(),
             auto_uv: true,
             texture_offset: Vec2::zero(),
             texture_scale: Vec2::broadcast(1.0),
@@ -435,7 +438,40 @@ fn push_geometry_face(
 ) -> usize {
     let face_index = object.faces.len();
     object.faces.push(rusterix::GeometryFace {
+        id: Uuid::new_v4(),
+        paint_surface_id: None,
         uvs: face_uvs_for_indices(object, &indices),
+        indices,
+        paint_uvs: Vec::new(),
+        auto_uv: true,
+        texture_offset: source.texture_offset,
+        texture_scale: source.texture_scale,
+        texture_rotation: source.texture_rotation,
+        tile: source.tile.clone(),
+        tiles: FxHashMap::default(),
+        surface_points: Vec::new(),
+        surface_segments: Vec::new(),
+        surface_noise: source.surface_noise.clone(),
+    });
+    face_index
+}
+
+fn push_geometry_face_continuation(
+    object: &mut rusterix::GeometryObject,
+    source: &rusterix::GeometryFace,
+    indices: Vec<usize>,
+    preserve_face_id: bool,
+) -> usize {
+    let face_index = object.faces.len();
+    object.faces.push(rusterix::GeometryFace {
+        id: if preserve_face_id {
+            source.id
+        } else {
+            Uuid::new_v4()
+        },
+        paint_surface_id: Some(rusterix::geometry_face_effective_paint_surface_id(source)),
+        uvs: face_uvs_for_indices(object, &indices),
+        paint_uvs: rusterix::remap_geometry_face_paint_uvs(&object.vertices, source, &indices),
         indices,
         auto_uv: true,
         texture_offset: source.texture_offset,
@@ -489,6 +525,7 @@ fn append_opening_ring(
         }
     }
 
+    let mut first_continuation = true;
     for y in 0..3 {
         for x in 0..3 {
             if x == 1 && y == 1 {
@@ -509,7 +546,8 @@ fn append_opening_ring(
                     grid[y + 1][x],
                 ]
             };
-            push_geometry_face(object, source, indices);
+            push_geometry_face_continuation(object, source, indices, first_continuation);
+            first_continuation = false;
         }
     }
 
@@ -534,6 +572,27 @@ fn push_geometry_face_with_normal(
         }
     }
     push_geometry_face(object, source, indices)
+}
+
+fn push_geometry_face_continuation_with_normal(
+    object: &mut rusterix::GeometryObject,
+    source: &rusterix::GeometryFace,
+    mut indices: Vec<usize>,
+    desired_normal: Vec3<f32>,
+    preserve_face_id: bool,
+) -> usize {
+    if indices.len() >= 3 {
+        let first = object.vertices[indices[0]];
+        let mut normal = Vec3::<f32>::zero();
+        for index in 1..indices.len() - 1 {
+            normal += (object.vertices[indices[index]] - first)
+                .cross(object.vertices[indices[index + 1]] - first);
+        }
+        if normal.dot(desired_normal) < 0.0 {
+            indices.reverse();
+        }
+    }
+    push_geometry_face_continuation(object, source, indices, preserve_face_id)
 }
 
 fn face_on_cut_plane(
@@ -913,8 +972,8 @@ fn append_selected_cutout_ring(
         });
     }
     let mut face_indices = Vec::new();
-    for triangle in triangles.chunks_exact(3) {
-        let face_index = push_geometry_face_with_normal(
+    for (triangle_index, triangle) in triangles.chunks_exact(3).enumerate() {
+        let face_index = push_geometry_face_continuation_with_normal(
             object,
             source,
             vec![
@@ -923,6 +982,7 @@ fn append_selected_cutout_ring(
                 vertex_indices[triangle[2]],
             ],
             desired_normal,
+            triangle_index == 0,
         );
         face_indices.push(face_index);
     }
@@ -2806,6 +2866,11 @@ pub(crate) fn extrude_selected_geometry_faces(map: &mut Map, amount: f32) -> boo
             }
 
             let mut cap_face = face.clone();
+            cap_face.paint_uvs = rusterix::remap_geometry_face_paint_uvs(
+                &object.vertices,
+                face,
+                &cap_indices,
+            );
             cap_face.indices = cap_indices.clone();
             cap_face.uvs = face_uvs_for_indices(object, &cap_face.indices);
             cap_face.auto_uv = true;
@@ -2821,8 +2886,11 @@ pub(crate) fn extrude_selected_geometry_faces(map: &mut Map, amount: f32) -> boo
                     cap_indices[index],
                 ];
                 added_faces.push(rusterix::GeometryFace {
+                    id: Uuid::new_v4(),
+                    paint_surface_id: None,
                     uvs: face_uvs_for_indices(object, &side_indices),
                     indices: side_indices,
+                    paint_uvs: Vec::new(),
                     auto_uv: true,
                     texture_offset: face.texture_offset,
                     texture_scale: face.texture_scale,
@@ -2928,8 +2996,22 @@ pub(crate) fn subdivide_selected_geometry_faces(map: &mut Map) -> bool {
             let center = object.vertices.len();
             object.vertices.push((pa + pb + pc + pd) * 0.25);
 
-            let make_face = |indices: Vec<usize>| {
+            let paint_surface_id = rusterix::geometry_face_effective_paint_surface_id(&face);
+            let mut replacement_index = 0usize;
+            let mut make_face = |indices: Vec<usize>| {
                 let mut new_face = face.clone();
+                new_face.id = if replacement_index == 0 {
+                    face.id
+                } else {
+                    Uuid::new_v4()
+                };
+                replacement_index += 1;
+                new_face.paint_surface_id = Some(paint_surface_id);
+                new_face.paint_uvs = rusterix::remap_geometry_face_paint_uvs(
+                    &object.vertices,
+                    &face,
+                    &indices,
+                );
                 new_face.indices = indices;
                 new_face.uvs = face_uvs_for_indices(object, &new_face.indices);
                 new_face.auto_uv = true;
@@ -2978,11 +3060,16 @@ pub(crate) fn subdivide_selected_geometry_faces(map: &mut Map) -> bool {
                 }
 
                 if inserted {
-                    let mut face = face;
-                    face.indices = indices;
-                    face.uvs = face_uvs_for_indices(object, &face.indices);
-                    face.auto_uv = true;
-                    rebuilt_faces.push(face);
+                    let mut updated_face = face.clone();
+                    updated_face.paint_uvs = rusterix::remap_geometry_face_paint_uvs(
+                        &object.vertices,
+                        &face,
+                        &indices,
+                    );
+                    updated_face.indices = indices;
+                    updated_face.uvs = face_uvs_for_indices(object, &updated_face.indices);
+                    updated_face.auto_uv = true;
+                    rebuilt_faces.push(updated_face);
                 } else {
                     rebuilt_faces.push(face);
                 }
@@ -3057,6 +3144,11 @@ pub(crate) fn inset_selected_geometry_faces(map: &mut Map, amount: f32) -> bool 
             }
 
             let mut inner_face = face.clone();
+            inner_face.paint_uvs = rusterix::remap_geometry_face_paint_uvs(
+                &object.vertices,
+                &face,
+                &inner_indices,
+            );
             inner_face.indices = inner_indices.clone();
             inner_face.uvs = face_uvs_for_indices(object, &inner_face.indices);
             inner_face.auto_uv = true;
@@ -3072,8 +3164,11 @@ pub(crate) fn inset_selected_geometry_faces(map: &mut Map, amount: f32) -> bool 
                     inner_indices[index],
                 ];
                 object.faces.push(rusterix::GeometryFace {
+                    id: Uuid::new_v4(),
+                    paint_surface_id: None,
                     uvs: face_uvs_for_indices(object, &ring_indices),
                     indices: ring_indices,
+                    paint_uvs: Vec::new(),
                     auto_uv: true,
                     texture_offset: face.texture_offset,
                     texture_scale: face.texture_scale,
@@ -3195,6 +3290,9 @@ mod tests {
                     .unwrap_or(false)
             })
             .expect("box should have a top face");
+        let source_face_id = object.faces[top_face_index].id;
+        let source_surface_id =
+            rusterix::geometry_face_effective_paint_surface_id(&object.faces[top_face_index]);
         map.geometry_objects.push(object);
         map.selected_geometry_faces
             .push((object_id, top_face_index));
@@ -3207,6 +3305,89 @@ mod tests {
             .filter(|(selected_object_id, _)| *selected_object_id == object_id)
             .count();
         assert_eq!(selected, 4);
+        let object = &map.geometry_objects[0];
+        let child_faces = map
+            .selected_geometry_faces
+            .iter()
+            .filter_map(|(selected_object_id, face_index)| {
+                (*selected_object_id == object_id)
+                    .then(|| object.faces.get(*face_index))
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        assert!(child_faces.iter().all(|face| {
+            rusterix::geometry_face_effective_paint_surface_id(face) == source_surface_id
+                && face.paint_uvs.len() == face.indices.len()
+        }));
+        assert_eq!(
+            child_faces
+                .iter()
+                .map(|face| face.id)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            4
+        );
+        assert!(child_faces.iter().any(|face| face.id == source_face_id));
+    }
+
+    #[test]
+    fn extrude_moves_the_painted_surface_to_the_cap() {
+        let mut map = Map::new();
+        let object = rusterix::GeometryObject::box_from_bounds(
+            "floor",
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(4.0, 0.5, 4.0),
+        );
+        let object_id = object.id;
+        let face_index = object
+            .faces
+            .iter()
+            .position(|face| local_face_normal(&object, face).is_some_and(|normal| normal.y > 0.9))
+            .unwrap();
+        let source = object.faces[face_index].clone();
+        let surface_id = rusterix::geometry_face_effective_paint_surface_id(&source);
+        map.geometry_objects.push(object);
+        map.selected_geometry_faces.push((object_id, face_index));
+
+        assert!(extrude_selected_geometry_faces(&mut map, 1.0));
+        let cap_index = map.selected_geometry_faces[0].1;
+        let cap = &map.geometry_objects[0].faces[cap_index];
+        assert_eq!(cap.id, source.id);
+        assert_eq!(
+            rusterix::geometry_face_effective_paint_surface_id(cap),
+            surface_id
+        );
+        assert_eq!(cap.paint_uvs, source.paint_uvs);
+    }
+
+    #[test]
+    fn inset_remaps_paint_coordinates_onto_inner_face() {
+        let mut map = Map::new();
+        let object = rusterix::GeometryObject::box_from_bounds(
+            "floor",
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(4.0, 0.5, 4.0),
+        );
+        let object_id = object.id;
+        let face_index = object
+            .faces
+            .iter()
+            .position(|face| local_face_normal(&object, face).is_some_and(|normal| normal.y > 0.9))
+            .unwrap();
+        let source = object.faces[face_index].clone();
+        let surface_id = rusterix::geometry_face_effective_paint_surface_id(&source);
+        map.geometry_objects.push(object);
+        map.selected_geometry_faces.push((object_id, face_index));
+
+        assert!(inset_selected_geometry_faces(&mut map, 0.5));
+        let inner = &map.geometry_objects[0].faces[face_index];
+        assert_eq!(inner.id, source.id);
+        assert_eq!(
+            rusterix::geometry_face_effective_paint_surface_id(inner),
+            surface_id
+        );
+        assert_eq!(inner.paint_uvs.len(), inner.indices.len());
+        assert_ne!(inner.paint_uvs, source.paint_uvs);
     }
 
     #[test]

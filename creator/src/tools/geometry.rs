@@ -1162,7 +1162,8 @@ fn triangulate_geometry_face(
     }
 
     let mut faces = Vec::with_capacity(triangles.len() / 3);
-    for triangle in triangles.chunks_exact(3) {
+    let paint_surface_id = rusterix::geometry_face_effective_paint_surface_id(face);
+    for (triangle_index, triangle) in triangles.chunks_exact(3).enumerate() {
         let mut indices = vec![
             face.indices[triangle[0]],
             face.indices[triangle[1]],
@@ -1178,6 +1179,17 @@ fn triangulate_geometry_face(
             indices.swap(1, 2);
         }
         let mut triangle_face = face.clone();
+        triangle_face.id = if triangle_index == 0 {
+            face.id
+        } else {
+            Uuid::new_v4()
+        };
+        triangle_face.paint_surface_id = Some(paint_surface_id);
+        triangle_face.paint_uvs = rusterix::remap_geometry_face_paint_uvs(
+            &object.vertices,
+            face,
+            &indices,
+        );
         triangle_face.indices = indices;
         triangle_face.uvs = face_uvs_for_indices(object, &triangle_face.indices);
         triangle_face.auto_uv = true;
@@ -1312,8 +1324,11 @@ fn fill_selected_geometry_vertices(map: &mut Map) -> bool {
         let face_index = object.faces.len();
         let uvs = face_uvs_for_indices(object, &indices);
         object.faces.push(rusterix::GeometryFace {
+            id: Uuid::new_v4(),
+            paint_surface_id: None,
             indices,
             uvs,
+            paint_uvs: Vec::new(),
             auto_uv: true,
             texture_offset: Vec2::zero(),
             texture_scale: Vec2::broadcast(1.0),
@@ -1687,14 +1702,28 @@ fn split_selected_geometry_edges(map: &mut Map) -> bool {
                 continue;
             }
 
+            let paint_surface_id = rusterix::geometry_face_effective_paint_surface_id(&old_face);
             let mut first_face = old_face.clone();
+            first_face.paint_surface_id = Some(paint_surface_id);
+            first_face.paint_uvs = rusterix::remap_geometry_face_paint_uvs(
+                &object.vertices,
+                &old_face,
+                &first_indices,
+            );
             first_face.indices = first_indices;
             first_face.uvs = face_uvs_for_indices(object, &first_face.indices);
             first_face.auto_uv = true;
             first_face.surface_points.clear();
             first_face.surface_segments.clear();
 
-            let mut second_face = old_face;
+            let mut second_face = old_face.clone();
+            second_face.id = Uuid::new_v4();
+            second_face.paint_surface_id = Some(paint_surface_id);
+            second_face.paint_uvs = rusterix::remap_geometry_face_paint_uvs(
+                &object.vertices,
+                &old_face,
+                &second_indices,
+            );
             second_face.indices = second_indices;
             second_face.uvs = face_uvs_for_indices(object, &second_face.indices);
             second_face.auto_uv = true;
@@ -1793,15 +1822,32 @@ fn split_selected_geometry_edges(map: &mut Map) -> bool {
                     midpoint_for_edge(object, normalized_edge(a, b), &mut new_selected_vertices);
                 let mid_cd = midpoint_for_edge(object, opposite_edge, &mut new_selected_vertices);
 
+                let paint_surface_id =
+                    rusterix::geometry_face_effective_paint_surface_id(&old_face);
+                let first_indices = vec![a, mid_ab, mid_cd, d];
                 let mut first_face = old_face.clone();
-                first_face.indices = vec![a, mid_ab, mid_cd, d];
+                first_face.paint_surface_id = Some(paint_surface_id);
+                first_face.paint_uvs = rusterix::remap_geometry_face_paint_uvs(
+                    &object.vertices,
+                    &old_face,
+                    &first_indices,
+                );
+                first_face.indices = first_indices;
                 first_face.uvs = face_uvs_for_indices(object, &first_face.indices);
                 first_face.auto_uv = true;
                 first_face.surface_points.clear();
                 first_face.surface_segments.clear();
 
-                let mut second_face = old_face;
-                second_face.indices = vec![mid_ab, b, c, mid_cd];
+                let second_indices = vec![mid_ab, b, c, mid_cd];
+                let mut second_face = old_face.clone();
+                second_face.id = Uuid::new_v4();
+                second_face.paint_surface_id = Some(paint_surface_id);
+                second_face.paint_uvs = rusterix::remap_geometry_face_paint_uvs(
+                    &object.vertices,
+                    &old_face,
+                    &second_indices,
+                );
+                second_face.indices = second_indices;
                 second_face.uvs = face_uvs_for_indices(object, &second_face.indices);
                 second_face.auto_uv = true;
                 second_face.surface_points.clear();
@@ -1939,6 +1985,13 @@ fn split_face_at_edge_midpoint(
     }
 
     let mut first_face = face.clone();
+    let paint_surface_id = rusterix::geometry_face_effective_paint_surface_id(face);
+    first_face.paint_surface_id = Some(paint_surface_id);
+    first_face.paint_uvs = rusterix::remap_geometry_face_paint_uvs(
+        &object.vertices,
+        face,
+        &first_indices,
+    );
     first_face.indices = first_indices;
     first_face.uvs = face_uvs_for_indices(object, &first_face.indices);
     first_face.auto_uv = true;
@@ -1946,6 +1999,13 @@ fn split_face_at_edge_midpoint(
     first_face.surface_segments.clear();
 
     let mut second_face = face.clone();
+    second_face.id = Uuid::new_v4();
+    second_face.paint_surface_id = Some(paint_surface_id);
+    second_face.paint_uvs = rusterix::remap_geometry_face_paint_uvs(
+        &object.vertices,
+        face,
+        &second_indices,
+    );
     second_face.indices = second_indices;
     second_face.uvs = face_uvs_for_indices(object, &second_face.indices);
     second_face.auto_uv = true;
@@ -3342,24 +3402,42 @@ mod tests {
     #[test]
     fn split_diagonal_vertices_splits_quad_face() {
         let (mut map, object_id) = box_map();
+        let source_face = map.geometry_objects[0]
+            .faces
+            .iter()
+            .find(|face| face.indices == vec![0, 1, 2, 3])
+            .cloned()
+            .expect("box should contain the selected quad");
+        let source_surface_id =
+            rusterix::geometry_face_effective_paint_surface_id(&source_face);
         map.selected_geometry_vertices = vec![(object_id, 0), (object_id, 2)];
 
         assert!(split_selected_geometry_edges(&mut map));
 
         let object = &map.geometry_objects[0];
         assert_eq!(object.faces.len(), 7);
-        assert!(
-            object
-                .faces
-                .iter()
-                .any(|face| face.indices == vec![0, 1, 2])
+        let first = object
+            .faces
+            .iter()
+            .find(|face| face.indices == vec![0, 1, 2])
+            .expect("first split face should exist");
+        let second = object
+            .faces
+            .iter()
+            .find(|face| face.indices == vec![2, 3, 0])
+            .expect("second split face should exist");
+        assert_ne!(first.id, second.id);
+        assert!(first.id == source_face.id || second.id == source_face.id);
+        assert_eq!(
+            rusterix::geometry_face_effective_paint_surface_id(first),
+            source_surface_id
         );
-        assert!(
-            object
-                .faces
-                .iter()
-                .any(|face| face.indices == vec![2, 3, 0])
+        assert_eq!(
+            rusterix::geometry_face_effective_paint_surface_id(second),
+            source_surface_id
         );
+        assert_eq!(first.paint_uvs.len(), first.indices.len());
+        assert_eq!(second.paint_uvs.len(), second.indices.len());
         assert_eq!(
             map.selected_geometry_vertices,
             vec![(object_id, 0), (object_id, 2)]

@@ -148,11 +148,14 @@ impl BlockTool {
 
     fn geometry_face(indices: Vec<usize>) -> rusterix::GeometryFace {
         rusterix::GeometryFace {
+            id: Uuid::new_v4(),
+            paint_surface_id: None,
             uvs: indices
                 .iter()
                 .map(|_| Vec2::new(0.0, 0.0))
                 .collect::<Vec<_>>(),
             indices,
+            paint_uvs: Vec::new(),
             auto_uv: true,
             texture_offset: Vec2::zero(),
             texture_scale: Vec2::broadcast(1.0),

@@ -464,6 +464,21 @@ impl IsoPaintRenderer {
         width: u32,
         height: u32,
     ) -> bool {
+        let resolved_stamps = layer
+            .chunks
+            .values()
+            .flat_map(|chunk| &chunk.stamps)
+            .map(|stamp| {
+                let resolved_world = match (stamp.paint_geo, stamp.surface_uv) {
+                    (Some(paint_geo), Some(surface_uv)) => vm
+                        .paint_surface_world_at(paint_geo, surface_uv)
+                        .map(|(world, _normal)| world)
+                        .or(stamp.world),
+                    _ => stamp.world,
+                };
+                (stamp, resolved_world)
+            })
+            .collect::<Vec<_>>();
         let mut hasher = DefaultHasher::new();
         layer.visible.hash(&mut hasher);
         width.hash(&mut hasher);
@@ -472,17 +487,21 @@ impl IsoPaintRenderer {
             .hash(&mut hasher);
         for chunk in layer.chunks.values() {
             chunk.stamp_revision.hash(&mut hasher);
-            for stamp in &chunk.stamps {
-                stamp.id.hash(&mut hasher);
-                stamp.order.hash(&mut hasher);
-                stamp.size.to_bits().hash(&mut hasher);
-                stamp
-                    .world
-                    .map(|world| world.map(f32::to_bits))
-                    .hash(&mut hasher);
-                stamp.camera_scale.map(f32::to_bits).hash(&mut hasher);
-                stamp.viewport_size.hash(&mut hasher);
-            }
+        }
+        for (stamp, resolved_world) in &resolved_stamps {
+            stamp.id.hash(&mut hasher);
+            stamp.order.hash(&mut hasher);
+            stamp.size.to_bits().hash(&mut hasher);
+            resolved_world
+                .map(|world| world.map(f32::to_bits))
+                .hash(&mut hasher);
+            stamp.paint_geo.hash(&mut hasher);
+            stamp
+                .surface_uv
+                .map(|uv| uv.map(f32::to_bits))
+                .hash(&mut hasher);
+            stamp.camera_scale.map(f32::to_bits).hash(&mut hasher);
+            stamp.viewport_size.hash(&mut hasher);
         }
         let key = hasher.finish();
         if render_cache.stamp_billboard_key == Some(key) {
@@ -497,9 +516,8 @@ impl IsoPaintRenderer {
 
         let mut sprites = Vec::new();
         let mut instances = Vec::new();
-        for chunk in layer.chunks.values() {
-            for stamp in &chunk.stamps {
-                let Some(world) = stamp.world else {
+        for (stamp, resolved_world) in resolved_stamps {
+                let Some(world) = resolved_world else {
                     continue;
                 };
                 let (source, anchor) = Self::iso_paint_native_stamp_raster(stamp);
@@ -571,7 +589,6 @@ impl IsoPaintRenderer {
                     sprite_index,
                     flags: 1,
                 });
-            }
         }
 
         if sprites.is_empty() {

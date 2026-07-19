@@ -3938,14 +3938,15 @@ impl Dock for IsoPaintDock {
                         || !region.iso_paint.chunks.is_empty()
                         || !region.iso_paint.baked_chunks.is_empty())
                 {
-                    let old_region = region.clone();
+                    let old_paint = region.iso_paint.clone();
                     region.iso_paint.surface_commit_strokes.clear();
                     region.iso_paint.chunks.clear();
                     region.iso_paint.baked_chunks.clear();
-                    let undo_atom = ProjectUndoAtom::RegionEdit(
+                    let undo_atom = ProjectUndoAtom::RegionPaintEdit(
                         ProjectContext::Region(region.id),
-                        Box::new(old_region),
-                        Box::new(region.clone()),
+                        region.id,
+                        Box::new(old_paint),
+                        Box::new(region.iso_paint.clone()),
                     );
                     UNDOMANAGER.write().unwrap().add_undo(undo_atom, ctx);
                     ctx.ui.redraw_all = true;

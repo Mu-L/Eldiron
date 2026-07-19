@@ -1087,8 +1087,9 @@ impl IsoPaintLayer {
         ) = saved;
     }
 
-    /// Rebuild the transient surface-space bake from persistent surface strokes. Stamps remain
-    /// world-anchored procedural shapes and are rendered by the depth-aware stamp pass.
+    /// Rebuild the transient surface-space bake from persistent surface strokes. Stamps are
+    /// rendered separately, resolving their persistent surface coordinates against current
+    /// geometry before billboard creation.
     /// Points from the discarded screen-space experiment have no surface coordinates and are
     /// therefore ignored rather than being projected with the wrong semantics.
     pub fn rebuild_baked_paint(&mut self) {

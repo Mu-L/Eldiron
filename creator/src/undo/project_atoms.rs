@@ -9,6 +9,12 @@ use theframework::prelude::*;
 pub enum ProjectUndoAtom {
     MapEdit(ProjectContext, Box<Map>, Box<Map>),
     RegionEdit(ProjectContext, Box<Region>, Box<Region>),
+    RegionPaintEdit(
+        ProjectContext,
+        Uuid,
+        Box<IsoPaintLayer>,
+        Box<IsoPaintLayer>,
+    ),
     TilePickerEdit(Box<Project>, Box<Project>),
     ProjectEdit(String, Box<Project>, Box<Project>),
     AddRegion(Region),
@@ -151,6 +157,7 @@ impl ProjectUndoAtom {
     pub fn is_iso_paint_only(&self) -> bool {
         match self {
             RegionEdit(_, old, new) => Self::is_iso_paint_only_region_edit(old, new),
+            RegionPaintEdit(_, _, _, _) => true,
             _ => false,
         }
     }
@@ -158,10 +165,11 @@ impl ProjectUndoAtom {
     fn apply_region_paint_state(
         project: &mut Project,
         ctx: &mut TheContext,
-        restored_region: &Region,
+        region_id: Uuid,
+        restored_paint: &IsoPaintLayer,
     ) {
-        if let Some(region) = project.get_region_mut(&restored_region.id) {
-            *region = restored_region.clone();
+        if let Some(region) = project.get_region_mut(&region_id) {
+            region.iso_paint = restored_paint.clone();
             ctx.ui.redraw_all = true;
         }
     }
@@ -171,6 +179,7 @@ impl ProjectUndoAtom {
         match self {
             MapEdit(pc, _, _) => Some(*pc),
             RegionEdit(pc, _, _) => Some(*pc),
+            RegionPaintEdit(pc, _, _, _) => Some(*pc),
             _ => None,
         }
     }
@@ -180,6 +189,7 @@ impl ProjectUndoAtom {
         match self {
             MapEdit(_, _, _) => "Map Edit".to_string(),
             RegionEdit(_, _, _) => "Region Edit".to_string(),
+            RegionPaintEdit(_, _, _, _) => "3D Paint Edit".to_string(),
             TilePickerEdit(_, _) => "Tile Picker Edit".to_string(),
             ProjectEdit(label, _, _) => label.clone(),
             AddRegion(region) => format!("Add Region: {}", region.name),
@@ -257,10 +267,13 @@ impl ProjectUndoAtom {
             }
             RegionEdit(pc, old, new) => {
                 if Self::is_iso_paint_only_region_edit(old, new) {
-                    Self::apply_region_paint_state(project, ctx, old);
+                    Self::apply_region_paint_state(project, ctx, old.id, &old.iso_paint);
                 } else {
                     Self::apply_region_edit_state(project, ui, ctx, server_ctx, *pc, old);
                 }
+            }
+            RegionPaintEdit(_, region_id, old, _) => {
+                Self::apply_region_paint_state(project, ctx, *region_id, old);
             }
             TilePickerEdit(old, _new) => {
                 *project = (*old.clone()).clone();
@@ -882,10 +895,13 @@ impl ProjectUndoAtom {
             }
             RegionEdit(pc, old, new) => {
                 if Self::is_iso_paint_only_region_edit(old, new) {
-                    Self::apply_region_paint_state(project, ctx, new);
+                    Self::apply_region_paint_state(project, ctx, new.id, &new.iso_paint);
                 } else {
                     Self::apply_region_edit_state(project, ui, ctx, server_ctx, *pc, new);
                 }
+            }
+            RegionPaintEdit(_, region_id, _, new) => {
+                Self::apply_region_paint_state(project, ctx, *region_id, new);
             }
             TilePickerEdit(_old, new) => {
                 *project = (*new.clone()).clone();
@@ -1675,5 +1691,42 @@ fn move_region_item_pos(
                 item.position = pos;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn region_paint_edit_restores_only_paint_state() {
+        let mut project = Project::default();
+        let region_id = project.regions[0].id;
+        project.regions[0].map.name = "Preserved map".to_string();
+
+        let before = project.regions[0].iso_paint.clone();
+        let mut after = before.clone();
+        after.visible = false;
+        after.active_size = 7.5;
+        project.regions[0].iso_paint = after.clone();
+
+        let atom = ProjectUndoAtom::RegionPaintEdit(
+            ProjectContext::Region(region_id),
+            region_id,
+            Box::new(before.clone()),
+            Box::new(after.clone()),
+        );
+        let mut ui = TheUI::default();
+        let mut ctx = TheContext::new(64, 64, 1.0);
+        let mut server_ctx = ServerContext::default();
+
+        assert!(atom.is_iso_paint_only());
+        atom.undo(&mut project, &mut ui, &mut ctx, &mut server_ctx);
+        assert_eq!(project.regions[0].iso_paint, before);
+        assert_eq!(project.regions[0].map.name, "Preserved map");
+
+        atom.redo(&mut project, &mut ui, &mut ctx, &mut server_ctx);
+        assert_eq!(project.regions[0].iso_paint, after);
+        assert_eq!(project.regions[0].map.name, "Preserved map");
     }
 }

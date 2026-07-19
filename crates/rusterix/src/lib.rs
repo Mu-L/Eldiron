@@ -161,7 +161,8 @@ pub use crate::{
         geometry_object::{
             GeometryFace, GeometryObject, GeometryObjectKind, GeometrySurfaceNoise,
             GeometrySurfacePoint, GeometrySurfacePointMode, GeometrySurfaceSegment,
-            GeometrySurfaceSegmentMode,
+            GeometrySurfaceSegmentMode, geometry_face_effective_paint_surface_id,
+            geometry_face_paint_uvs, remap_geometry_face_paint_uvs,
         },
         light::CompiledLight,
         light::Light,

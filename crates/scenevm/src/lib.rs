@@ -1555,6 +1555,14 @@ impl SceneVM {
             .paint_surface_brush_transform(fb_w, fb_h, screen_uv, surface)
     }
 
+    pub fn paint_surface_world_at(
+        &self,
+        paint_geo: [u32; 4],
+        paint_uv: [f32; 2],
+    ) -> Option<([f32; 3], [f32; 3])> {
+        self.active_vm().paint_surface_world_at(paint_geo, paint_uv)
+    }
+
     #[cfg(feature = "gpu")]
     pub fn paint_surface_buffer_gpu(&mut self, fb_w: u32, fb_h: u32) -> Option<PaintSurfaceBuffer> {
         let gpu = self.gpu.as_ref()?;

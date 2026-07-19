@@ -16,6 +16,10 @@ pub struct Vert3DPod {
     pub _pad2: f32,
     pub surface_noise: [f32; 4],
     pub paint_geo: [u32; 4],
+    pub paint_uv: [f32; 2],
+    pub _pad3: [f32; 2],
+    /// Legacy world-plane identity used only as a compatibility fallback for old paint data.
+    pub paint_geo_fallback: [u32; 4],
 }
 
 #[repr(C)]
@@ -428,4 +432,17 @@ pub(super) fn record_raster3d_debug_timing(
     _shadow_distance: f32,
     _shadow_strength: f32,
 ) {
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Vert3DPod;
+
+    #[test]
+    fn raster_vertex_paint_fields_match_gpu_layout() {
+        assert_eq!(std::mem::size_of::<Vert3DPod>(), 128);
+        assert_eq!(std::mem::offset_of!(Vert3DPod, paint_geo), 80);
+        assert_eq!(std::mem::offset_of!(Vert3DPod, paint_uv), 96);
+        assert_eq!(std::mem::offset_of!(Vert3DPod, paint_geo_fallback), 112);
+    }
 }

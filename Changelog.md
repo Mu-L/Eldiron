@@ -1,3 +1,26 @@
+# Eldiron v0.92.1
+
+## Improvements
+
+### Creator
+
+- Improved **3D Paint** attachment with persistent logical surface identities and object-local paint coordinates, so paint and stamps follow Geometry Objects when they are moved, rotated, or scaled.
+- Preserved painted surfaces through common continued-modeling operations where the surface correspondence is clear, including face extrusion, inset, subdivision, triangulation, and common face/edge splits; destructive topology rebuilds remain best-effort.
+- Reduced **3D Paint** undo/redo memory use by storing only the paint state before and after strokes and Clear All instead of cloning the complete Region.
+
+## Bug Fixes
+
+### Creator
+
+- Fixed severe editor lag and excessive GPU activity while moving the mouse, especially in 2D projects on Linux/Wayland, by capping pointer-driven redraws and coalescing redundant 2D hover events.
+
+### Renderer
+
+- Fixed Raster 3D pipeline creation failing on GPUs with the minimum 16 vertex-attribute limit after adding persistent paint attachment data.
+- Fixed 3D Paint stamps remaining at their original world position after their attached geometry was transformed.
+
+---
+
 # Eldiron v0.92.0
 
 ## Improvements

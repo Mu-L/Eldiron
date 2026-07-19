@@ -244,6 +244,29 @@ impl Editor {
     const STARTER_CREATE_ID: &'static str = "Starter Project Create";
     const STARTER_CANCEL_ID: &'static str = "Starter Project Cancel";
 
+    fn coalesce_polyview_hover_events(events: &mut Vec<TheEvent>) {
+        let mut coalesced = Vec::with_capacity(events.len());
+        for event in events.drain(..) {
+            let is_polyview_hover = matches!(
+                &event,
+                TheEvent::RenderViewHoverChanged(id, _) if id.name == "PolyView"
+            );
+            let previous_is_polyview_hover = matches!(
+                coalesced.last(),
+                Some(TheEvent::RenderViewHoverChanged(id, _)) if id.name == "PolyView"
+            );
+
+            if is_polyview_hover && previous_is_polyview_hover {
+                if let Some(previous) = coalesced.last_mut() {
+                    *previous = event;
+                }
+            } else {
+                coalesced.push(event);
+            }
+        }
+        *events = coalesced;
+    }
+
     fn iso_paint_color_with_opacity(mut color: [u8; 4], opacity: f32) -> [u8; 4] {
         color[3] = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
         color
@@ -8277,6 +8300,7 @@ impl TheTrait for Editor {
                 pending_events.push(event);
             }
         }
+        Self::coalesce_polyview_hover_events(&mut pending_events);
         if !pending_events.is_empty() {
             let only_3d_polyview_hover = self.server_ctx.editor_view_mode != EditorViewMode::D2
                 && pending_events.iter().all(|event| {
@@ -10436,6 +10460,37 @@ mod tests {
             Editor::ensure_project_extension(path),
             PathBuf::from("/tmp/My Project.backup.eldiron")
         );
+    }
+
+    #[test]
+    fn coalesces_consecutive_polyview_hover_events_to_the_latest_position() {
+        let mut events = vec![
+            TheEvent::RenderViewHoverChanged(TheId::named("PolyView"), Vec2::new(10, 20)),
+            TheEvent::RenderViewHoverChanged(TheId::named("PolyView"), Vec2::new(30, 40)),
+            TheEvent::RenderViewHoverChanged(TheId::named("PolyView"), Vec2::new(50, 60)),
+        ];
+
+        Editor::coalesce_polyview_hover_events(&mut events);
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            TheEvent::RenderViewHoverChanged(id, coord)
+                if id.name == "PolyView" && *coord == Vec2::new(50, 60)
+        ));
+    }
+
+    #[test]
+    fn hover_coalescing_preserves_non_hover_event_boundaries() {
+        let mut events = vec![
+            TheEvent::RenderViewHoverChanged(TheId::named("PolyView"), Vec2::new(10, 20)),
+            TheEvent::RenderViewLostHover(TheId::named("PolyView")),
+            TheEvent::RenderViewHoverChanged(TheId::named("PolyView"), Vec2::new(30, 40)),
+        ];
+
+        Editor::coalesce_polyview_hover_events(&mut events);
+
+        assert_eq!(events.len(), 3);
     }
 }
 

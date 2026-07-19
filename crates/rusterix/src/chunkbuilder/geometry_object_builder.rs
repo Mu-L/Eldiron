@@ -13,6 +13,18 @@ const TILED_FACE_RENDER_NUDGE: f32 = 0.0015;
 pub struct GeometryObjectBuilder;
 
 impl GeometryObjectBuilder {
+    fn paint_surface_id(object_id: Uuid, face_id: Uuid) -> [u32; 4] {
+        // A face UUID is persistent within its object. Mix in the object UUID so duplicated
+        // objects do not accidentally share one paint surface.
+        let value = face_id.as_u128() ^ object_id.as_u128().rotate_left(1);
+        [
+            value as u32,
+            (value >> 32) as u32,
+            (value >> 64) as u32,
+            (value >> 96) as u32,
+        ]
+    }
+
     fn default_tile_id() -> Uuid {
         Uuid::parse_str(DEFAULT_GEOMETRY_TILE_ID).unwrap_or_else(|_| Uuid::nil())
     }
@@ -103,6 +115,25 @@ impl GeometryObjectBuilder {
             return Some(
                 world_points[0] * u + world_points[index] * v + world_points[index + 1] * w,
             );
+        }
+        None
+    }
+
+    fn paint_uv_from_face_uv(
+        uv: Vec2<f32>,
+        face_uvs: &[Vec2<f32>],
+        paint_uvs: &[Vec2<f32>],
+    ) -> Option<Vec2<f32>> {
+        if face_uvs.len() < 3 || face_uvs.len() != paint_uvs.len() {
+            return None;
+        }
+        for index in 1..face_uvs.len() - 1 {
+            let Some((u, v, w)) =
+                Self::barycentric_2d(uv, face_uvs[0], face_uvs[index], face_uvs[index + 1])
+            else {
+                continue;
+            };
+            return Some(paint_uvs[0] * u + paint_uvs[index] * v + paint_uvs[index + 1] * w);
         }
         None
     }
@@ -689,6 +720,7 @@ impl GeometryObjectBuilder {
         object_id: Uuid,
         material: Option<&crate::TileMaterialMeta>,
         face_uvs: &[Vec2<f32>],
+        face_paint_uvs: &[Vec2<f32>],
         world_points: &[Vec3<f32>],
         object_center: Vec3<f32>,
     ) -> bool {
@@ -736,6 +768,7 @@ impl GeometryObjectBuilder {
                 ];
                 let mut vertices = Vec::with_capacity(4);
                 let mut vertices_world = Vec::with_capacity(4);
+                let mut paint_uvs = Vec::with_capacity(4);
                 for uv in corners_uv {
                     let Some(world) = Self::world_from_face_uv(uv, face_uvs, world_points) else {
                         vertices.clear();
@@ -745,6 +778,14 @@ impl GeometryObjectBuilder {
                     let world = world + render_nudge;
                     vertices_world.push(world);
                     vertices.push([world.x, world.y, world.z, 1.0]);
+                    let Some(paint_uv) = Self::paint_uv_from_face_uv(uv, face_uvs, face_paint_uvs)
+                    else {
+                        vertices.clear();
+                        vertices_world.clear();
+                        paint_uvs.clear();
+                        break;
+                    };
+                    paint_uvs.push([paint_uv.x, paint_uv.y]);
                 }
                 if vertices.len() != 4 {
                     continue;
@@ -762,7 +803,7 @@ impl GeometryObjectBuilder {
                 if let (Some(noise), Some(noise_tile_id)) =
                     (face.surface_noise.as_ref(), noise_tile_id)
                 {
-                    vmchunk.add_poly_3d_surface_noise(
+                    vmchunk.add_poly_3d_surface_noise_painted(
                         GeoId::GeometryObject(object_id),
                         tile_id,
                         noise_tile_id,
@@ -772,9 +813,14 @@ impl GeometryObjectBuilder {
                         0,
                         true,
                         Self::surface_noise_layer(noise),
+                        Self::paint_surface_id(
+                            object_id,
+                            crate::geometry_face_effective_paint_surface_id(face),
+                        ),
+                        paint_uvs,
                     );
                 } else {
-                    vmchunk.add_poly_3d(
+                    vmchunk.add_poly_3d_painted(
                         GeoId::GeometryObject(object_id),
                         tile_id,
                         vertices,
@@ -782,6 +828,11 @@ impl GeometryObjectBuilder {
                         vec![(0, 1, 2), (0, 2, 3)],
                         0,
                         true,
+                        Self::paint_surface_id(
+                            object_id,
+                            crate::geometry_face_effective_paint_surface_id(face),
+                        ),
+                        paint_uvs,
                     );
                 }
             }
@@ -853,6 +904,11 @@ impl ChunkBuilder for GeometryObjectBuilder {
                 if face.auto_uv {
                     uvs = Self::auto_face_uvs(&local_points);
                 }
+                let paint_uvs = if face.paint_uvs.len() == local_points.len() {
+                    face.paint_uvs.clone()
+                } else {
+                    crate::geometry_face_paint_uvs(&local_points)
+                };
                 if face.auto_uv && !face.tiles.is_empty() {
                     let face_uvs = uvs
                         .iter()
@@ -865,6 +921,7 @@ impl ChunkBuilder for GeometryObjectBuilder {
                         object.id,
                         object_material.as_ref(),
                         &face_uvs,
+                        &paint_uvs,
                         &world_points,
                         object_center,
                     ) {
@@ -886,7 +943,7 @@ impl ChunkBuilder for GeometryObjectBuilder {
                 if let (Some(noise), Some(noise_tile_id)) =
                     (face.surface_noise.as_ref(), noise_tile_id)
                 {
-                    vmchunk.add_poly_3d_surface_noise(
+                    vmchunk.add_poly_3d_surface_noise_painted(
                         GeoId::GeometryObject(object.id),
                         tile_id,
                         noise_tile_id,
@@ -896,9 +953,14 @@ impl ChunkBuilder for GeometryObjectBuilder {
                         0,
                         true,
                         Self::surface_noise_layer(noise),
+                        Self::paint_surface_id(
+                            object.id,
+                            crate::geometry_face_effective_paint_surface_id(face),
+                        ),
+                        paint_uvs.iter().map(|uv| [uv.x, uv.y]).collect(),
                     );
                 } else {
-                    vmchunk.add_poly_3d(
+                    vmchunk.add_poly_3d_painted(
                         GeoId::GeometryObject(object.id),
                         tile_id,
                         vertices,
@@ -906,6 +968,11 @@ impl ChunkBuilder for GeometryObjectBuilder {
                         indices,
                         0,
                         true,
+                        Self::paint_surface_id(
+                            object.id,
+                            crate::geometry_face_effective_paint_surface_id(face),
+                        ),
+                        paint_uvs.iter().map(|uv| [uv.x, uv.y]).collect(),
                     );
                 }
             }
@@ -1077,6 +1144,95 @@ mod tests {
     }
 
     #[test]
+    fn geometry_build_keeps_face_identity_and_object_local_paint_coordinates() {
+        let mut object = crate::GeometryObject::box_from_bounds(
+            "Painted box",
+            Vec3::new(1.0, 0.0, 1.0),
+            Vec3::new(3.0, 2.0, 3.0),
+        );
+        let object_id = object.id;
+        let face_id = object.faces[0].id;
+        let expected_uvs = object.faces[0]
+            .paint_uvs
+            .iter()
+            .map(|uv| [uv.x, uv.y])
+            .collect::<Vec<_>>();
+        object.transform[3][0] = 4.0;
+        object.transform[3][1] = 1.5;
+        object.transform[3][2] = 2.0;
+
+        let mut map = Map::default();
+        map.geometry_objects.push(object);
+        let assets = Assets::default();
+        let mut chunk = Chunk::new(Vec2::zero(), 16);
+        let mut vmchunk = scenevm::Chunk::new(Vec2::zero(), 16);
+        let mut builder = GeometryObjectBuilder;
+        builder.build(&map, &assets, &mut chunk, &mut vmchunk);
+
+        let expected_surface_id = GeometryObjectBuilder::paint_surface_id(object_id, face_id);
+        let poly = vmchunk
+            .polys3d_map
+            .get(&GeoId::GeometryObject(object_id))
+            .and_then(|polys| {
+                polys
+                    .iter()
+                    .find(|poly| poly.paint_surface_id == Some(expected_surface_id))
+            })
+            .expect("persistent face should be present in rendered geometry");
+        assert_eq!(poly.paint_uvs, expected_uvs);
+        assert!(poly.vertices.iter().all(|vertex| vertex[0] >= 4.0));
+    }
+
+    #[test]
+    fn geometry_build_allows_split_faces_to_share_one_paint_surface() {
+        let mut object = crate::GeometryObject::box_from_bounds(
+            "Split painted box",
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 2.0, 2.0),
+        );
+        let object_id = object.id;
+        let source = object.faces.remove(0);
+        let source_surface_id = crate::geometry_face_effective_paint_surface_id(&source);
+        let mut first = source.clone();
+        first.indices = vec![source.indices[0], source.indices[1], source.indices[2]];
+        first.paint_surface_id = Some(source_surface_id);
+        first.paint_uvs = crate::remap_geometry_face_paint_uvs(
+            &object.vertices,
+            &source,
+            &first.indices,
+        );
+        let mut second = source.clone();
+        second.id = Uuid::new_v4();
+        second.indices = vec![source.indices[2], source.indices[3], source.indices[0]];
+        second.paint_surface_id = Some(source_surface_id);
+        second.paint_uvs = crate::remap_geometry_face_paint_uvs(
+            &object.vertices,
+            &source,
+            &second.indices,
+        );
+        object.faces.extend([first, second]);
+
+        let mut map = Map::default();
+        map.geometry_objects.push(object);
+        let assets = Assets::default();
+        let mut chunk = Chunk::new(Vec2::zero(), 16);
+        let mut vmchunk = scenevm::Chunk::new(Vec2::zero(), 16);
+        let mut builder = GeometryObjectBuilder;
+        builder.build(&map, &assets, &mut chunk, &mut vmchunk);
+
+        let expected_surface_id =
+            GeometryObjectBuilder::paint_surface_id(object_id, source_surface_id);
+        let matching_polys = vmchunk
+            .polys3d_map
+            .get(&GeoId::GeometryObject(object_id))
+            .expect("geometry object should render")
+            .iter()
+            .filter(|poly| poly.paint_surface_id == Some(expected_surface_id))
+            .count();
+        assert_eq!(matching_polys, 2);
+    }
+
+    #[test]
     fn high_scale_surface_noise_does_not_add_render_tessellation() {
         let mut object = crate::GeometryObject::new("Many Triangles");
         for index in 0..64 {
@@ -1089,8 +1245,11 @@ mod tests {
                 Vec3::new(x, 0.0, z + 0.8),
             ]);
             object.faces.push(crate::GeometryFace {
+                id: Uuid::new_v4(),
+                paint_surface_id: None,
                 indices: vec![base, base + 1, base + 2],
                 uvs: Vec::new(),
+                paint_uvs: Vec::new(),
                 auto_uv: true,
                 texture_offset: Vec2::zero(),
                 texture_scale: Vec2::broadcast(1.0),
@@ -1143,11 +1302,14 @@ mod tests {
             Vec3::new(0.0, 2.0, 0.0),
         ];
         object.faces = vec![crate::GeometryFace {
+            id: Uuid::new_v4(),
+            paint_surface_id: None,
             // This winding produces a raw downward normal. For concave/stepped
             // objects, an outward-center flip would otherwise hide this tread
             // from collision because it sits below the object's vertical center.
             indices: vec![0, 1, 2, 3],
             uvs: Vec::new(),
+            paint_uvs: Vec::new(),
             auto_uv: true,
             texture_offset: Vec2::zero(),
             texture_scale: Vec2::broadcast(1.0),
@@ -1187,8 +1349,11 @@ mod tests {
             Vec3::new(0.0, 0.0, 0.0),
         ];
         object.faces = vec![crate::GeometryFace {
+            id: Uuid::new_v4(),
+            paint_surface_id: None,
             indices: vec![0, 1, 2, 3],
             uvs: Vec::new(),
+            paint_uvs: Vec::new(),
             auto_uv: true,
             texture_offset: Vec2::zero(),
             texture_scale: Vec2::broadcast(1.0),
@@ -1220,8 +1385,11 @@ mod tests {
     fn collision_ignores_stale_cap_inside_real_cutout_boundary() {
         fn test_face(indices: Vec<usize>) -> crate::GeometryFace {
             crate::GeometryFace {
+                id: Uuid::new_v4(),
+                paint_surface_id: None,
                 indices,
                 uvs: Vec::new(),
+                paint_uvs: Vec::new(),
                 auto_uv: true,
                 texture_offset: Vec2::zero(),
                 texture_scale: Vec2::broadcast(1.0),

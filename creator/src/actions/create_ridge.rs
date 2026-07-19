@@ -85,8 +85,11 @@ fn push_face(
 ) {
     let uvs = face_uvs_for_indices(object, &indices);
     object.faces.push(rusterix::GeometryFace {
+        id: Uuid::new_v4(),
+        paint_surface_id: None,
         indices,
         uvs,
+        paint_uvs: Vec::new(),
         auto_uv: true,
         texture_offset: Vec2::zero(),
         texture_scale: Vec2::broadcast(1.0),

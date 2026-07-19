@@ -700,8 +700,11 @@ fn push_generated_face(
 ) {
     let uvs = indices.iter().map(|_| Vec2::zero()).collect();
     object.faces.push(rusterix::GeometryFace {
+        id: Uuid::new_v4(),
+        paint_surface_id: None,
         indices,
         uvs,
+        paint_uvs: Vec::new(),
         auto_uv: true,
         texture_offset: Vec2::zero(),
         texture_scale: Vec2::broadcast(1.0),
@@ -1903,8 +1906,11 @@ mod tests {
             Vec3::new(2.0, 4.0, 0.0),
         ];
         object.faces.push(rusterix::GeometryFace {
+            id: Uuid::new_v4(),
+            paint_surface_id: None,
             indices: vec![0, 1, 2],
             uvs: Vec::new(),
+            paint_uvs: Vec::new(),
             auto_uv: true,
             texture_offset: Vec2::zero(),
             texture_scale: Vec2::broadcast(1.0),
@@ -1935,8 +1941,11 @@ mod tests {
             Vec3::new(4.0, 0.7, 0.0),
         ];
         let make_face = |indices| rusterix::GeometryFace {
+            id: Uuid::new_v4(),
+            paint_surface_id: None,
             indices,
             uvs: Vec::new(),
+            paint_uvs: Vec::new(),
             auto_uv: true,
             texture_offset: Vec2::zero(),
             texture_scale: Vec2::broadcast(1.0),
@@ -1970,8 +1979,11 @@ mod tests {
             Vec3::new(4.0, 0.7, 0.0),
         ];
         let make_face = |indices| rusterix::GeometryFace {
+            id: Uuid::new_v4(),
+            paint_surface_id: None,
             indices,
             uvs: Vec::new(),
+            paint_uvs: Vec::new(),
             auto_uv: true,
             texture_offset: Vec2::zero(),
             texture_scale: Vec2::broadcast(1.0),

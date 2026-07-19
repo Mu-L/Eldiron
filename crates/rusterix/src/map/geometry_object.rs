@@ -1,5 +1,6 @@
 use crate::{BBox, PixelSource, ValueContainer};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use theframework::prelude::FxHashMap;
 use uuid::Uuid;
 use vek::{Vec2, Vec3};
@@ -19,9 +20,21 @@ impl Default for GeometryObjectKind {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct GeometryFace {
+    /// Persistent identity used by systems, such as 3D Paint, that must survive face reordering
+    /// and object transforms.
+    #[serde(default = "default_geometry_face_id")]
+    pub id: Uuid,
+    /// Logical painted surface shared by faces produced from a topology split. When absent, the
+    /// mesh face ID is also the paint surface ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paint_surface_id: Option<Uuid>,
     pub indices: Vec<usize>,
     #[serde(default)]
     pub uvs: Vec<Vec2<f32>>,
+    /// Dedicated object-local coordinates for 3D Paint. These never inherit material UV tiling,
+    /// offsets, or rotation.
+    #[serde(default)]
+    pub paint_uvs: Vec<Vec2<f32>>,
     #[serde(default = "default_auto_uv")]
     pub auto_uv: bool,
     #[serde(default = "default_texture_offset")]
@@ -158,6 +171,7 @@ impl GeometryObject {
             face(vec![3, 2, 6, 7]), // top
             face(vec![4, 5, 1, 0]), // bottom
         ];
+        object.ensure_face_paint_data();
         object
     }
 
@@ -182,6 +196,7 @@ impl GeometryObject {
             face(vec![3, 2, 6, 7]), // top
             face(vec![4, 5, 1, 0]), // bottom
         ];
+        object.ensure_face_paint_data();
         object
     }
 
@@ -213,6 +228,130 @@ impl GeometryObject {
             point.x * m[0][2] + point.y * m[1][2] + point.z * m[2][2] + m[3][2],
         )
     }
+
+    /// Ensure every face has persistent identity and object-local paint coordinates.
+    ///
+    /// This is intentionally explicit instead of being part of rendering: once a face can be
+    /// painted, its coordinates must be serialized and remain unchanged by object transforms.
+    pub fn ensure_face_paint_data(&mut self) -> bool {
+        let vertices = &self.vertices;
+        let mut changed = false;
+        let mut face_ids = HashSet::with_capacity(self.faces.len());
+        for face in &mut self.faces {
+            if face.id.is_nil() || !face_ids.insert(face.id) {
+                face.id = Uuid::new_v4();
+                face_ids.insert(face.id);
+                changed = true;
+            }
+            if face.paint_uvs.len() != face.indices.len() {
+                let local_points = face
+                    .indices
+                    .iter()
+                    .filter_map(|index| vertices.get(*index).copied())
+                    .collect::<Vec<_>>();
+                if local_points.len() == face.indices.len() {
+                    face.paint_uvs = geometry_face_paint_uvs(&local_points);
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+}
+
+/// Generate a stable, material-independent projection in object-local space.
+pub fn geometry_face_paint_uvs(points: &[Vec3<f32>]) -> Vec<Vec2<f32>> {
+    if points.len() < 3 {
+        return vec![Vec2::zero(); points.len()];
+    }
+    let mut normal = Vec3::<f32>::zero();
+    for index in 1..points.len() - 1 {
+        normal += (points[index] - points[0]).cross(points[index + 1] - points[0]);
+    }
+    let abs = Vec3::new(normal.x.abs(), normal.y.abs(), normal.z.abs());
+    points
+        .iter()
+        .map(|point| {
+            if abs.y >= abs.x && abs.y >= abs.z {
+                Vec2::new(point.x, point.z)
+            } else if abs.x >= abs.z {
+                Vec2::new(point.z, point.y)
+            } else {
+                Vec2::new(point.x, point.y)
+            }
+        })
+        .collect()
+}
+
+pub fn geometry_face_effective_paint_surface_id(face: &GeometryFace) -> Uuid {
+    face.paint_surface_id.unwrap_or(face.id)
+}
+
+/// Transfer a source face's paint coordinates to replacement vertices. The barycentric lookup
+/// intentionally ignores displacement along the source normal, so an extruded cap retains the
+/// exact coordinates of the face it continues.
+pub fn remap_geometry_face_paint_uvs(
+    vertices: &[Vec3<f32>],
+    source: &GeometryFace,
+    replacement_indices: &[usize],
+) -> Vec<Vec2<f32>> {
+    let source_points = source
+        .indices
+        .iter()
+        .filter_map(|index| vertices.get(*index).copied())
+        .collect::<Vec<_>>();
+    let replacement_points = replacement_indices
+        .iter()
+        .filter_map(|index| vertices.get(*index).copied())
+        .collect::<Vec<_>>();
+    if source_points.len() != source.indices.len()
+        || replacement_points.len() != replacement_indices.len()
+        || source_points.len() < 3
+    {
+        return geometry_face_paint_uvs(&replacement_points);
+    }
+    let source_uvs = if source.paint_uvs.len() == source_points.len() {
+        source.paint_uvs.clone()
+    } else {
+        geometry_face_paint_uvs(&source_points)
+    };
+    let fallback_uvs = geometry_face_paint_uvs(&replacement_points);
+
+    replacement_points
+        .iter()
+        .enumerate()
+        .map(|(replacement_index, point)| {
+            for index in 1..source_points.len() - 1 {
+                let a = source_points[0];
+                let b = source_points[index];
+                let c = source_points[index + 1];
+                let v0 = b - a;
+                let v1 = c - a;
+                let v2 = *point - a;
+                let d00 = v0.dot(v0);
+                let d01 = v0.dot(v1);
+                let d11 = v1.dot(v1);
+                let d20 = v2.dot(v0);
+                let d21 = v2.dot(v1);
+                let denominator = d00 * d11 - d01 * d01;
+                if denominator.abs() <= 1e-8 {
+                    continue;
+                }
+                let v = (d11 * d20 - d01 * d21) / denominator;
+                let w = (d00 * d21 - d01 * d20) / denominator;
+                let u = 1.0 - v - w;
+                if u >= -1e-4 && v >= -1e-4 && w >= -1e-4 {
+                    return source_uvs[0] * u
+                        + source_uvs[index] * v
+                        + source_uvs[index + 1] * w;
+                }
+            }
+            fallback_uvs
+                .get(replacement_index)
+                .copied()
+                .unwrap_or_else(Vec2::zero)
+        })
+        .collect()
 }
 
 pub fn identity_transform() -> [[f32; 4]; 4] {
@@ -226,6 +365,8 @@ pub fn identity_transform() -> [[f32; 4]; 4] {
 
 fn face(indices: Vec<usize>) -> GeometryFace {
     GeometryFace {
+        id: Uuid::new_v4(),
+        paint_surface_id: None,
         indices,
         uvs: vec![
             Vec2::new(0.0, 0.0),
@@ -233,6 +374,7 @@ fn face(indices: Vec<usize>) -> GeometryFace {
             Vec2::new(1.0, 1.0),
             Vec2::new(0.0, 1.0),
         ],
+        paint_uvs: Vec::new(),
         auto_uv: true,
         texture_offset: default_texture_offset(),
         texture_scale: default_texture_scale(),
@@ -243,6 +385,10 @@ fn face(indices: Vec<usize>) -> GeometryFace {
         surface_segments: Vec::new(),
         surface_noise: None,
     }
+}
+
+fn default_geometry_face_id() -> Uuid {
+    Uuid::new_v4()
 }
 
 fn default_auto_uv() -> bool {
@@ -369,6 +515,8 @@ mod tests {
             serde_json::from_str(json).expect("legacy empty tile map deserializes");
 
         assert!(restored.tiles.is_empty());
+        assert!(!restored.id.is_nil());
+        assert!(restored.paint_uvs.is_empty());
     }
 
     #[test]
@@ -395,5 +543,56 @@ mod tests {
             restored.tiles.get(&(2, -1)),
             Some(&PixelSource::TileId(tile_id))
         );
+    }
+
+    #[test]
+    fn face_paint_data_is_object_local_and_survives_object_transform() {
+        let mut object = GeometryObject::box_from_bounds(
+            "Painted box",
+            Vec3::new(-1.0, 0.0, -2.0),
+            Vec3::new(2.0, 3.0, 4.0),
+        );
+        let face_ids = object.faces.iter().map(|face| face.id).collect::<Vec<_>>();
+        let paint_uvs = object
+            .faces
+            .iter()
+            .map(|face| face.paint_uvs.clone())
+            .collect::<Vec<_>>();
+
+        object.transform[0][0] = 0.0;
+        object.transform[0][2] = -1.0;
+        object.transform[2][0] = 1.0;
+        object.transform[2][2] = 0.0;
+        object.transform[3][0] = 7.0;
+        object.transform[3][1] = 2.0;
+        object.transform[3][2] = -3.0;
+
+        assert!(!object.ensure_face_paint_data());
+        assert_eq!(
+            object.faces.iter().map(|face| face.id).collect::<Vec<_>>(),
+            face_ids
+        );
+        assert_eq!(
+            object
+                .faces
+                .iter()
+                .map(|face| face.paint_uvs.clone())
+                .collect::<Vec<_>>(),
+            paint_uvs
+        );
+    }
+
+    #[test]
+    fn duplicate_face_ids_are_repaired_before_painting() {
+        let mut object = GeometryObject::box_("Box", Vec3::zero(), Vec3::one());
+        object.faces[1].id = object.faces[0].id;
+
+        assert!(object.ensure_face_paint_data());
+        let unique = object
+            .faces
+            .iter()
+            .map(|face| face.id)
+            .collect::<HashSet<_>>();
+        assert_eq!(unique.len(), object.faces.len());
     }
 }

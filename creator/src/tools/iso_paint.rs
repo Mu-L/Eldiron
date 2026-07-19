@@ -20,7 +20,7 @@ pub struct IsoPaintTool {
     active_stroke: Option<Uuid>,
     last_stamp_screen: Option<[i32; 2]>,
     stamp_clip_geo: Option<[u32; 4]>,
-    stroke_before: Option<Region>,
+    stroke_before: Option<IsoPaintLayer>,
     stroke_changed: bool,
 }
 
@@ -455,6 +455,12 @@ impl Tool for IsoPaintTool {
                     if server_ctx.editor_view_mode == EditorViewMode::Iso {
                         region.map.camera = MapCamera::ThreeDIso;
                     }
+                    // Persist face identity and object-local paint coordinates before the first
+                    // stroke. Rendering has a legacy fallback, but new paint must never depend
+                    // on the object's current world transform.
+                    for object in &mut region.map.geometry_objects {
+                        object.ensure_face_paint_data();
+                    }
                     region.map.clear_selection();
                     region.map.clear_temp();
                     Self::ensure_initial_material_settings(region, neutral_material);
@@ -577,7 +583,7 @@ impl Tool for IsoPaintTool {
                 server_ctx.iso_paint_hover_screen = Some(coord);
                 Self::sync_live_paint_settings(ui, region);
                 self.painting = true;
-                self.stroke_before = Some(region.clone());
+                self.stroke_before = Some(region.iso_paint.clone());
                 if Self::is_stamp_mode(&region.iso_paint) {
                     let point = Self::paint_point(coord, server_ctx, viewport_size);
                     self.stamp_clip_geo = Self::stamp_clip_geo(&region.iso_paint, &point);
@@ -684,11 +690,12 @@ impl Tool for IsoPaintTool {
                 }
 
                 let undo_atom = if self.stroke_changed {
-                    self.stroke_before.take().map(|old_region| {
-                        ProjectUndoAtom::RegionEdit(
+                    self.stroke_before.take().map(|old_paint| {
+                        ProjectUndoAtom::RegionPaintEdit(
                             ProjectContext::Region(region.id),
-                            Box::new(old_region),
-                            Box::new(region.clone()),
+                            region.id,
+                            Box::new(old_paint),
+                            Box::new(region.iso_paint.clone()),
                         )
                     })
                 } else {
@@ -705,8 +712,8 @@ impl Tool for IsoPaintTool {
             }
             MapEscape => {
                 server_ctx.iso_paint_hover_screen = None;
-                if let Some(old_region) = self.stroke_before.take() {
-                    *region = old_region;
+                if let Some(old_paint) = self.stroke_before.take() {
+                    region.iso_paint = old_paint;
                 }
                 self.reset_stroke();
                 Self::request_paint_redraw(ctx);

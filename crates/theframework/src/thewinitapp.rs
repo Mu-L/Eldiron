@@ -103,6 +103,14 @@ fn translate_coord_to_local(x: f32, y: f32, scale_factor: f32) -> (f32, f32) {
     (x / scale_factor, y / scale_factor)
 }
 
+fn schedule_pointer_frame(next_frame_time: &mut Instant, now: Instant, pointer_fps: f64) {
+    let pointer_frame_time = Duration::from_secs_f64(1.0 / pointer_fps.clamp(30.0, 60.0));
+    let pointer_deadline = now + pointer_frame_time;
+    if pointer_deadline < *next_frame_time {
+        *next_frame_time = pointer_deadline;
+    }
+}
+
 struct TheWinitContext {
     window: Arc<Window>,
     ctx: TheContext,
@@ -450,17 +458,26 @@ impl ApplicationHandler for TheWinitApp {
                 }
             }
             event => {
+                let pointer_moved = matches!(&event, WindowEvent::CursorMoved { .. });
                 let user_driven_event = matches!(
                     &event,
                     WindowEvent::KeyboardInput { .. }
                         | WindowEvent::ModifiersChanged(_)
-                        | WindowEvent::CursorMoved { .. }
                         | WindowEvent::Touch(_)
                         | WindowEvent::MouseInput { .. }
                         | WindowEvent::MouseWheel { .. }
                         | WindowEvent::DroppedFile(_)
                 );
-                if user_driven_event {
+                if pointer_moved {
+                    // Pointer devices can report hundreds or thousands of events per second.
+                    // Wake promptly after idle, but keep motion-driven updates inside the
+                    // editor's interactive frame cadence instead of redrawing per raw event.
+                    schedule_pointer_frame(
+                        &mut self.next_frame_time,
+                        Instant::now(),
+                        self.app.target_fps(),
+                    );
+                } else if user_driven_event {
                     // Wake the frame scheduler immediately on input even in low-FPS idle mode.
                     self.next_frame_time = Instant::now();
                 }
@@ -757,25 +774,16 @@ impl ApplicationHandler for TheWinitApp {
 
                         self.last_cursor_pos = Some((x, y));
 
-                        let mut redraw = false;
                         if self.left_mouse_down || self.right_mouse_down {
                             #[cfg(feature = "ui")]
-                            if self.ui.touch_dragged(x, y, &mut ctx.ctx) {
-                                redraw = true;
-                            }
+                            self.ui.touch_dragged(x, y, &mut ctx.ctx);
 
-                            if self.app.touch_dragged(x, y, &mut ctx.ctx) {
-                                redraw = true;
-                            }
+                            self.app.touch_dragged(x, y, &mut ctx.ctx);
                         } else {
                             #[cfg(feature = "ui")]
-                            if self.ui.hover(x, y, &mut ctx.ctx) {
-                                redraw = true;
-                            }
+                            self.ui.hover(x, y, &mut ctx.ctx);
 
-                            if self.app.hover(x, y, &mut ctx.ctx) {
-                                redraw = true;
-                            }
+                            self.app.hover(x, y, &mut ctx.ctx);
                         }
 
                         // Update cursor icon immediately after hover detection
@@ -827,10 +835,6 @@ impl ApplicationHandler for TheWinitApp {
                         if ctx.ctx.cursor_visible_changed() {
                             ctx.window.set_cursor_visible(ctx.ctx.cursor_visible());
                             ctx.ctx.reset_cursor_visible_changed();
-                        }
-
-                        if redraw {
-                            ctx.window.request_redraw();
                         }
                     }
                     WindowEvent::Touch(Touch {
@@ -1066,17 +1070,22 @@ impl ApplicationHandler for TheWinitApp {
     }
 
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
-        let Some(ctx) = &mut self.ctx else {
-            return;
-        };
-        if let DeviceEvent::MouseMotion { delta } = event
+        let wants_redraw = if let Some(ctx) = &mut self.ctx
+            && let DeviceEvent::MouseMotion { delta } = event
             && self.right_mouse_down
-            && self
-                .app
-                .mouse_motion(delta.0 as f32, delta.1 as f32, &mut ctx.ctx)
         {
-            self.next_frame_time = Instant::now();
-            ctx.window.request_redraw();
+            self.app
+                .mouse_motion(delta.0 as f32, delta.1 as f32, &mut ctx.ctx)
+        } else {
+            false
+        };
+
+        if wants_redraw {
+            schedule_pointer_frame(
+                &mut self.next_frame_time,
+                Instant::now(),
+                self.app.target_fps(),
+            );
         }
     }
 
@@ -1157,4 +1166,42 @@ pub fn run_winit_app(args: Option<Vec<String>>, app: Box<dyn TheTrait>) {
 
     let event_loop = EventLoop::new().unwrap();
     event_loop.run_app(&mut winit_app).unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pointer_motion_shortens_an_idle_frame_deadline() {
+        let now = Instant::now();
+        let mut next_frame = now + Duration::from_millis(250);
+
+        schedule_pointer_frame(&mut next_frame, now, 30.0);
+
+        assert!(next_frame <= now + Duration::from_millis(34));
+        assert!(next_frame > now);
+    }
+
+    #[test]
+    fn repeated_pointer_motion_does_not_postpone_the_pending_frame() {
+        let now = Instant::now();
+        let mut next_frame = now + Duration::from_millis(250);
+        schedule_pointer_frame(&mut next_frame, now, 30.0);
+        let first_deadline = next_frame;
+
+        schedule_pointer_frame(&mut next_frame, now + Duration::from_millis(5), 30.0);
+
+        assert_eq!(next_frame, first_deadline);
+    }
+
+    #[test]
+    fn pointer_motion_does_not_replace_an_earlier_regular_frame() {
+        let now = Instant::now();
+        let mut next_frame = now + Duration::from_millis(5);
+
+        schedule_pointer_frame(&mut next_frame, now, 60.0);
+
+        assert_eq!(next_frame, now + Duration::from_millis(5));
+    }
 }

@@ -1199,17 +1199,16 @@ struct TileFrameBuf { data: array<TileFrame> };
 
 struct VsIn {
     @location(0) pos: vec3<f32>,
-    @location(1) _pad0: f32,
     @location(2) uv: vec2<f32>,
-    @location(3) _pad1: vec2<f32>,
     @location(4) tile_index: u32,
     @location(5) tile_index2: u32,
     @location(6) blend_factor: f32,
     @location(7) opacity: f32,
     @location(8) normal: vec3<f32>,
-    @location(9) _pad2: f32,
     @location(13) surface_noise: vec4<f32>,
     @location(14) paint_geo: vec4<u32>,
+    @location(10) paint_uv: vec2<f32>,
+    @location(11) paint_geo_fallback: vec4<u32>,
 };
 
 struct VsOut {
@@ -1223,6 +1222,8 @@ struct VsOut {
     @location(12) world_pos: vec3<f32>,
     @location(13) surface_noise: vec4<f32>,
     @location(14) @interpolate(flat) paint_geo: vec4<u32>,
+    @location(10) paint_uv: vec2<f32>,
+    @location(11) @interpolate(flat) paint_geo_fallback: vec4<u32>,
 };
 
 struct VsShadowOut {
@@ -1631,9 +1632,9 @@ fn surface_paint_minification_filter(
     return vec4<f32>(premultiplied / alpha_sum, alpha_sum * (1.0 / 9.0));
 }
 
-fn sample_surface_paint(world_pos: vec3<f32>, paint_geo: vec4<u32>) -> SurfacePaintSample {
+fn sample_surface_paint(paint_coord: vec2<f32>, paint_geo: vec4<u32>) -> SurfacePaintSample {
     let empty = SurfacePaintSample(vec4<f32>(0.0), vec4<u32>(0u));
-    let paint_pos = surface_paint_coordinate(world_pos, paint_geo) * 32.0;
+    let paint_pos = paint_coord * 32.0;
     let paint_dx = dpdx(paint_pos);
     let paint_dy = dpdy(paint_pos);
     let center_px = vec2<i32>(floor(paint_pos));
@@ -1956,6 +1957,8 @@ fn vs_main(in: VsIn) -> VsOut {
     out.world_pos = in.pos;
     out.surface_noise = in.surface_noise;
     out.paint_geo = in.paint_geo;
+    out.paint_uv = in.paint_uv;
+    out.paint_geo_fallback = in.paint_geo_fallback;
     return out;
 }
 
@@ -2082,7 +2085,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var color_base = select(mix(c0_base, c1_base, blend), c0_base, is_avatar);
     // 3D Paint uses its own stable surface coordinates, never the material texture UVs. This
     // prevents a tiled/repeating material from duplicating a single painted mark.
-    let paint_sample = sample_surface_paint(in.world_pos, in.paint_geo);
+    var paint_sample = sample_surface_paint(in.paint_uv, in.paint_geo);
+    // Geometry painted before persistent face IDs used a world-plane key. Keep it visible until
+    // it is explicitly migrated, while all newly-authored paint uses the stable primary key.
+    if (any(in.paint_geo_fallback != vec4<u32>(0u)) &&
+        paint_sample.overlay.a <= 0.00001 && paint_sample.material.a == 0u) {
+        paint_sample = sample_surface_paint(
+            surface_paint_coordinate(in.world_pos, in.paint_geo_fallback),
+            in.paint_geo_fallback
+        );
+    }
     let paint_overlay = paint_sample.overlay;
     let paint_material_raw = paint_sample.material;
     let paint_color_weight = clamp(paint_overlay.a, 0.0, 1.0) * select(1.0, 0.0, is_avatar);
@@ -3214,6 +3226,71 @@ impl VM {
         }
     }
 
+    /// Resolve a persistent paint coordinate back onto the geometry's current world-space
+    /// triangle. Surface stamps use this to follow object transforms and vertex edits.
+    pub fn paint_surface_world_at(
+        &self,
+        paint_geo: [u32; 4],
+        paint_uv: [f32; 2],
+    ) -> Option<([f32; 3], [f32; 3])> {
+        let target_uv = Vec2::new(paint_uv[0], paint_uv[1]);
+        for chunk in self.chunks_map.values() {
+            for polys in chunk.polys3d_map.values() {
+                for poly in polys {
+                    if poly.paint_surface_id != Some(paint_geo)
+                        || poly.paint_uvs.len() != poly.vertices.len()
+                    {
+                        continue;
+                    }
+                    for &(ia, ib, ic) in &poly.indices {
+                        let (Some(uv_a), Some(uv_b), Some(uv_c)) = (
+                            poly.paint_uvs.get(ia),
+                            poly.paint_uvs.get(ib),
+                            poly.paint_uvs.get(ic),
+                        ) else {
+                            continue;
+                        };
+                        let (Some(a), Some(b), Some(c)) = (
+                            poly.vertices.get(ia),
+                            poly.vertices.get(ib),
+                            poly.vertices.get(ic),
+                        ) else {
+                            continue;
+                        };
+                        let world_point = |vertex: &[f32; 4]| {
+                            let p = self.transform3d
+                                * Vec4::new(vertex[0], vertex[1], vertex[2], vertex[3]);
+                            let w = if p.w.abs() > 1e-8 { p.w } else { 1.0 };
+                            Vec3::new(p.x / w, p.y / w, p.z / w)
+                        };
+                        let a = world_point(a);
+                        let b = world_point(b);
+                        let c = world_point(c);
+                        let Some(world) = Self::world_position_from_triangle_uv(
+                            target_uv,
+                            Vec2::new(uv_a[0], uv_a[1]),
+                            Vec2::new(uv_b[0], uv_b[1]),
+                            Vec2::new(uv_c[0], uv_c[1]),
+                            a,
+                            b,
+                            c,
+                        ) else {
+                            continue;
+                        };
+                        let Some(normal) = (b - a).cross(c - a).try_normalized() else {
+                            continue;
+                        };
+                        return Some((
+                            [world.x, world.y, world.z],
+                            [normal.x, normal.y, normal.z],
+                        ));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Return the surface-space footprint of a screen-round brush at a hit.
     /// The matrix maps local brush coordinates into the stable coordinates used by 3D Paint.
     pub fn paint_surface_brush_transform(
@@ -3226,27 +3303,10 @@ impl VM {
         if fb_w == 0 || fb_h == 0 {
             return None;
         }
-        let center = Vec3::new(surface.world[0], surface.world[1], surface.world[2]);
-        let normal = Vec3::new(surface.normal[0], surface.normal[1], surface.normal[2]);
-        if normal.magnitude_squared() <= 1e-12 {
-            return None;
-        }
-        let normal = normal.normalized();
         let surface_coord_at = |uv: [f32; 2]| -> Option<[f32; 2]> {
-            let (ray_origin, ray_dir) = camera_ray_from_uv(&self.camera3d, fb_w, fb_h, uv);
-            let denominator = normal.dot(ray_dir);
-            if denominator.abs() <= 1e-6 {
-                return None;
-            }
-            let distance = (center - ray_origin).dot(normal) / denominator;
-            if !distance.is_finite() || distance <= 0.0 {
-                return None;
-            }
-            let world = ray_origin + ray_dir * distance;
-            Some(Self::paint_surface_coordinate(
-                [world.x, world.y, world.z],
-                surface.paint_geo,
-            ))
+            self.pick_paint_surface_at_uv(fb_w, fb_h, uv)
+                .filter(|hit| hit.paint_geo == surface.paint_geo)
+                .map(|hit| hit.uv)
         };
 
         let half_x = 0.5 / fb_w as f32;
@@ -6947,18 +7007,8 @@ impl VM {
                             format: wgpu::VertexFormat::Float32x3,
                         },
                         wgpu::VertexAttribute {
-                            offset: 12,
-                            shader_location: 1,
-                            format: wgpu::VertexFormat::Float32,
-                        },
-                        wgpu::VertexAttribute {
                             offset: 16,
                             shader_location: 2,
-                            format: wgpu::VertexFormat::Float32x2,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 24,
-                            shader_location: 3,
                             format: wgpu::VertexFormat::Float32x2,
                         },
                         wgpu::VertexAttribute {
@@ -6987,11 +7037,6 @@ impl VM {
                             format: wgpu::VertexFormat::Float32x3,
                         },
                         wgpu::VertexAttribute {
-                            offset: 60,
-                            shader_location: 9,
-                            format: wgpu::VertexFormat::Float32,
-                        },
-                        wgpu::VertexAttribute {
                             offset: 64,
                             shader_location: 13,
                             format: wgpu::VertexFormat::Float32x4,
@@ -6999,6 +7044,16 @@ impl VM {
                         wgpu::VertexAttribute {
                             offset: 80,
                             shader_location: 14,
+                            format: wgpu::VertexFormat::Uint32x4,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 96,
+                            shader_location: 10,
+                            format: wgpu::VertexFormat::Float32x2,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 112,
+                            shader_location: 11,
                             format: wgpu::VertexFormat::Uint32x4,
                         },
                     ],
@@ -7056,18 +7111,8 @@ impl VM {
                                 format: wgpu::VertexFormat::Float32x3,
                             },
                             wgpu::VertexAttribute {
-                                offset: 12,
-                                shader_location: 1,
-                                format: wgpu::VertexFormat::Float32,
-                            },
-                            wgpu::VertexAttribute {
                                 offset: 16,
                                 shader_location: 2,
-                                format: wgpu::VertexFormat::Float32x2,
-                            },
-                            wgpu::VertexAttribute {
-                                offset: 24,
-                                shader_location: 3,
                                 format: wgpu::VertexFormat::Float32x2,
                             },
                             wgpu::VertexAttribute {
@@ -7096,11 +7141,6 @@ impl VM {
                                 format: wgpu::VertexFormat::Float32x3,
                             },
                             wgpu::VertexAttribute {
-                                offset: 60,
-                                shader_location: 9,
-                                format: wgpu::VertexFormat::Float32,
-                            },
-                            wgpu::VertexAttribute {
                                 offset: 64,
                                 shader_location: 13,
                                 format: wgpu::VertexFormat::Float32x4,
@@ -7108,6 +7148,16 @@ impl VM {
                             wgpu::VertexAttribute {
                                 offset: 80,
                                 shader_location: 14,
+                                format: wgpu::VertexFormat::Uint32x4,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 96,
+                                shader_location: 10,
+                                format: wgpu::VertexFormat::Float32x2,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 112,
+                                shader_location: 11,
                                 format: wgpu::VertexFormat::Uint32x4,
                             },
                         ],
@@ -7168,18 +7218,8 @@ impl VM {
                                 format: wgpu::VertexFormat::Float32x3,
                             },
                             wgpu::VertexAttribute {
-                                offset: 12,
-                                shader_location: 1,
-                                format: wgpu::VertexFormat::Float32,
-                            },
-                            wgpu::VertexAttribute {
                                 offset: 16,
                                 shader_location: 2,
-                                format: wgpu::VertexFormat::Float32x2,
-                            },
-                            wgpu::VertexAttribute {
-                                offset: 24,
-                                shader_location: 3,
                                 format: wgpu::VertexFormat::Float32x2,
                             },
                             wgpu::VertexAttribute {
@@ -7208,11 +7248,6 @@ impl VM {
                                 format: wgpu::VertexFormat::Float32x3,
                             },
                             wgpu::VertexAttribute {
-                                offset: 60,
-                                shader_location: 9,
-                                format: wgpu::VertexFormat::Float32,
-                            },
-                            wgpu::VertexAttribute {
                                 offset: 64,
                                 shader_location: 13,
                                 format: wgpu::VertexFormat::Float32x4,
@@ -7220,6 +7255,16 @@ impl VM {
                             wgpu::VertexAttribute {
                                 offset: 80,
                                 shader_location: 14,
+                                format: wgpu::VertexFormat::Uint32x4,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 96,
+                                shader_location: 10,
+                                format: wgpu::VertexFormat::Float32x2,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 112,
+                                shader_location: 11,
                                 format: wgpu::VertexFormat::Uint32x4,
                             },
                         ],
@@ -7277,18 +7322,8 @@ impl VM {
                                 format: wgpu::VertexFormat::Float32x3,
                             },
                             wgpu::VertexAttribute {
-                                offset: 12,
-                                shader_location: 1,
-                                format: wgpu::VertexFormat::Float32,
-                            },
-                            wgpu::VertexAttribute {
                                 offset: 16,
                                 shader_location: 2,
-                                format: wgpu::VertexFormat::Float32x2,
-                            },
-                            wgpu::VertexAttribute {
-                                offset: 24,
-                                shader_location: 3,
                                 format: wgpu::VertexFormat::Float32x2,
                             },
                             wgpu::VertexAttribute {
@@ -7317,11 +7352,6 @@ impl VM {
                                 format: wgpu::VertexFormat::Float32x3,
                             },
                             wgpu::VertexAttribute {
-                                offset: 60,
-                                shader_location: 9,
-                                format: wgpu::VertexFormat::Float32,
-                            },
-                            wgpu::VertexAttribute {
                                 offset: 64,
                                 shader_location: 13,
                                 format: wgpu::VertexFormat::Float32x4,
@@ -7329,6 +7359,16 @@ impl VM {
                             wgpu::VertexAttribute {
                                 offset: 80,
                                 shader_location: 14,
+                                format: wgpu::VertexFormat::Uint32x4,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 96,
+                                shader_location: 10,
+                                format: wgpu::VertexFormat::Float32x2,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 112,
+                                shader_location: 11,
                                 format: wgpu::VertexFormat::Uint32x4,
                             },
                         ],
@@ -7560,18 +7600,8 @@ impl VM {
                                 format: wgpu::VertexFormat::Float32x3,
                             },
                             wgpu::VertexAttribute {
-                                offset: 12,
-                                shader_location: 1,
-                                format: wgpu::VertexFormat::Float32,
-                            },
-                            wgpu::VertexAttribute {
                                 offset: 16,
                                 shader_location: 2,
-                                format: wgpu::VertexFormat::Float32x2,
-                            },
-                            wgpu::VertexAttribute {
-                                offset: 24,
-                                shader_location: 3,
                                 format: wgpu::VertexFormat::Float32x2,
                             },
                             wgpu::VertexAttribute {
@@ -7600,11 +7630,6 @@ impl VM {
                                 format: wgpu::VertexFormat::Float32x3,
                             },
                             wgpu::VertexAttribute {
-                                offset: 60,
-                                shader_location: 9,
-                                format: wgpu::VertexFormat::Float32,
-                            },
-                            wgpu::VertexAttribute {
                                 offset: 64,
                                 shader_location: 13,
                                 format: wgpu::VertexFormat::Float32x4,
@@ -7612,6 +7637,16 @@ impl VM {
                             wgpu::VertexAttribute {
                                 offset: 80,
                                 shader_location: 14,
+                                format: wgpu::VertexFormat::Uint32x4,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 96,
+                                shader_location: 10,
+                                format: wgpu::VertexFormat::Float32x2,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 112,
+                                shader_location: 11,
                                 format: wgpu::VertexFormat::Uint32x4,
                             },
                         ],
@@ -9470,12 +9505,23 @@ impl VM {
                             poly_pos.first().copied().unwrap_or([0.0; 3]),
                         );
                         let paint_axis = Self::paint_projection_axis(paint_normal);
-                        let mut paint_geo = Self::paint_geo_id_packed(poly.id);
-                        paint_geo[3] = paint_surface_group | paint_axis;
+                        let mut legacy_paint_geo = Self::paint_geo_id_packed(poly.id);
+                        legacy_paint_geo[3] = paint_surface_group | paint_axis;
 
                         for (i, p) in poly_pos.iter().enumerate() {
                             let uv0 = poly.uvs[i];
                             let n = poly_nrm[i];
+                            let (paint_geo, paint_uv, paint_geo_fallback) =
+                                match (poly.paint_surface_id, poly.paint_uvs.get(i).copied()) {
+                                    (Some(surface_id), Some(surface_uv)) => {
+                                        (surface_id, surface_uv, legacy_paint_geo)
+                                    }
+                                    _ => (
+                                        legacy_paint_geo,
+                                        Self::paint_surface_coordinate(*p, legacy_paint_geo),
+                                        [0; 4],
+                                    ),
+                                };
                             let blend_factor = if has_valid_blend {
                                 poly.blend_weights[i].clamp(0.0, 1.0)
                             } else {
@@ -9494,6 +9540,9 @@ impl VM {
                                 _pad2: 0.0,
                                 surface_noise,
                                 paint_geo,
+                                paint_uv,
+                                _pad3: [0.0, 0.0],
+                                paint_geo_fallback,
                             });
                         }
 
@@ -9524,6 +9573,9 @@ impl VM {
                     _pad2: 0.0,
                     surface_noise: [0.0, 0.0, 0.0, 0.0],
                     paint_geo: [0, 0, 0, 0],
+                    paint_uv: [0.0, 0.0],
+                    _pad3: [0.0, 0.0],
+                    paint_geo_fallback: [0, 0, 0, 0],
                 });
             }
             if i3.is_empty() {
@@ -9932,12 +9984,23 @@ impl VM {
                                 poly_pos.first().copied().unwrap_or([0.0; 3]),
                             );
                             let paint_axis = Self::paint_projection_axis(paint_normal);
-                            let mut paint_geo = Self::paint_geo_id_packed(poly.id);
-                            paint_geo[3] = paint_surface_group | paint_axis;
+                            let mut legacy_paint_geo = Self::paint_geo_id_packed(poly.id);
+                            legacy_paint_geo[3] = paint_surface_group | paint_axis;
 
                             for (i, p) in poly_pos.iter().enumerate() {
                                 let uv0 = poly.uvs[i];
                                 let n = poly_nrm[i];
+                                let (paint_geo, paint_uv, paint_geo_fallback) =
+                                    match (poly.paint_surface_id, poly.paint_uvs.get(i).copied()) {
+                                        (Some(surface_id), Some(surface_uv)) => {
+                                            (surface_id, surface_uv, legacy_paint_geo)
+                                        }
+                                        _ => (
+                                            legacy_paint_geo,
+                                            Self::paint_surface_coordinate(*p, legacy_paint_geo),
+                                            [0; 4],
+                                        ),
+                                    };
                                 let blend_factor = if has_valid_blend {
                                     poly.blend_weights[i].clamp(0.0, 1.0)
                                 } else {
@@ -9956,6 +10019,9 @@ impl VM {
                                     _pad2: 0.0,
                                     surface_noise,
                                     paint_geo,
+                                    paint_uv,
+                                    _pad3: [0.0, 0.0],
+                                    paint_geo_fallback,
                                 });
                             }
 
@@ -10079,6 +10145,9 @@ impl VM {
                         _pad2: 0.0,
                         surface_noise: [0.0, 0.0, 0.0, 0.0],
                         paint_geo: [0, 0, 0, 0],
+                        paint_uv: [0.0, 0.0],
+                        _pad3: [0.0, 0.0],
+                        paint_geo_fallback: [0, 0, 0, 0],
                     });
                 }
                 i3.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
@@ -10123,6 +10192,9 @@ impl VM {
                         _pad2: 0.0,
                         surface_noise: [0.0, 0.0, 0.0, 0.0],
                         paint_geo: [0, 0, 0, 0],
+                        paint_uv: [0.0, 0.0],
+                        _pad3: [0.0, 0.0],
+                        paint_geo_fallback: [0, 0, 0, 0],
                     });
                 }
                 for tri in obj.mesh_indices.chunks_exact(3) {
@@ -10146,6 +10218,9 @@ impl VM {
                     _pad2: 0.0,
                     surface_noise: [0.0, 0.0, 0.0, 0.0],
                     paint_geo: [0, 0, 0, 0],
+                    paint_uv: [0.0, 0.0],
+                    _pad3: [0.0, 0.0],
+                    paint_geo_fallback: [0, 0, 0, 0],
                 });
             }
             if i3.is_empty() {
@@ -11482,7 +11557,7 @@ impl VM {
                 out.push(PaintSurfaceVertPod {
                     pos: v.pos,
                     face_id: tri_idx as u32,
-                    uv: v.uv,
+                    uv: v.paint_uv,
                     _pad0: [0.0, 0.0],
                     normal: v.normal,
                     _pad1: 0.0,
@@ -11887,8 +11962,8 @@ impl VM {
                     .try_normalized()
                     .unwrap_or_else(Vec3::unit_y);
                     let uv = [
-                        a.uv[0] * w0 + b.uv[0] * w1 + c.uv[0] * w2,
-                        a.uv[1] * w0 + b.uv[1] * w1 + c.uv[1] * w2,
+                        a.paint_uv[0] * w0 + b.paint_uv[0] * w1 + c.paint_uv[0] * w2,
+                        a.paint_uv[1] * w0 + b.paint_uv[1] * w1 + c.paint_uv[1] * w2,
                     ];
 
                     buffer.pixels[index] = crate::core::PaintSurfacePixel {
@@ -11974,9 +12049,32 @@ impl VM {
                         }
 
                         let normal_vec = triangle_normal(a, b, c).unwrap_or_else(Vec3::unit_y);
-                        let uv_a = poly.uvs.get(ia).copied().unwrap_or([0.0, 0.0]);
-                        let uv_b = poly.uvs.get(ib).copied().unwrap_or([0.0, 0.0]);
-                        let uv_c = poly.uvs.get(ic).copied().unwrap_or([0.0, 0.0]);
+                        let mut legacy_paint_geo = Self::paint_geo_id_packed(poly.id);
+                        legacy_paint_geo[3] = Self::paint_surface_group_id(
+                            poly,
+                            [normal_vec.x, normal_vec.y, normal_vec.z],
+                            a,
+                        ) | Self::paint_projection_axis([
+                            normal_vec.x,
+                            normal_vec.y,
+                            normal_vec.z,
+                        ]);
+                        let (paint_geo, uv_a, uv_b, uv_c) = match (
+                            poly.paint_surface_id,
+                            poly.paint_uvs.get(ia).copied(),
+                            poly.paint_uvs.get(ib).copied(),
+                            poly.paint_uvs.get(ic).copied(),
+                        ) {
+                            (Some(surface_id), Some(uv_a), Some(uv_b), Some(uv_c)) => {
+                                (surface_id, uv_a, uv_b, uv_c)
+                            }
+                            _ => (
+                                legacy_paint_geo,
+                                Self::paint_surface_coordinate(a, legacy_paint_geo),
+                                Self::paint_surface_coordinate(b, legacy_paint_geo),
+                                Self::paint_surface_coordinate(c, legacy_paint_geo),
+                            ),
+                        };
 
                         for y in min_y..=max_y {
                             for x in min_x..=max_x {
@@ -12004,19 +12102,7 @@ impl VM {
                                 buffer.pixels[index] = crate::core::PaintSurfacePixel {
                                     valid: true,
                                     geo_id: poly.id,
-                                    paint_geo: {
-                                        let mut paint_geo = Self::paint_geo_id_packed(poly.id);
-                                        paint_geo[3] = Self::paint_surface_group_id(
-                                            poly,
-                                            [normal_vec.x, normal_vec.y, normal_vec.z],
-                                            a,
-                                        ) | Self::paint_projection_axis([
-                                            normal_vec.x,
-                                            normal_vec.y,
-                                            normal_vec.z,
-                                        ]);
-                                        paint_geo
-                                    },
+                                    paint_geo,
                                     face_id: face,
                                     depth: d,
                                     world: [
@@ -12105,7 +12191,10 @@ impl VM {
                     depth: distance,
                     world,
                     normal: [normal.x, normal.y, normal.z],
-                    uv: Self::paint_surface_coordinate(world, a.paint_geo),
+                    uv: [
+                        a.paint_uv[0] * w + b.paint_uv[0] * u + c.paint_uv[0] * v,
+                        a.paint_uv[1] * w + b.paint_uv[1] * u + c.paint_uv[1] * v,
+                    ],
                 },
             ));
         }
@@ -13316,14 +13405,30 @@ fn hash_u32(mut state: u32) -> u32 {
 #[cfg(test)]
 mod shader_tests {
     use super::{
-        SCENEVM_3D_ORGANIC_BILLBOARD_WGSL, SCENEVM_3D_RASTER_WGSL,
+        SCENEVM_3D_ORGANIC_BILLBOARD_WGSL, SCENEVM_3D_RASTER_WGSL, VM,
         screen_round_paint_brush_transform,
     };
+    use crate::{Chunk, GeoId};
+    use uuid::Uuid;
 
     #[test]
     fn raster_shader_parses() {
         wgpu::naga::front::wgsl::parse_str(SCENEVM_3D_RASTER_WGSL)
             .expect("3D raster WGSL should parse");
+    }
+
+    #[test]
+    fn raster_shader_locations_fit_minimum_wgpu_limit() {
+        for suffix in SCENEVM_3D_RASTER_WGSL.split("@location(").skip(1) {
+            let end = suffix.find(')').expect("location has a closing parenthesis");
+            let location = suffix[..end]
+                .parse::<u32>()
+                .expect("location is an integer");
+            assert!(
+                location < 16,
+                "shader location {location} exceeds the guaranteed wgpu limit"
+            );
+        }
     }
 
     #[test]
@@ -13336,5 +13441,55 @@ mod shader_tests {
     fn paint_brush_transform_preserves_wide_axis_and_expands_compressed_axis() {
         let transform = screen_round_paint_brush_transform([4.0, 0.0, 0.0, 1.0]).unwrap();
         assert_eq!(transform, [4.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn paint_surface_world_lookup_follows_geometry_changes() {
+        let surface_id = [11, 22, 33, 44];
+        let geometry_id = GeoId::GeometryObject(Uuid::new_v4());
+        let mut chunk = Chunk::default();
+        chunk.add_poly_3d_painted(
+            geometry_id,
+            Uuid::nil(),
+            vec![
+                [0.0, 0.0, 0.0, 1.0],
+                [1.0, 0.0, 0.0, 1.0],
+                [1.0, 0.0, 1.0, 1.0],
+                [0.0, 0.0, 1.0, 1.0],
+            ],
+            vec![[0.0; 2]; 4],
+            vec![(0, 1, 2), (0, 2, 3)],
+            0,
+            true,
+            surface_id,
+            vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        );
+        let mut vm = VM::new(64, 64);
+        let chunk_id = Uuid::new_v4();
+        vm.chunks_map.insert(chunk_id, chunk);
+
+        let (before, _) = vm
+            .paint_surface_world_at(surface_id, [0.25, 0.75])
+            .expect("surface coordinate resolves");
+        assert!((before[0] - 0.25).abs() < 1e-5);
+        assert!((before[2] - 0.75).abs() < 1e-5);
+
+        let poly = vm
+            .chunks_map
+            .get_mut(&chunk_id)
+            .and_then(|chunk| chunk.polys3d_map.get_mut(&geometry_id))
+            .and_then(|polys| polys.first_mut())
+            .expect("painted geometry exists");
+        for vertex in &mut poly.vertices {
+            vertex[0] += 5.0;
+            vertex[1] += 2.0;
+        }
+
+        let (after, _) = vm
+            .paint_surface_world_at(surface_id, [0.25, 0.75])
+            .expect("surface coordinate resolves after geometry edit");
+        assert!((after[0] - 5.25).abs() < 1e-5);
+        assert!((after[1] - 2.0).abs() < 1e-5);
+        assert!((after[2] - 0.75).abs() < 1e-5);
     }
 }
